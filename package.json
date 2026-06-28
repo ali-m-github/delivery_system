@@ -1,0 +1,8 @@
+{
+  "name": "delivery-system-root",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

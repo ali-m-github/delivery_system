@@ -1,0 +1,243 @@
+generator client {
+  provider      = "prisma-client-js"
+  engineType    = "library"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// Enums
+// ==========================================
+
+enum Role {
+  ADMIN
+  MERCHANT
+  DRIVER
+}
+
+enum VehicleType {
+  MOTORCYCLE
+  CAR
+  VAN
+}
+
+enum OrderStatus {
+  WAREHOUSE
+  WITH_DRIVER
+  DELIVERED
+  RETURNED
+  PAID_TO_MERCHANT
+}
+
+enum FinancialStatus {
+  UD
+  PAID
+  PENDING
+  WO
+  PS
+  PP
+}
+
+// ==========================================
+// Models
+// ==========================================
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  username      String         @unique
+  password      String
+  role          String         @default("USER")
+  permissions   String[]
+  actionHistory OrderHistory[]
+  driverProfile DriverProfile?
+  merchant      Merchant?
+
+  ordersCreated Order[] @relation("EmployeeOrders")
+}
+
+model Merchant {
+  id           String  @id @default(uuid())
+  merchantId   Int     @unique @default(autoincrement())
+  sellerNumber Int     @unique @default(autoincrement())
+  merchantName String
+  contactName  String?
+  phone        String?
+  address      String?
+  socialMedia  String?
+  isActive     Boolean @default(true)
+
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id])
+
+  orders    Order[]
+  zoneRates MerchantZoneRate[]
+
+  // --- NEW SETTLEMENT FIELDS ---
+  balance Float            @default(0)
+  payouts MerchantPayout[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MerchantPayout {
+  id              String @id @default(uuid())
+  sequentialIndex Int    @default(1)
+
+  // Relation to Merchant
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+
+  // Dual-Currency Tracking (Matches our frontend calculator)
+  totalUsd    Float @default(0) // Gross USD Collected
+  totalLbp    Float @default(0) // Gross LBP Collected
+  shippingUsd Float @default(0) // Total Shipping Fee Deducted
+  shippingLbp Float @default(0) // Total Shipping Fee Deducted (if any)
+  netUsd      Float @default(0) // Final Net USD Paid
+  netLbp      Float @default(0) // Final Net LBP Paid
+
+  status String @default("PAID")
+
+  // The orders included in this payout statement
+  orders Order[]
+
+  createdAt DateTime @default(now())
+}
+
+model MerchantZoneRate {
+  id         String   @id @default(uuid())
+  merchantId String
+  zoneId     String
+  rate       Float    @default(0) // The custom shipping cost for this seller in this zone
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+  zone       Zone     @relation(fields: [zoneId], references: [id])
+
+  @@unique([merchantId, zoneId])
+}
+
+model DriverProfile {
+  id            String        @id @default(cuid())
+  userId        String        @unique
+  driverId      String        @unique
+  user          User          @relation(fields: [userId], references: [id])
+  firstName     String
+  lastName      String
+  vehicles      VehicleType[]
+  licenseNumber String?
+  isAvailable   Boolean       @default(false)
+  photoUrl      String?
+
+  zoneRates  DriverZoneRate[]
+  payouts    DriverPayout[]
+  deliveries Order[]          @relation("DriverOrders")
+}
+
+model Order {
+  id              String         @id @default(cuid())
+  orderId         String         @unique
+  customerName    String
+  customerPhone   String
+  customerAddress String
+  hasExchange     Boolean        @default(false)
+  notes           String?
+  packages        Int            @default(1)
+  extraShipping   Float          @default(0)
+  history         OrderHistory[]
+  isArchived      Boolean        @default(false)
+  isCorrection    Boolean        @default(false)
+
+  // --- Dual Currency Financials ---
+  amountUsd    Float @default(0)
+  amountLbp    Float @default(0)
+  collectedUsd Float @default(0)
+  collectedLbp Float @default(0)
+
+  // --- Decoupled Tracking ---
+  location        String @default("WAREHOUSE")
+  financialStatus String @default("UD")
+
+  // --- Relations ---
+  zoneId String
+  zone   Zone   @relation(fields: [zoneId], references: [id])
+
+  // FIX 1: Matches @relation("DriverOrders") in DriverProfile
+  driverId String?
+  driver   DriverProfile? @relation("DriverOrders", fields: [driverId], references: [id])
+
+  // FIX 2: Points to MerchantProfile instead of User
+  merchantId String?
+  merchant   Merchant? @relation(fields: [merchantId], references: [id])
+
+  // FIX 3: Matches @relation("EmployeeOrders") in User
+  creatorId String
+  creator   User   @relation("EmployeeOrders", fields: [creatorId], references: [id])
+
+  // FIX 4: Adds missing opposite relation for DriverPayout
+  driverPayoutId   String?
+  driverPayout     DriverPayout?   @relation(fields: [driverPayoutId], references: [id])
+  // FIX 5: Locks the order to a specific Merchant Payout Statement
+  merchantPayoutId String?
+  merchantPayout   MerchantPayout? @relation(fields: [merchantPayoutId], references: [id])
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  dispatchedAt     DateTime?
+  deliveredAt      DateTime?
+}
+
+model Zone {
+  id            String             @id @default(cuid())
+  name          String             @unique
+  orders        Order[]
+  driverRates   DriverZoneRate[]
+  merchantRates MerchantZoneRate[]
+}
+
+model DriverZoneRate {
+  id       String @id @default(cuid())
+  driverId String
+  zoneId   String
+  rate     Float
+
+  driver DriverProfile @relation(fields: [driverId], references: [id])
+  zone   Zone          @relation(fields: [zoneId], references: [id])
+
+  @@unique([driverId, zoneId])
+}
+
+model DriverPayout {
+  id       String        @id @default(cuid())
+  driverId String
+  driver   DriverProfile @relation(fields: [driverId], references: [id])
+
+  status          String @default("PENDING")
+  sequentialIndex Int    @default(1)
+  totalUsd        Float  @default(0)
+  totalLbp        Float  @default(0)
+  commissionUsd   Float  @default(0)
+  netUsd          Float  @default(0)
+  totalCollected  Float  @default(0)
+
+  orders    Order[]
+  createdAt DateTime  @default(now())
+  clearedAt DateTime?
+}
+
+model OrderHistory {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  action   String // e.g., "Created", "Assigned Driver", "Status: DELIVERED"
+  location String?
+  driverId String?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+}
