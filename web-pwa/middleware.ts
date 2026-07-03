@@ -15,8 +15,11 @@ export async function middleware(request: NextRequest) {
     const { payload } = await jwtVerify(token, secret);
 
     // 2. Strict Admin Lock
-    // If the user tries to go to /admin, but their role is NOT 'ADMIN', kick them to dashboard.
-    if (request.nextUrl.pathname.startsWith("/admin")) {
+    // If the user tries to go to /admin or /zones, but their role is NOT 'ADMIN', kick them to dashboard.
+    if (
+      request.nextUrl.pathname.startsWith("/admin") ||
+      request.nextUrl.pathname.startsWith("/zones")
+    ) {
       if (payload.role !== "ADMIN") {
         return NextResponse.redirect(new URL("/dashboard", request.url));
       }
@@ -36,8 +39,11 @@ export const config = {
     "/dashboard/:path*",
     "/orders/:path*",
     "/admin/:path*",
+    "/driver/:path*",
     "/drivers/:path*",
     "/sellers/:path*",
     "/settlements/:path*",
+    "/merchant/:path*",
+    "/zones/:path*",
   ],
 };

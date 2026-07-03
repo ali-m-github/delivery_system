@@ -113,7 +113,8 @@ model MerchantZoneRate {
   id         String   @id @default(uuid())
   merchantId String
   zoneId     String
-  rate       Float    @default(0) // The custom shipping cost for this seller in this zone
+  rate       Float    @default(0) // Custom shipping cost USD for this merchant in this zone
+  rateLbp    Float    @default(0) // Custom shipping cost LBP for this merchant in this zone
   merchant   Merchant @relation(fields: [merchantId], references: [id])
   zone       Zone     @relation(fields: [zoneId], references: [id])
 
@@ -192,6 +193,8 @@ model Order {
 model Zone {
   id            String             @id @default(cuid())
   name          String             @unique
+  basePriceUsd  Float              @default(0)
+  basePriceLbp  Float              @default(0)
   orders        Order[]
   driverRates   DriverZoneRate[]
   merchantRates MerchantZoneRate[]

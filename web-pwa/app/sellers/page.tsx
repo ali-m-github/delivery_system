@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 
 export default function SellersPage() {
@@ -26,7 +26,7 @@ export default function SellersPage() {
   const [zoneRangeInput, setZoneRangeInput] = useState("");
   const [rateInput, setRateInput] = useState("");
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const [sellersRes, zonesRes] = await Promise.all([
@@ -40,7 +40,7 @@ export default function SellersPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchData();

@@ -7,7 +7,7 @@ const prisma = new PrismaClient();
 export async function GET() {
   try {
     // 1. Set your new desired credentials here
-    const newEmail = "YOUR_NEW_EMAIL@system.local";
+    const newEmail = "YOUR_NE";
     const newPassword = "YOUR_NEW_PASSWORD";
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);

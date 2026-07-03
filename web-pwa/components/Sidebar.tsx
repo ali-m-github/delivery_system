@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useState, useEffect, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
+import SettingsModal from "./SettingsModal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface NavItem {
@@ -126,6 +127,8 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Drivers", href: "/drivers", icon: <DriversIcon /> },
   { label: "Settlements", href: "/settlements", icon: <SettlementsIcon /> },
   { label: "Statements", href: "/statements", icon: <OrdersIcon /> },
+  { label: "Merchant Portal", href: "/merchant", icon: <SellersIcon /> },
+  { label: "Zones", href: "/zones", icon: <AdminIcon />, adminOnly: true },
   {
     label: "Admin Panel",
     href: "/admin",
@@ -140,7 +143,6 @@ export default function Sidebar() {
   const pathname = usePathname();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const [user, setUser] = useState<{
     id: string;
     username: string;
@@ -149,6 +151,7 @@ export default function Sidebar() {
   } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // ── Fetch auth state ──
   useEffect(() => {
@@ -164,11 +167,6 @@ export default function Sidebar() {
       })
       .catch(() => setAuthLoading(false));
   }, []);
-
-  // ── Close mobile sidebar on route change ──
-  useEffect(() => {
-    setMobileOpen(false);
-  }, [pathname]);
 
   // ── Keyboard shortcut: Ctrl+B to toggle collapse ──
   useEffect(() => {
@@ -192,6 +190,11 @@ export default function Sidebar() {
     }
   }, [router]);
 
+  // ── Strict pathname bypass for auth pages ──
+  if (pathname === "/login" || pathname === "/signup") {
+    return null;
+  }
+
   if (authLoading) {
     return null;
   }
@@ -200,57 +203,15 @@ export default function Sidebar() {
     return null;
   }
 
+  // RBAC: Drivers get a full-width PWA — no admin sidebar
+  if (user.role === "DRIVER") {
+    return null;
+  }
+
   const isActive = (href: string) => {
     if (href === "/dashboard") return pathname === "/dashboard";
     return pathname.startsWith(href);
   };
-
-  // ── Mobile overlay ──
-  const mobileOverlay = mobileOpen && (
-    <div
-      className="fixed inset-0 bg-black/60 z-40 lg:hidden"
-      onClick={() => setMobileOpen(false)}
-    />
-  );
-
-  // ── Mobile hamburger ──
-  const hamburger = (
-    <button
-      className="lg:hidden fixed top-3 left-3 z-50 p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors bg-[#0B0F17]/90 backdrop-blur-sm border border-white/10"
-      onClick={() => setMobileOpen((prev) => !prev)}
-      aria-label={mobileOpen ? "Close sidebar" : "Open sidebar"}
-    >
-      {mobileOpen ? (
-        <svg
-          className="h-5 w-5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M6 18L18 6M6 6l12 12"
-          />
-        </svg>
-      ) : (
-        <svg
-          className="h-5 w-5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M4 6h16M4 12h16M4 18h16"
-          />
-        </svg>
-      )}
-    </button>
-  );
 
   // ── Sidebar content ──
   const sidebarContent = (
@@ -301,9 +262,12 @@ export default function Sidebar() {
 
       {/* ── Navigation ── */}
       <nav className="flex-1 px-2 py-4 space-y-0.5 overflow-y-auto">
-        {NAV_ITEMS.filter(
-          (item) => !item.adminOnly || user.role === "ADMIN",
-        ).map((item) => {
+        {NAV_ITEMS.filter((item) => {
+          // Merchants see ONLY the Merchant Portal link
+          if (user.role === "MERCHANT") return item.href === "/merchant";
+          // Everyone else: show non-admin items, or admin items if user is ADMIN
+          return !item.adminOnly || user.role === "ADMIN";
+        }).map((item) => {
           const active = isActive(item.href);
           return (
             <Link
@@ -356,6 +320,38 @@ export default function Sidebar() {
             </div>
           </div>
         )}
+
+        {/* ── Settings Button ── */}
+        <button
+          onClick={() => setIsSettingsOpen(true)}
+          className={`
+            w-full flex items-center rounded-lg text-sm font-medium mb-1.5
+            text-gray-400 hover:text-white hover:bg-white/5 border border-transparent hover:border-white/10
+            transition-all duration-200
+            ${isCollapsed ? "justify-center p-2" : "gap-2 px-3 py-2"}
+          `}
+          title={isCollapsed ? "Settings" : undefined}
+        >
+          <svg
+            className="w-4 h-4 shrink-0"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+            />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+            />
+          </svg>
+          {!isCollapsed && "Settings"}
+        </button>
 
         <button
           onClick={handleLogout}
@@ -414,24 +410,11 @@ export default function Sidebar() {
 
   return (
     <>
-      {hamburger}
-      {mobileOverlay}
-
-      {/* Desktop: static sidebar */}
-      <div className="hidden lg:block h-screen sticky top-0 shrink-0">
-        {sidebarContent}
-      </div>
-
-      {/* Mobile: fixed overlay sidebar */}
-      <div
-        className={`
-          lg:hidden fixed inset-y-0 left-0 z-50
-          transition-transform duration-300 ease-in-out
-          ${mobileOpen ? "translate-x-0" : "-translate-x-full"}
-        `}
-      >
-        {sidebarContent}
-      </div>
+      <div className="h-screen sticky top-0 shrink-0">{sidebarContent}</div>
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
     </>
   );
 }

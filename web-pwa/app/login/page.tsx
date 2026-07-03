@@ -5,14 +5,14 @@ import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Form submitted with:", email, password);
+    console.log("Form submitted with:", identifier, password);
     setLoading(true);
     setError("");
 
@@ -20,17 +20,27 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ identifier, password }),
       });
 
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ error: "Unknown Server Error" }));
+        const errorData = await res
+          .json()
+          .catch(() => ({ error: "Unknown Server Error" }));
         alert("Login Failed: " + errorData.error);
         setLoading(false);
         return;
       }
 
-      router.push("/dashboard");
+      const data = await res.json();
+
+      if (data.role === "DRIVER") {
+        router.push("/driver");
+      } else if (data.role === "MERCHANT") {
+        router.push("/merchant");
+      } else {
+        router.push("/orders"); // Default Admin route
+      }
       setLoading(false);
     } catch (err: unknown) {
       alert("Frontend Javascript Crash: " + (err as Error).message);
@@ -68,15 +78,15 @@ export default function LoginPage() {
               {/* Email Input */}
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1.5 tracking-wide">
-                  Email Address
+                  Email or Username
                 </label>
                 <input
-                  name="email"
-                  type="email"
+                  name="identifier"
+                  type="text"
                   required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
+                  value={identifier}
+                  onChange={(e) => setIdentifier(e.target.value)}
+                  placeholder="Email or Username"
                   className="appearance-none relative block w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 focus:shadow-[0_0_15px_rgba(6,182,212,0.5)] transition-all duration-200 sm:text-sm"
                 />
               </div>
@@ -107,9 +117,24 @@ export default function LoginPage() {
               >
                 {loading ? (
                   <span className="flex items-center gap-2">
-                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    <svg
+                      className="animate-spin h-4 w-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                      />
                     </svg>
                     Signing in...
                   </span>

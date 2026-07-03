@@ -33,6 +33,7 @@ interface SharedOrderTableProps {
   availableDrivers?: any[];
   onUpdateOrder?: (id: string, payload: any) => void;
   currentUser?: any;
+  onCopyLink?: (orderId: string) => void;
 }
 
 export default function SharedOrderTable({
@@ -44,6 +45,7 @@ export default function SharedOrderTable({
   availableDrivers = [],
   onUpdateOrder,
   currentUser,
+  onCopyLink,
 }: SharedOrderTableProps) {
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(
     null,
@@ -169,6 +171,9 @@ export default function SharedOrderTable({
                       onUpdateOrder(order.id, {
                         driverId: matchedDriver.id,
                         location: "ASSIGNED",
+                        financialStatus: "UD",
+                        collectedUsd: 0,
+                        collectedLbp: 0,
                       });
                       (e.target as HTMLInputElement).value = "";
                     }
@@ -227,12 +232,26 @@ export default function SharedOrderTable({
             WA
           </a>
         </td>
+
+        {onCopyLink && (
+          <td className="px-2 py-1.5 whitespace-nowrap text-right">
+            <button
+              onClick={() => onCopyLink(order.orderId)}
+              className="px-3 py-1.5 text-xs font-bold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded transition-colors"
+            >
+              🔗 Copy Link
+            </button>
+          </td>
+        )}
       </tr>
     );
 
     const historyRow = expandedHistoryId === order.id && (
       <tr key={`${order.id}-history`} className="border-b border-white/5">
-        <td colSpan={16} className="px-4 py-3 bg-white/[0.02]">
+        <td
+          colSpan={onCopyLink ? 17 : 16}
+          className="px-4 py-3 bg-white/[0.02]"
+        >
           <div className="text-xs font-semibold text-cyan-400 mb-2 uppercase tracking-wider">
             ORDER HISTORY
           </div>
@@ -332,6 +351,9 @@ export default function SharedOrderTable({
             <th className="px-2 py-2 text-right font-medium">$ Coll</th>
             <th className="px-2 py-2 text-right font-medium">LL Coll</th>
             <th className="px-2 py-2 text-center font-medium">WA</th>
+            {onCopyLink && (
+              <th className="px-2 py-2 text-center font-medium"></th>
+            )}
           </tr>
         </thead>
         <tbody>{orders.flatMap(renderTableRow)}</tbody>

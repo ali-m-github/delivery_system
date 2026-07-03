@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { cookies } from "next/headers";
+import { jwtVerify } from "jose";
+import { notifyCustomerStatusChange } from "@/lib/notifications";
 
 const prisma = new PrismaClient();
 
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
 export async function GET() {
   try {
+    // Attempt full relational include
     const orders = await prisma.order.findMany({
       include: {
         zone: true,
@@ -17,11 +21,25 @@ export async function GET() {
       orderBy: { createdAt: "desc" },
     });
     return NextResponse.json(orders, { status: 200 });
-  } catch (error) {
-    return NextResponse.json(
-      { error: "Internal Server Error" },
-      { status: 500 },
-    );
+  } catch (error: any) {
+    console.error("[GET /api/orders] Full include failed:", error.message);
+
+    // Fallback: Fetch basic order records if a relation field name changed in schema.prisma
+    try {
+      const basicOrders = await prisma.order.findMany({
+        orderBy: { createdAt: "desc" },
+      });
+      return NextResponse.json(basicOrders, { status: 200 });
+    } catch (fallbackError: any) {
+      console.error(
+        "[GET /api/orders] Fallback query failed:",
+        fallbackError.message,
+      );
+      return NextResponse.json(
+        { error: "Internal Server Error", details: fallbackError.message },
+        { status: 500 },
+      );
+    }
   }
 }
 
@@ -89,6 +107,7 @@ export async function POST(request: Request) {
     });
     return NextResponse.json(newOrder, { status: 201 });
   } catch (error: any) {
+    console.error("[POST /api/orders] Error:", error.message);
     return NextResponse.json(
       { error: error.message || "Failed to create order" },
       { status: 500 },
@@ -106,6 +125,7 @@ export async function PATCH(request: Request) {
       status,
       extraShipping,
       currentUserActionId,
+      driverActionLog,
       ...updateData
     } = body;
 
@@ -119,14 +139,35 @@ export async function PATCH(request: Request) {
     if (!existing)
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
 
+    // ── Resolve authenticated userId & driverId from session cookie ──────
     const adminUser = await prisma.user.findFirst({ where: { role: "ADMIN" } });
-    const actionUserId = currentUserActionId || adminUser?.id;
+    let actionUserId = currentUserActionId || adminUser?.id;
+    let actionDriverId: string | null | undefined = undefined;
+
+    try {
+      const cookieStore = await cookies();
+      const token = cookieStore.get("session")?.value;
+      if (token) {
+        const secret = new TextEncoder().encode(process.env.JWT_SECRET);
+        const { payload } = await jwtVerify(token, secret);
+        const sessionUserId = payload.id as string;
+        if (sessionUserId) {
+          if (!currentUserActionId) actionUserId = sessionUserId;
+          const driverProfile = await prisma.driverProfile.findUnique({
+            where: { userId: sessionUserId },
+            select: { id: true },
+          });
+          if (driverProfile) actionDriverId = driverProfile.id;
+        }
+      }
+    } catch {
+      // Session lookup is best-effort; fall back to body-supplied ids
+    }
 
     if (price !== undefined) updateData.amountUsd = parseFloat(price);
     if (extraShipping !== undefined)
       updateData.extraShipping = parseFloat(extraShipping);
 
-    // Convert collected string inputs to Floats
     if (updateData.collectedUsd !== undefined)
       updateData.collectedUsd = parseFloat(updateData.collectedUsd) || 0;
     if (updateData.collectedLbp !== undefined)
@@ -153,7 +194,6 @@ export async function PATCH(request: Request) {
       else changes.push("Assigned to Driver");
     }
 
-    // Capture Exact Modifications
     if (
       updateData.customerAddress !== undefined &&
       updateData.customerAddress !== existing.customerAddress
@@ -194,13 +234,12 @@ export async function PATCH(request: Request) {
       changes.push(`Note Added/Edited: ${updateData.notes}`);
     }
 
-    const actionNote =
-      changes.length > 0 ? changes.join(" | ") : "Order Updated";
+    const actionNote = driverActionLog
+      ? driverActionLog
+      : changes.length > 0
+        ? changes.join(" | ")
+        : "Order Updated";
 
-    // ---- STATUS HANDLING ----
-    // If status is "Re", write "Re" to both the primary status (location) and
-    // the financial status column. This is triggered by the frontend sending
-    // { location: "RETURN", status: "Re" } for returns.
     if (status !== undefined) {
       if (status === "Re") {
         updateData.location = "Re";
@@ -216,15 +255,24 @@ export async function PATCH(request: Request) {
           create: {
             action: actionNote,
             location: updateData.location || existing.location,
-            driverId: updateData.driverId || existing.driverId,
+            driverId:
+              actionDriverId ?? updateData.driverId ?? existing.driverId,
             userId: actionUserId,
           },
         },
       },
     });
 
+    const newLocation = updateData.location || existing.location;
+    notifyCustomerStatusChange(
+      updatedOrder.orderId,
+      newLocation,
+      updatedOrder.customerPhone,
+    ).catch(console.error);
+
     return NextResponse.json(updatedOrder, { status: 200 });
   } catch (error: any) {
+    console.error("[PATCH /api/orders] Error:", error.message);
     return NextResponse.json(
       { error: "Internal Server Error", details: error.message },
       { status: 500 },

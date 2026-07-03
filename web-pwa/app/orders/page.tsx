@@ -370,6 +370,35 @@ export default function OrdersPage() {
     }
   };
 
+  // ── Copy tracking link to clipboard ────────────────────────────────────
+  const handleCopyLink = (orderId: string) => {
+    const trackingUrl = window.location.origin + "/track/" + orderId;
+
+    if (navigator.clipboard && window.isSecureContext) {
+      // Modern HTTPS approach
+      navigator.clipboard
+        .writeText(trackingUrl)
+        .then(() => alert(`Tracking link copied!\n${trackingUrl}`))
+        .catch(() => alert(`Failed to copy. Manual link:\n${trackingUrl}`));
+    } else {
+      // Legacy HTTP Fallback
+      const textArea = document.createElement("textarea");
+      textArea.value = trackingUrl;
+      textArea.style.position = "fixed";
+      textArea.style.left = "-999999px";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      try {
+        document.execCommand("copy");
+        alert(`Tracking link copied!\n${trackingUrl}`);
+      } catch (err) {
+        alert(`Failed to copy link. Manual link:\n${trackingUrl}`);
+      }
+      textArea.remove();
+    }
+  };
+
   useEffect(() => {
     fetchOrders();
   }, []);
@@ -532,6 +561,9 @@ export default function OrdersPage() {
               id,
               driverId: matchedDriver.id,
               location: "ASSIGNED",
+              financialStatus: "UD",
+              collectedUsd: 0,
+              collectedLbp: 0,
             }),
           }),
         ),
@@ -1297,6 +1329,7 @@ export default function OrdersPage() {
                 availableDrivers={availableDrivers}
                 onUpdateOrder={updateOrder}
                 currentUser={currentUser}
+                onCopyLink={handleCopyLink}
               />
             )}
           </>
