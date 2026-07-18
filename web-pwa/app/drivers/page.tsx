@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, Fragment } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
+import CreateDriverModal from "@/components/drivers/CreateDriverModal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +32,7 @@ interface DriverPayout {
     amountUsd: number;
     amountLbp: number;
     zone: { name: string };
+    driverCommissionUsd?: number;
   }>;
 }
 
@@ -79,6 +81,9 @@ export default function DriversDirectoryPage() {
 
   // ── Bulk payout selection ──
   const [selectedPayouts, setSelectedPayouts] = useState<string[]>([]);
+
+  // ── Create driver modal ──
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
   const togglePayoutSelection = (id: string) => {
     setSelectedPayouts((prev) =>
@@ -226,7 +231,6 @@ export default function DriversDirectoryPage() {
     `);
     printWindow.document.close();
     printWindow.focus();
-    setTimeout(() => printWindow.print(), 300);
   }, []);
 
   // ── Native Excel Export ──────────────────────────────────────────────────────
@@ -354,10 +358,27 @@ export default function DriversDirectoryPage() {
                   Manage driver assignments and operational ledgers.
                 </p>
               </div>
-              <button className="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded text-sm font-bold shadow transition-colors">
+              <button
+                onClick={() => setIsCreateModalOpen(true)}
+                className="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded text-sm font-bold shadow transition-colors"
+              >
                 + Register New Driver
               </button>
             </header>
+
+            {isCreateModalOpen && (
+              <CreateDriverModal
+                onClose={() => setIsCreateModalOpen(false)}
+                onSuccess={() => {
+                  setIsCreateModalOpen(false);
+                  // Refresh the drivers list
+                  fetch("/api/admin/drivers")
+                    .then((r) => r.ok && r.json())
+                    .then((data) => setDrivers(data))
+                    .catch(() => {});
+                }}
+              />
+            )}
 
             {/* Fleet Table */}
             <div className="bg-[#121824] border border-white/5 rounded-xl overflow-hidden shadow-2xl">
@@ -418,7 +439,9 @@ export default function DriversDirectoryPage() {
                           <td className="px-6 py-4 text-right">
                             <button
                               onClick={() =>
-                                router.push(`/drivers/${driver.id}`)
+                                router.push(
+                                  `/drivers/${driver.driverId.toLowerCase()}`,
+                                )
                               }
                               className="bg-white/5 hover:bg-white/10 border border-white/10 text-white px-3 py-1.5 rounded text-xs font-semibold transition-colors"
                             >
@@ -783,6 +806,8 @@ export default function DriversDirectoryPage() {
                                               Customer: o.customerName,
                                               Zone: o.zone.name,
                                               "Amount USD": o.amountUsd,
+                                              "Driver Commission USD":
+                                                o.driverCommissionUsd ?? 0,
                                             }));
                                           exportToExcel(
                                             `Batch_${payout.sequentialIndex}_Orders`,

@@ -47,20 +47,16 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const finalOrderId = body.orderId || body.newOrderId;
     const finalZoneId = body.zoneId || body.selectedZoneId;
     const finalPrice = body.price || body.amountUsd;
 
-    if (!finalOrderId)
-      return NextResponse.json(
-        { error: "Missing Tracking ID" },
-        { status: 400 },
-      );
-    if (!body.customerName)
-      return NextResponse.json(
-        { error: "Missing Customer Name" },
-        { status: 400 },
-      );
+    // Generate a collision-proof tracking ID like: "ORD-1720042958-8F3A"
+    const uniqueOrderId =
+      body.orderId ||
+      body.newOrderId ||
+      `ORD-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+
+    const customerName = body.customerName?.trim() || "Unknown";
     if (!finalZoneId)
       return NextResponse.json(
         { error: "Missing Zone Selection" },
@@ -85,8 +81,8 @@ export async function POST(request: Request) {
 
     const newOrder = await prisma.order.create({
       data: {
-        orderId: finalOrderId,
-        customerName: body.customerName,
+        orderId: uniqueOrderId,
+        customerName,
         customerPhone: body.customerPhone || "N/A",
         customerAddress: body.customerAddress || "N/A",
         packages: packages,
@@ -96,6 +92,8 @@ export async function POST(request: Request) {
         extraShipping: extraShipping,
         creatorId: adminUser.id,
         notes: body.notes || null,
+        merchantId: body.merchantId || null,
+        driverId: body.driverId || null,
         history: {
           create: {
             action: "Order Created",
@@ -107,9 +105,21 @@ export async function POST(request: Request) {
     });
     return NextResponse.json(newOrder, { status: 201 });
   } catch (error: any) {
-    console.error("[POST /api/orders] Error:", error.message);
+    console.error("[POST /api/orders] Error:", error);
+
+    // P2002 is Prisma's official error code for Unique Constraint violations
+    if (error.code === "P2002") {
+      const targetField = error.meta?.target?.[0] || "field";
+      return NextResponse.json(
+        {
+          error: `An order with this exact ${targetField} already exists.`,
+        },
+        { status: 400 },
+      );
+    }
+
     return NextResponse.json(
-      { error: error.message || "Failed to create order" },
+      { error: "Internal Server Error", details: error.message },
       { status: 500 },
     );
   }
@@ -169,22 +179,37 @@ export async function PATCH(request: Request) {
       updateData.extraShipping = parseFloat(extraShipping);
 
     if (updateData.collectedUsd !== undefined)
-      updateData.collectedUsd = parseFloat(updateData.collectedUsd) || 0;
+      updateData.collectedUsd = parseFloat(updateData.collectedUsd) ?? 0;
     if (updateData.collectedLbp !== undefined)
-      updateData.collectedLbp = parseFloat(updateData.collectedLbp) || 0;
+      updateData.collectedLbp = parseFloat(updateData.collectedLbp) ?? 0;
+
+    // --- SERVER-SIDE FINANCIAL STATUS SYNCHRONIZATION ---
+    // Enforce the correct financialStatus when location transitions,
+    // so the UI filter expectations (location + financialStatus) are always met.
+    // This is a safety net even if the client omits the field.
+    const changes: string[] = [];
+    if (updateData.location && updateData.location !== existing.location) {
+      if (updateData.location === "DELIVERED") {
+        changes.push("Marked as Delivered");
+        // Enforce WD (With Driver) — cash is now with driver upon delivery
+        updateData.financialStatus = "WD";
+        if (!updateData.deliveredAt) {
+          updateData.deliveredAt = new Date();
+        }
+      } else if (updateData.location === "RETURN") {
+        changes.push("Marked as Return");
+        // Always enforce correct financialStatus based on driverId presence:
+        // RWD = Return With Driver (driver still has the package)
+        // Re  = Returned to warehouse (package is back at warehouse)
+        updateData.financialStatus = existing.driverId ? "RWD" : "Re";
+      } else if (updateData.location === "WAREHOUSE") {
+        changes.push("Returned to Warehouse");
+      } else {
+        changes.push(`Location changed to ${updateData.location}`);
+      }
+    }
 
     // --- GRANULAR HISTORY LOGGING ---
-    let changes: string[] = [];
-
-    if (updateData.location && updateData.location !== existing.location) {
-      if (updateData.location === "DELIVERED")
-        changes.push("Marked as Delivered");
-      else if (updateData.location === "RETURN")
-        changes.push("Marked as Return");
-      else if (updateData.location === "WAREHOUSE")
-        changes.push("Returned to Warehouse");
-      else changes.push(`Location changed to ${updateData.location}`);
-    }
 
     if (
       updateData.driverId !== undefined &&
@@ -227,7 +252,7 @@ export async function PATCH(request: Request) {
       updateData.collectedLbp !== undefined
     ) {
       changes.push(
-        `Collected: $${updateData.collectedUsd || existing.collectedUsd} | LL${updateData.collectedLbp || existing.collectedLbp}`,
+        `Collected: $${updateData.collectedUsd ?? existing.collectedUsd} | LL${updateData.collectedLbp ?? existing.collectedLbp}`,
       );
     }
     if (updateData.notes !== undefined && updateData.notes !== existing.notes) {
@@ -239,13 +264,6 @@ export async function PATCH(request: Request) {
       : changes.length > 0
         ? changes.join(" | ")
         : "Order Updated";
-
-    if (status !== undefined) {
-      if (status === "Re") {
-        updateData.location = "Re";
-        updateData.financialStatus = "Re";
-      }
-    }
 
     const updatedOrder = await prisma.order.update({
       where: { id },

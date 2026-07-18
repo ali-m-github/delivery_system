@@ -157,8 +157,8 @@ export default function MerchantClient({
     const warehouse = orders.filter((o) => o.location === "WAREHOUSE").length;
     const paidCount = orders.filter((o) => o.financialStatus === "PS").length;
     const unpaidCount = orders.filter((o) => o.financialStatus !== "PS").length;
-    const totalUsd = orders.reduce((s, o) => s + (o.amountUsd || 0), 0);
-    const totalLbp = orders.reduce((s, o) => s + (o.amountLbp || 0), 0);
+    const totalUsd = orders.reduce((s, o) => s + (o.amountUsd ?? 0), 0);
+    const totalLbp = orders.reduce((s, o) => s + (o.amountLbp ?? 0), 0);
     return {
       total,
       delivered,
@@ -188,7 +188,7 @@ export default function MerchantClient({
           customerAddress: formData.customerAddress,
           zoneId: formData.zoneId,
           price: formData.price,
-          amountLbp: formData.amountLbp || "0",
+          amountLbp: formData.amountLbp ?? "0",
           notes: formData.notes,
         }),
       });
@@ -319,10 +319,10 @@ export default function MerchantClient({
       );
       const shipUsd = rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
       const shipLbp = rate?.rateLbp ?? 0;
-      const origUsd = order.amountUsd || 0;
-      const origLbp = order.amountLbp || 0;
-      const collUsd = order.collectedUsd || order.amountUsd || 0;
-      const collLbp = order.collectedLbp || order.amountLbp || 0;
+      const origUsd = order.amountUsd ?? 0;
+      const origLbp = order.amountLbp ?? 0;
+      const collUsd = order.collectedUsd ?? order.amountUsd ?? 0;
+      const collLbp = order.collectedLbp ?? order.amountLbp ?? 0;
 
       worksheet.addRow({
         orderId: order.orderId,
@@ -619,12 +619,42 @@ export default function MerchantClient({
                 </div>
                 <div className="flex-1" />
                 {selectedOrders.length > 0 && (
-                  <button
-                    onClick={exportSelectedOrders}
-                    className="px-4 py-2 bg-green-500/20 text-green-400 border border-green-500/30 rounded-lg font-bold text-xs hover:bg-green-500/30 transition-colors"
-                  >
-                    Export Selected ({selectedOrders.length})
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400 mr-1">
+                      {selectedOrders.length} selected
+                    </span>
+                    <button
+                      onClick={() =>
+                        window.open(
+                          `/print/orders?ids=${selectedOrders.join(",")}`,
+                          "_blank",
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+                      title="Open in new tab"
+                    >
+                      🔗 New Tab
+                    </button>
+                    <button
+                      onClick={() => exportSelectedOrders()}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
+                      title="Download as Excel"
+                    >
+                      📊 Excel
+                    </button>
+                    <button
+                      onClick={() =>
+                        window.open(
+                          `/orders/print?ids=${selectedOrders.join(",")}&pdf=true`,
+                          "_blank",
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors"
+                      title="Download as PDF"
+                    >
+                      📑 PDF
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -904,7 +934,6 @@ export default function MerchantClient({
                     required
                     type="number"
                     step="0.01"
-                    min="0"
                     value={formData.price}
                     onChange={(e) =>
                       setFormData({ ...formData, price: e.target.value })
@@ -920,7 +949,7 @@ export default function MerchantClient({
                   </label>
                   <input
                     type="number"
-                    min="0"
+                    step="1"
                     value={formData.amountLbp}
                     onChange={(e) =>
                       setFormData({ ...formData, amountLbp: e.target.value })
@@ -1159,12 +1188,12 @@ export default function MerchantClient({
                         rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
                       const shipLbp = rate?.rateLbp ?? 0;
 
-                      const origUsd = order.amountUsd || 0;
-                      const origLbp = order.amountLbp || 0;
+                      const origUsd = order.amountUsd ?? 0;
+                      const origLbp = order.amountLbp ?? 0;
                       const collUsd =
-                        order.collectedUsd || order.amountUsd || 0;
+                        order.collectedUsd ?? order.amountUsd ?? 0;
                       const collLbp =
-                        order.collectedLbp || order.amountLbp || 0;
+                        order.collectedLbp ?? order.amountLbp ?? 0;
 
                       return (
                         <tr

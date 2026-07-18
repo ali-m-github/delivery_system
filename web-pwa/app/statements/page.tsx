@@ -63,10 +63,10 @@ export default function StatementsPage() {
       );
       const shipUsd = rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
       const shipLbp = rate?.rateLbp ?? 0;
-      const origUsd = order.amountUsd || 0;
-      const origLbp = order.amountLbp || 0;
-      const collUsd = order.collectedUsd || order.amountUsd || 0;
-      const collLbp = order.collectedLbp || order.amountLbp || 0;
+      const origUsd = order.amountUsd ?? 0;
+      const origLbp = order.amountLbp ?? 0;
+      const collUsd = order.collectedUsd ?? order.amountUsd ?? 0;
+      const collLbp = order.collectedLbp ?? order.amountLbp ?? 0;
 
       worksheet.addRow({
         orderId: order.orderId,
@@ -324,10 +324,10 @@ export default function StatementsPage() {
                       rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
                     const shipLbp = rate?.rateLbp ?? 0;
 
-                    const origUsd = order.amountUsd || 0;
-                    const origLbp = order.amountLbp || 0;
-                    const collUsd = order.collectedUsd || order.amountUsd || 0;
-                    const collLbp = order.collectedLbp || order.amountLbp || 0;
+                    const origUsd = order.amountUsd ?? 0;
+                    const origLbp = order.amountLbp ?? 0;
+                    const collUsd = order.collectedUsd ?? order.amountUsd ?? 0;
+                    const collLbp = order.collectedLbp ?? order.amountLbp ?? 0;
 
                     return (
                       <tr

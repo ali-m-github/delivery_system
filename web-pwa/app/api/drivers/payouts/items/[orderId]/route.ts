@@ -43,7 +43,7 @@ export async function POST(
       (zr: { zoneId: string; rate: number }) => zr.zoneId === order.zoneId,
     );
     const orderCommission = zoneRate?.rate ?? 0;
-    const orderAmountUsd = order.amountUsd || 0;
+    const orderAmountUsd = order.amountUsd ?? 0;
 
     // Execute the rollback in a transaction
     const result = await prisma.$transaction(async (tx) => {
@@ -72,11 +72,11 @@ export async function POST(
 
       // 3b. Orders remain — recalculate sums from the remaining orders
       const newTotalUsd = remainingOrders.reduce(
-        (sum, o) => sum + (o.amountUsd || 0),
+        (sum, o) => sum + (o.amountUsd ?? 0),
         0,
       );
       const newTotalLbp = remainingOrders.reduce(
-        (sum, o) => sum + (o.amountLbp || 0),
+        (sum, o) => sum + (o.amountLbp ?? 0),
         0,
       );
       const newTotalCollected = newTotalUsd;

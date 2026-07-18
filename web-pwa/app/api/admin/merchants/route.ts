@@ -17,3 +17,41 @@ export async function GET() {
     );
   }
 }
+
+// POST /api/admin/merchants — Create a new merchant (seller)
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+
+    if (!body.merchantName) {
+      return NextResponse.json(
+        { error: "Business Name required" },
+        { status: 400 },
+      );
+    }
+
+    const newMerchant = await prisma.merchant.create({
+      data: {
+        merchantName: body.merchantName,
+        contactName: body.contactName || null,
+        phone: body.phone || null,
+        address: body.address || null,
+        socialMedia: body.socialMedia || null,
+        isCashSeller: body.isCashSeller === true,
+        defaultSellerRate:
+          body.defaultSellerRate != null
+            ? parseFloat(body.defaultSellerRate)
+            : null,
+        defaultCompanyRate:
+          body.defaultCompanyRate != null
+            ? parseFloat(body.defaultCompanyRate)
+            : null,
+      },
+    });
+
+    return NextResponse.json(newMerchant, { status: 201 });
+  } catch (error: any) {
+    console.error("Create Merchant Error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}

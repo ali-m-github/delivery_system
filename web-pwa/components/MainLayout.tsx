@@ -11,12 +11,17 @@ export default function MainLayout({
 }) {
   const pathname = usePathname();
   const isTrackPage = pathname.startsWith("/track");
+  const isPrintPage = pathname.startsWith("/print");
 
   return (
     <>
-      {!isTrackPage && <Sidebar />}
+      {!isTrackPage && !isPrintPage && <Sidebar />}
       <main
-        className={isTrackPage ? "flex-1" : "flex-1 overflow-y-auto min-w-0"}
+        className={
+          isTrackPage || isPrintPage
+            ? "flex-1"
+            : "flex-1 overflow-y-auto min-w-0"
+        }
       >
         <RouteGuard>{children}</RouteGuard>
       </main>

@@ -71,13 +71,16 @@ export default function SharedOrderTable({
         WD: "text-blue-400 bg-blue-500/10 border-blue-500/30",
         WO: "text-green-400 bg-green-500/10 border-green-500/30",
         PS: "text-purple-400 bg-purple-500/10 border-purple-500/30",
+        RWD: "text-orange-400 bg-orange-500/10 border-orange-500/30",
+        Re: "text-red-400 bg-red-500/10 border-red-500/30",
+        RTS: "text-purple-400 bg-purple-500/10 border-purple-500/30",
       };
       return `px-1.5 py-0.5 text-[10px] font-semibold rounded-full border ${colors[fin] || "text-gray-400 border-white/10 bg-white/5"}`;
     })();
 
     // Apply strict fallback logic: if collected is 0, default to original amount.
-    const actualCollectedUsd = order.collectedUsd || order.amountUsd || 0;
-    const actualCollectedLbp = order.collectedLbp || order.amountLbp || 0;
+    const actualCollectedUsd = order.collectedUsd ?? order.amountUsd ?? 0;
+    const actualCollectedLbp = order.collectedLbp ?? order.amountLbp ?? 0;
 
     const isMismatched =
       order.location === "DELIVERED" &&
@@ -206,11 +209,11 @@ export default function SharedOrderTable({
         </td>
 
         <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
-          ${(order.amountUsd || 0).toFixed(2)}
+          ${(order.amountUsd ?? 0).toFixed(2)}
         </td>
 
         <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
-          {(order.amountLbp || 0).toLocaleString()}
+          {(order.amountLbp ?? 0).toLocaleString()}
         </td>
 
         <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
@@ -233,6 +236,53 @@ export default function SharedOrderTable({
           </a>
         </td>
 
+        <td className="px-2 py-1.5 whitespace-nowrap text-center">
+          {order.waybillUrl ? (
+            <a
+              href={order.waybillUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="View Waybill"
+              className="inline-block text-cyan-400 hover:text-cyan-300 transition-colors"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="w-5 h-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
+                />
+              </svg>
+            </a>
+          ) : (
+            <span
+              className="inline-block opacity-50"
+              title="No waybill uploaded"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="w-5 h-5 text-gray-500"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
+                />
+              </svg>
+            </span>
+          )}
+        </td>
+
         {onCopyLink && (
           <td className="px-2 py-1.5 whitespace-nowrap text-right">
             <button
@@ -249,7 +299,7 @@ export default function SharedOrderTable({
     const historyRow = expandedHistoryId === order.id && (
       <tr key={`${order.id}-history`} className="border-b border-white/5">
         <td
-          colSpan={onCopyLink ? 17 : 16}
+          colSpan={onCopyLink ? 18 : 17}
           className="px-4 py-3 bg-white/[0.02]"
         >
           <div className="text-xs font-semibold text-cyan-400 mb-2 uppercase tracking-wider">
@@ -351,6 +401,7 @@ export default function SharedOrderTable({
             <th className="px-2 py-2 text-right font-medium">$ Coll</th>
             <th className="px-2 py-2 text-right font-medium">LL Coll</th>
             <th className="px-2 py-2 text-center font-medium">WA</th>
+            <th className="px-2 py-2 text-center font-medium">Waybill</th>
             {onCopyLink && (
               <th className="px-2 py-2 text-center font-medium"></th>
             )}

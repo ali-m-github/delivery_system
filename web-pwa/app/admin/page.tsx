@@ -847,7 +847,7 @@ function DriversTab() {
                           Delete
                         </button>
                         <Link
-                          href={"/admin/drivers/" + driver.id}
+                          href={"/drivers/" + driver.driverId.toLowerCase()}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
                                      bg-gradient-to-r from-cyan-500/20 to-cyan-600/20 text-cyan-300
                                      border border-cyan-500/30 hover:from-cyan-500/30 hover:to-cyan-600/30
@@ -887,6 +887,7 @@ function DriversTab() {
 // ══════════════════════════════════════════════════════════════════════════════
 function EmployeesTab() {
   const [users, setUsers] = useState<User[]>([]);
+  const [username, setUsername] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
@@ -933,6 +934,7 @@ function EmployeesTab() {
   };
 
   const resetEmployeeForm = () => {
+    setUsername("");
     setFirstName("");
     setLastName("");
     setEmail("");
@@ -944,22 +946,20 @@ function EmployeesTab() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!firstName.trim() || !lastName.trim() || !email) return;
+    if (!username.trim() || !email) return;
     if (!editingEmployeeId && !password) return;
 
     setLoading(true);
     setError("");
 
     try {
-      const username = `${firstName.trim()} ${lastName.trim()}`;
-
       const url = editingEmployeeId
         ? `/api/admin/employees/${editingEmployeeId}`
         : "/api/admin/users";
       const method = editingEmployeeId ? "PUT" : "POST";
 
       const body: Record<string, unknown> = {
-        username,
+        username: username.trim(),
         role,
         permissions: selectedPermissions,
       };
@@ -999,7 +999,27 @@ function EmployeesTab() {
           {editingEmployeeId ? "Edit Employee" : "Create Employee"}
         </h2>
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* First & Last Name */}
+          {/* Username */}
+          <div>
+            <label
+              htmlFor="empUsername"
+              className="block text-xs font-medium text-gray-400 mb-1.5"
+            >
+              Username (Login)
+            </label>
+            <input
+              id="empUsername"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="jdoe"
+              className="w-full sm:w-64 px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-gray-100 placeholder-gray-600
+                         focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500/50
+                         transition-all duration-200 text-sm"
+            />
+          </div>
+
+          {/* First & Last Name (Display) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label
@@ -1171,8 +1191,7 @@ function EmployeesTab() {
               type="submit"
               disabled={
                 loading ||
-                !firstName.trim() ||
-                !lastName.trim() ||
+                !username.trim() ||
                 !email ||
                 (!editingEmployeeId && !password)
               }
@@ -1220,6 +1239,7 @@ function EmployeesTab() {
               <thead>
                 <tr className="border-b border-white/10 text-xs text-gray-500 uppercase tracking-wider">
                   <th className="py-3 px-4 font-medium">Name</th>
+                  <th className="py-3 px-4 font-medium">Username</th>
                   <th className="py-3 px-4 font-medium">Email</th>
                   <th className="py-3 px-4 font-medium">Role</th>
                   <th className="py-3 px-4 font-medium">Permissions</th>
@@ -1235,16 +1255,21 @@ function EmployeesTab() {
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-2">
                         <span className="text-gray-200">{user.username}</span>
-                        <span
-                          className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${
-                            user.role === "ADMIN"
-                              ? "bg-green-400 text-green-900 shadow-[0_0_8px_rgba(74,222,128,0.6)]"
-                              : "bg-cyan-400 text-cyan-900 shadow-[0_0_8px_rgba(34,211,238,0.6)]"
-                          }`}
-                        >
-                          {user.role}
-                        </span>
                       </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="text-gray-400 font-mono text-xs">
+                        {user.username}
+                      </span>
+                      <span
+                        className={`ml-2 inline-block px-2 py-0.5 rounded-full text-[10px] font-bold leading-none ${
+                          user.role === "ADMIN"
+                            ? "bg-green-400 text-green-900 shadow-[0_0_8px_rgba(74,222,128,0.6)]"
+                            : "bg-cyan-400 text-cyan-900 shadow-[0_0_8px_rgba(34,211,238,0.6)]"
+                        }`}
+                      >
+                        {user.role}
+                      </span>
                     </td>
                     <td className="py-3 px-4 text-gray-400">{user.email}</td>
                     <td className="py-3 px-4">
@@ -1281,6 +1306,7 @@ function EmployeesTab() {
                           type="button"
                           onClick={() => {
                             setEditingEmployeeId(user.id);
+                            setUsername(user.username);
                             setFirstName(user.username.split(" ")[0] || "");
                             setLastName(
                               user.username.split(" ").slice(1).join(" ") || "",

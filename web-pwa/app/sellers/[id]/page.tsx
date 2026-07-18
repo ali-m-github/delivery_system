@@ -1,3 +1,6 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import prisma from "@/lib/prisma";
 import SellerClient from "./SellerClient";
 
@@ -13,6 +16,14 @@ export default async function SellerProfilePage({
     include: {
       zoneRates: true, // Fetch the seller's specific shipping rates
       orders: {
+        where: {
+          NOT: {
+            location: {
+              equals: "archive",
+              mode: "insensitive",
+            },
+          },
+        },
         include: {
           driver: true,
           zone: true, // Fetch the zone for each order to match against the rates

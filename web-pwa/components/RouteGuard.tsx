@@ -44,7 +44,7 @@ export default function RouteGuard({
         if (!cancelled) {
           // DRIVER guard: must be on /driver or /track
           if (
-            user.role === "DRIVER" &&
+            user?.role === "DRIVER" &&
             !pathname.startsWith("/driver") &&
             !pathname.startsWith("/track")
           ) {
@@ -54,21 +54,21 @@ export default function RouteGuard({
           }
 
           // MERCHANT guard: must only access /merchant
-          if (user.role === "MERCHANT" && !pathname.startsWith("/merchant")) {
+          if (user?.role === "MERCHANT" && !pathname.startsWith("/merchant")) {
             setStatus("redirecting");
             router.replace("/merchant");
             return;
           }
 
           // Non-MERCHANT users trying to access /merchant → login
-          if (user.role !== "MERCHANT" && pathname.startsWith("/merchant")) {
+          if (user?.role !== "MERCHANT" && pathname.startsWith("/merchant")) {
             setStatus("redirecting");
             router.replace("/login");
             return;
           }
 
           // ADMIN guard: /login → /orders
-          if (user.role === "ADMIN" && pathname.startsWith("/login")) {
+          if (user?.role === "ADMIN" && pathname.startsWith("/login")) {
             setStatus("redirecting");
             router.replace("/orders");
             return;

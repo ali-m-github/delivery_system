@@ -91,6 +91,9 @@ export async function GET(request: Request) {
             driverId: true,
             firstName: true,
             lastName: true,
+            carriedDebtUsd: true,
+            carriedDebtLbp: true,
+            userId: true,
           },
         },
         orders: {
@@ -98,13 +101,70 @@ export async function GET(request: Request) {
             zone: {
               select: { name: true },
             },
+            merchant: {
+              select: { merchantName: true },
+            },
           },
         },
       },
       orderBy,
     });
 
-    return NextResponse.json(payouts, { status: 200 });
+    // Calculate per-order driver commission using the same 3-tier logic
+    const enrichedPayouts = await Promise.all(
+      payouts.map(async (payout) => {
+        const driverId = payout.driverId;
+        const userId = payout.driver.userId;
+
+        // Fetch driver zone rates, seller exception rates, and cash seller rates
+        const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
+          prisma.driverZoneRate.findMany({ where: { driverId } }),
+          prisma.driverSellerRate.findMany({ where: { driverId } }),
+          userId
+            ? prisma.driverCashSellerRate.findMany({
+                where: { driverId: userId },
+              })
+            : Promise.resolve([]),
+        ]);
+
+        const zoneRateMap = new Map(
+          zoneRates.map((zr) => [zr.zoneId, zr.rate]),
+        );
+        const sellerExceptionMap = new Map<string, number>();
+        for (const sr of sellerRates) {
+          if (sr.rateUsd > 0) sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+        }
+        for (const cr of cashSellerRates) {
+          if (cr.rateUsd > 0) sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
+        }
+
+        const ordersWithCommission = payout.orders.map((order) => {
+          const orderMerchantId = String(order.merchantId ?? "");
+          const orderZoneId = String(order.zoneId);
+
+          // Tier 1: Seller Exception
+          const exceptionRate = orderMerchantId
+            ? sellerExceptionMap.get(orderMerchantId)
+            : undefined;
+          const driverCommissionUsd =
+            exceptionRate !== undefined
+              ? exceptionRate
+              : (zoneRateMap.get(orderZoneId) ?? 0);
+
+          return {
+            ...order,
+            driverCommissionUsd,
+          };
+        });
+
+        return {
+          ...payout,
+          orders: ordersWithCommission,
+        };
+      }),
+    );
+
+    return NextResponse.json(enrichedPayouts, { status: 200 });
   } catch (error) {
     console.error("GET /api/drivers/payouts Error:", error);
     return NextResponse.json(

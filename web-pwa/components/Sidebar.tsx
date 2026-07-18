@@ -125,9 +125,18 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Orders", href: "/orders", icon: <OrdersIcon /> },
   { label: "Sellers", href: "/sellers", icon: <SellersIcon /> },
   { label: "Drivers", href: "/drivers", icon: <DriversIcon /> },
-  { label: "Settlements", href: "/settlements", icon: <SettlementsIcon /> },
+  {
+    label: "Driver Consignments",
+    href: "/settlements",
+    icon: <SettlementsIcon />,
+  },
   { label: "Statements", href: "/statements", icon: <OrdersIcon /> },
-  { label: "Merchant Portal", href: "/merchant", icon: <SellersIcon /> },
+  {
+    label: "Treasury",
+    href: "/admin/treasury",
+    icon: <SettlementsIcon />,
+    adminOnly: true,
+  },
   { label: "Zones", href: "/zones", icon: <AdminIcon />, adminOnly: true },
   {
     label: "Admin Panel",
@@ -153,11 +162,12 @@ export default function Sidebar() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // ── Fetch auth state ──
+  // ── Fetch auth state (re-fetch on route change to keep sidebar in sync) ──
   useEffect(() => {
     fetch("/api/auth/me")
       .then(async (res) => {
         if (!res.ok) {
+          setUser(null);
           setAuthLoading(false);
           return;
         }
@@ -165,8 +175,11 @@ export default function Sidebar() {
         setUser(data);
         setAuthLoading(false);
       })
-      .catch(() => setAuthLoading(false));
-  }, []);
+      .catch(() => {
+        setUser(null);
+        setAuthLoading(false);
+      });
+  }, [pathname]);
 
   // ── Keyboard shortcut: Ctrl+B to toggle collapse ──
   useEffect(() => {
@@ -204,7 +217,7 @@ export default function Sidebar() {
   }
 
   // RBAC: Drivers get a full-width PWA — no admin sidebar
-  if (user.role === "DRIVER") {
+  if (user?.role === "DRIVER") {
     return null;
   }
 
@@ -264,9 +277,9 @@ export default function Sidebar() {
       <nav className="flex-1 px-2 py-4 space-y-0.5 overflow-y-auto">
         {NAV_ITEMS.filter((item) => {
           // Merchants see ONLY the Merchant Portal link
-          if (user.role === "MERCHANT") return item.href === "/merchant";
+          if (user?.role === "MERCHANT") return item.href === "/merchant";
           // Everyone else: show non-admin items, or admin items if user is ADMIN
-          return !item.adminOnly || user.role === "ADMIN";
+          return !item.adminOnly || user?.role === "ADMIN";
         }).map((item) => {
           const active = isActive(item.href);
           return (
@@ -314,9 +327,9 @@ export default function Sidebar() {
             </div>
             <div className="min-w-0">
               <p className="text-xs font-medium text-gray-300 truncate">
-                {user.username}
+                {user?.username}
               </p>
-              <p className="text-[10px] text-gray-500">{user.role}</p>
+              <p className="text-[10px] text-gray-500">{user?.role}</p>
             </div>
           </div>
         )}

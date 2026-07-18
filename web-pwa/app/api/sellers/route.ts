@@ -23,24 +23,65 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    if (!body.merchantName)
+
+    const {
+      name,
+      merchantName,
+      sellerName,
+      phone,
+      address,
+      isCashSeller,
+      defaultSellerRate,
+      defaultCompanyRate,
+      contactName,
+      socialMedia,
+      ...otherData
+    } = body;
+
+    const resolvedName = name || merchantName || sellerName;
+
+    if (!resolvedName) {
       return NextResponse.json(
-        { error: "Business Name required" },
+        { error: "Seller name is required" },
         { status: 400 },
       );
+    }
 
-    const newSeller = await prisma.merchant.create({
+    const parsedSellerRate =
+      defaultSellerRate !== undefined && defaultSellerRate !== ""
+        ? parseFloat(defaultSellerRate)
+        : null;
+
+    const parsedCompanyRate =
+      defaultCompanyRate !== undefined && defaultCompanyRate !== ""
+        ? parseFloat(defaultCompanyRate)
+        : null;
+
+    const newMerchant = await prisma.merchant.create({
       data: {
-        merchantName: body.merchantName,
-        contactName: body.contactName || null,
-        phone: body.phone || null,
-        address: body.address || null,
-        socialMedia: body.socialMedia || null,
+        ...otherData,
+        merchantName: resolvedName,
+        contactName: contactName || resolvedName,
+        phone: phone || "N/A",
+        address: address || "N/A",
+        socialMedia: socialMedia || null,
+        isCashSeller: Boolean(isCashSeller),
+        defaultSellerRate: isNaN(parsedSellerRate as number)
+          ? null
+          : parsedSellerRate,
+        defaultCompanyRate: isNaN(parsedCompanyRate as number)
+          ? null
+          : parsedCompanyRate,
       },
     });
-    return NextResponse.json(newSeller, { status: 201 });
+
+    return NextResponse.json(newMerchant, { status: 201 });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("[POST /api/sellers] Error:", error.message);
+    return NextResponse.json(
+      { error: "Internal Server Error", details: error.message },
+      { status: 500 },
+    );
   }
 }
 
@@ -58,11 +99,15 @@ export async function PATCH(request: Request) {
       rates.map((r: any) =>
         prisma.merchantZoneRate.upsert({
           where: { merchantId_zoneId: { merchantId, zoneId: r.zoneId } },
-          update: { rate: parseFloat(r.rate) || 0 },
+          update: {
+            rate: parseFloat(r.rate) || 0,
+            rateLbp: r.rateLbp !== undefined ? parseFloat(r.rateLbp) || 0 : 0,
+          },
           create: {
             merchantId,
             zoneId: r.zoneId,
             rate: parseFloat(r.rate) || 0,
+            rateLbp: r.rateLbp !== undefined ? parseFloat(r.rateLbp) || 0 : 0,
           },
         }),
       ),
@@ -79,13 +124,13 @@ export async function DELETE(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
-    if (!id)
+    if (!id) {
       return NextResponse.json(
         { error: "Seller ID required" },
         { status: 400 },
       );
+    }
 
-    // Delete associated rates first (foreign key constraint), then delete the merchant
     await prisma.merchantZoneRate.deleteMany({ where: { merchantId: id } });
     await prisma.merchant.delete({ where: { id } });
 

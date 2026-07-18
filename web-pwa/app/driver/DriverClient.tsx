@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback, Fragment } from "react";
 import { useRouter } from "next/navigation";
 import SettingsModal from "@/components/SettingsModal";
+import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
+import * as XLSX from "xlsx";
 
 type Order = {
   id: string;
@@ -18,11 +20,18 @@ type Order = {
   financialStatus?: string;
   notes?: string | null;
   zoneId: string;
+  merchantId?: string;
+  driverPayoutId?: string | null;
 };
 
 type ZoneRate = {
   zoneId: string;
   rate: number;
+};
+
+type SellerRate = {
+  merchantId: string;
+  rateUsd: number;
 };
 
 type Driver = {
@@ -31,10 +40,83 @@ type Driver = {
   lastName: string;
   deliveries: Order[];
   zoneRates: ZoneRate[];
+  driverSellerRates: SellerRate[];
 };
 
 type Props = {
   driver: Driver;
+};
+
+// ── Payout History Types ────────────────────────────────────────────────
+type PayoutOrder = {
+  id: string;
+  orderId: string;
+  customerName: string;
+  customerPhone?: string;
+  customerAddress?: string;
+  amountUsd: number;
+  amountLbp: number;
+  collectedUsd: number;
+  collectedLbp: number;
+  financialStatus: string;
+  location: string;
+  zone: { name: string };
+  merchant?: { merchantName: string } | null;
+  driverCommissionUsd?: number;
+};
+
+type DriverPayoutItem = {
+  id: string;
+  sequentialIndex: number;
+  status: string;
+  totalUsd: number;
+  totalLbp: number;
+  commissionUsd: number;
+  netUsd: number;
+  previousDebtUsd: number;
+  previousDebtLbp: number;
+  amountPaidUsd: number;
+  amountPaidLbp: number;
+  remainingUsd: number;
+  remainingLbp: number;
+  createdAt: string;
+  clearedAt: string | null;
+  orders: PayoutOrder[];
+};
+
+// ── Helper Functions ────────────────────────────────────────────────────
+function beirutDate(iso: string): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-US", {
+    timeZone: "Asia/Beirut",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function beirutDateTime(iso: string): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString("en-US", {
+    timeZone: "Asia/Beirut",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+const exportToExcel = (filename: string, rows: any[]) => {
+  if (!rows || !rows.length) return;
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+  XLSX.writeFile(
+    workbook,
+    filename.endsWith(".xlsx") ? filename : `${filename}.xlsx`,
+  );
 };
 
 const NOTE_OPTIONS = [
@@ -75,7 +157,9 @@ export default function DriverClient({ driver }: Props) {
   const [showCustomInput, setShowCustomInput] = useState(false);
 
   // ── Tab State ────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<"ACTIVE" | "DELIVERED">("ACTIVE");
+  const [activeTab, setActiveTab] = useState<
+    "ACTIVE" | "DELIVERED" | "PAYOUTS"
+  >("ACTIVE");
 
   // ── Settings Modal State ─────────────────────────────────────────────
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -83,37 +167,218 @@ export default function DriverClient({ driver }: Props) {
   // ── Payout Modal State ───────────────────────────────────────────────
   const [payoutModalOpen, setPayoutModalOpen] = useState(false);
 
+  // ── Payout History State ─────────────────────────────────────────────
+  const [payoutHistory, setPayoutHistory] = useState<DriverPayoutItem[]>([]);
+  const [payoutLoading, setPayoutLoading] = useState(true);
+  const [payoutStatusFilter, setPayoutStatusFilter] = useState("ALL");
+  const [payoutStartDate, setPayoutStartDate] = useState("");
+  const [payoutEndDate, setPayoutEndDate] = useState("");
+  const [payoutSortOrder, setPayoutSortOrder] = useState<"desc" | "asc">(
+    "desc",
+  );
+  const [expandedPayoutIds, setExpandedPayoutIds] = useState<string[]>([]);
+
+  // ── Fetch Payout History ─────────────────────────────────────────────
+  const fetchPayoutHistory = useCallback(() => {
+    const params = new URLSearchParams();
+    if (payoutStatusFilter !== "ALL") params.set("status", payoutStatusFilter);
+    if (payoutStartDate) params.set("startDate", payoutStartDate);
+    if (payoutEndDate) params.set("endDate", payoutEndDate);
+    params.set("sortBy", "createdAt");
+    params.set("sortDir", payoutSortOrder);
+
+    setPayoutLoading(true);
+    fetch(`/api/driver/my-payouts?${params.toString()}`)
+      .then((res) => res.json())
+      .then((data) => {
+        setPayoutHistory(Array.isArray(data) ? data : []);
+        setPayoutLoading(false);
+      })
+      .catch(() => {
+        setPayoutHistory([]);
+        setPayoutLoading(false);
+      });
+  }, [payoutStatusFilter, payoutStartDate, payoutEndDate, payoutSortOrder]);
+
+  useEffect(() => {
+    if (activeTab === "PAYOUTS") {
+      fetchPayoutHistory();
+    }
+  }, [activeTab, fetchPayoutHistory]);
+
+  // ── Toggle expanded payout row ───────────────────────────────────────
+  const togglePayoutExpanded = (payoutId: string) => {
+    setExpandedPayoutIds((prev) =>
+      prev.includes(payoutId)
+        ? prev.filter((id) => id !== payoutId)
+        : [...prev, payoutId],
+    );
+  };
+
+  // ── View/Print payout orders ─────────────────────────────────────────
+  const handleViewPrintPayout = useCallback((payout: DriverPayoutItem) => {
+    if (!payout.orders || payout.orders.length === 0) {
+      alert("No orders in this payout.");
+      return;
+    }
+    const ids = payout.orders.map((o) => o.id).join(",");
+    window.open(`/print/orders?ids=${ids}&payoutId=${payout.id}`, "_blank");
+  }, []);
+
+  // ── Print payout invoice (PDF via browser print) ─────────────────────
+  const printPayoutInvoice = useCallback((payout: DriverPayoutItem) => {
+    const clearedDate = beirutDateTime(payout.clearedAt || payout.createdAt);
+
+    const printWindow = window.open("", "_blank", "width=900,height=700");
+    if (!printWindow) return;
+
+    const ordersHtml = (payout.orders || [])
+      .map(
+        (o) => `
+        <tr>
+          <td>${o.orderId}</td>
+          <td>${o.customerName}</td>
+          <td>${o.zone?.name || "—"}</td>
+          <td class="text-right">$${(o.amountUsd ?? 0).toFixed(2)}</td>
+          <td class="text-right">${(o.amountLbp ?? 0).toLocaleString()}</td>
+          <td class="text-right">$${(o.collectedUsd ?? 0).toFixed(2)}</td>
+          <td class="text-right">$${(o.driverCommissionUsd ?? 0).toFixed(2)}</td>
+        </tr>`,
+      )
+      .join("");
+
+    printWindow.document.write(/* html */ `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Payout #${payout.sequentialIndex}</title>
+        <style>
+          * { margin:0; padding:0; box-sizing:border-box; }
+          body { font-family: 'Courier New', monospace; padding: 24px; color: #000; background: #fff; }
+          @media print { body { padding: 12px; } }
+          .header { text-align: center; border-bottom: 2px dashed #000; padding-bottom: 12px; margin-bottom: 16px; }
+          .header h2 { font-size: 18px; margin-bottom: 4px; }
+          .header p { font-size: 12px; }
+          .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; margin-bottom: 16px; font-size: 13px; }
+          .summary .label { font-weight: bold; }
+          .badge { display: inline-block; padding: 2px 8px; font-size: 11px; font-weight: bold; border: 1px solid #000; }
+          table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
+          th, td { border: 1px solid #000; padding: 5px 8px; text-align: left; }
+          th { background: #eee; font-weight: bold; }
+          .text-right { text-align: right; }
+          .footer { margin-top: 20px; text-align: center; font-size: 11px; color: #555; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h2>Payout — Batch #${payout.sequentialIndex}</h2>
+          <p>Cleared: ${clearedDate} &mdash; Status: <span class="badge">${payout.status}</span></p>
+        </div>
+        <div class="summary">
+          <div><span class="label">Net Payout:</span> $${payout.netUsd.toFixed(2)}</div>
+          <div><span class="label">Total LBP:</span> ${payout.totalLbp.toLocaleString()}</div>
+          <div><span class="label">Amount Paid:</span> $${payout.amountPaidUsd.toFixed(2)}</div>
+          <div><span class="label">Carried Debt:</span> $${payout.remainingUsd.toFixed(2)}</div>
+          <div><span class="label">Previous Debt:</span> $${payout.previousDebtUsd.toFixed(2)}</div>
+          <div><span class="label">Commission:</span> $${payout.commissionUsd.toFixed(2)}</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Tracking ID</th>
+              <th>Customer</th>
+              <th>Zone</th>
+              <th class="text-right">Amount USD</th>
+              <th class="text-right">Amount LBP</th>
+              <th class="text-right">Collected USD</th>
+              <th class="text-right">Driver Commission</th>
+            </tr>
+          </thead>
+          <tbody>${ordersHtml}</tbody>
+        </table>
+        <div class="footer">Printed on ${new Date().toLocaleString()}</div>
+      </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+  }, []);
+
+  // ── Export single payout to Excel ────────────────────────────────────
+  const exportPayoutToExcel = useCallback((payout: DriverPayoutItem) => {
+    const rows = (payout.orders || []).map((o) => ({
+      "Order ID": o.orderId,
+      Customer: o.customerName,
+      Phone: o.customerPhone || "",
+      Address: o.customerAddress || "",
+      Zone: o.zone?.name || "",
+      "Amount USD": (o.amountUsd ?? 0).toFixed(2),
+      "Amount LBP": (o.amountLbp ?? 0).toLocaleString(),
+      "Collected USD": (o.collectedUsd ?? 0).toFixed(2),
+      "Collected LBP": (o.collectedLbp ?? 0).toLocaleString(),
+      "Driver Commission USD": (o.driverCommissionUsd ?? 0).toFixed(2),
+      "Fin Status": o.financialStatus,
+      Location: o.location,
+      Seller: o.merchant?.merchantName || "—",
+    }));
+    exportToExcel(`Payout_${payout.sequentialIndex}_Orders`, rows);
+  }, []);
+
   // ── Split orders into active / delivered ─────────────────────────────
   const activeOrders = useMemo(
     () =>
-      deliveries.filter(
-        (o) => o.location === "ASSIGNED" || o.location === "WITH_DRIVER",
-      ),
+      deliveries.filter((o) => {
+        const loc = String(o.location).toUpperCase();
+        return loc === "WITH_DRIVER" || loc === "ASSIGNED";
+      }),
     [deliveries],
   );
 
   const deliveredOrders = useMemo(
     () =>
-      deliveries.filter(
-        (o) => o.location === "DELIVERED" && o.financialStatus === "WD",
-      ),
+      deliveries.filter((o) => {
+        const loc = String(o.location).toUpperCase();
+        const fin = String(o.financialStatus).toUpperCase();
+        const isDelivered = loc === "DELIVERED";
+        const isReturned = loc === "RETURNED" || loc === "RETURN";
+        const isUnpaid = !o.driverPayoutId; // Relational: not yet linked to a payout batch
+        // Exclude PS (Paid to Seller) — these orders have been printed in a
+        // merchant statement and should only appear in universal orders /
+        // merchant profile "All Orders" tab, not in the driver delivered tab.
+        const isPaidToSeller = fin === "PS";
+        return (isDelivered || isReturned) && isUnpaid && !isPaidToSeller;
+      }),
     [deliveries],
   );
 
   // ── Payout Receipt (Settlement Calculator) ────────────────────────────
   const payoutReceipt = useMemo(() => {
     const totalUsdCollected = deliveredOrders.reduce(
-      (sum, o) => sum + (o.collectedUsd || 0),
+      (sum, o) => sum + (o.collectedUsd ?? 0),
       0,
     );
     const totalLbpCollected = deliveredOrders.reduce(
-      (sum, o) => sum + (o.collectedLbp || 0),
+      (sum, o) => sum + (o.collectedLbp ?? 0),
       0,
     );
 
     const totalCommissionUsd = deliveredOrders.reduce((sum, o) => {
-      const zoneRate = driver.zoneRates.find((zr) => zr.zoneId === o.zoneId);
-      return sum + (zoneRate?.rate || 0);
+      // Force string conversion to prevent integer/string mismatch failures
+      const orderMerchantId = String(o.merchantId || "");
+      const orderZoneId = String(o.zoneId);
+      // Tier 1: Seller Exception
+      const exception = driver.driverSellerRates?.find(
+        (rate) =>
+          String(rate.merchantId) === orderMerchantId && orderMerchantId !== "",
+      );
+      if (exception) {
+        return sum + Number(exception.rateUsd || 0);
+      }
+      // Tier 2: Zone Rate
+      const zoneRate = driver.zoneRates.find(
+        (zr) => String(zr.zoneId) === orderZoneId,
+      );
+      return sum + Number(zoneRate?.rate || 0);
     }, 0);
 
     const netToOfficeUsd = totalUsdCollected - totalCommissionUsd;
@@ -126,7 +391,7 @@ export default function DriverClient({ driver }: Props) {
       netToOfficeUsd,
       netToOfficeLbp,
     };
-  }, [deliveredOrders, driver.zoneRates]);
+  }, [deliveredOrders, driver.zoneRates, driver.driverSellerRates]);
 
   const activeCount = activeOrders.length;
 
@@ -293,18 +558,26 @@ export default function DriverClient({ driver }: Props) {
 
     setSubmitting("__payout__");
     try {
-      await Promise.all(
-        deliveredOrders.map((order) =>
-          fetch("/api/orders", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id: order.id,
-              financialStatus: "PP",
-            }),
-          }),
-        ),
-      );
+      const orderIds = deliveredOrders.map((o) => o.id);
+      const res = await fetch(`/api/drivers/${driver.id}/payouts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderIds,
+          totalUsd: payoutReceipt.totalUsdCollected,
+          totalLbp: payoutReceipt.totalLbpCollected,
+          commissionUsd: payoutReceipt.totalCommissionUsd,
+          netUsd: payoutReceipt.netToOfficeUsd,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.error("Payout creation failed:", err);
+        alert(err.error || "Failed to create payout. Please try again.");
+        return;
+      }
+
       setDeliveries((prev) => prev.filter((o) => o.financialStatus !== "WD"));
       setPayoutModalOpen(false);
     } finally {
@@ -491,6 +764,16 @@ export default function DriverClient({ driver }: Props) {
           >
             Delivered ({deliveredOrders.length})
           </button>
+          <button
+            onClick={() => setActiveTab("PAYOUTS")}
+            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+              activeTab === "PAYOUTS"
+                ? "bg-violet-500/20 text-violet-300 shadow-[0_0_12px_rgba(139,92,246,0.3)]"
+                : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+            }`}
+          >
+            Payout History
+          </button>
         </div>
       </div>
 
@@ -577,10 +860,10 @@ export default function DriverClient({ driver }: Props) {
                         {/* Amounts */}
                         <div className="flex items-center gap-4 text-sm">
                           <span className="text-green-400 font-mono font-semibold">
-                            ${(order.amountUsd || 0).toFixed(2)}
+                            ${(order.amountUsd ?? 0).toFixed(2)}
                           </span>
                           <span className="text-yellow-400 font-mono font-semibold">
-                            {(order.amountLbp || 0).toLocaleString()} LL
+                            {(order.amountLbp ?? 0).toLocaleString()} LL
                           </span>
                         </div>
                       </div>
@@ -736,10 +1019,10 @@ export default function DriverClient({ driver }: Props) {
                               Collected:
                             </span>
                             <span className="text-green-400 font-mono font-semibold">
-                              ${(order.collectedUsd || 0).toFixed(2)}
+                              ${(order.collectedUsd ?? 0).toFixed(2)}
                             </span>
                             <span className="text-yellow-400 font-mono font-semibold">
-                              {(order.collectedLbp || 0).toLocaleString()} LL
+                              {(order.collectedLbp ?? 0).toLocaleString()} LL
                             </span>
                           </div>
                         </div>
@@ -796,6 +1079,337 @@ export default function DriverClient({ driver }: Props) {
               </>
             )}
           </>
+        )}
+
+        {/* ═══════════════════════════════════════════════════════════════
+            PAYOUT HISTORY TAB
+            ════════════════════════════════════════════════════════════ */}
+        {activeTab === "PAYOUTS" && (
+          <div>
+            {/* ── Filter Ribbon ── */}
+            <div className="bg-[#121824] border border-white/5 rounded-xl p-4 mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+              {/* Status */}
+              <div>
+                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
+                  Status
+                </label>
+                <select
+                  value={payoutStatusFilter}
+                  onChange={(e) => setPayoutStatusFilter(e.target.value)}
+                  className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors appearance-none cursor-pointer"
+                >
+                  <option value="ALL">All</option>
+                  <option value="CLEARED">Cleared</option>
+                  <option value="PAID">Paid</option>
+                  <option value="PENDING">Pending</option>
+                </select>
+              </div>
+
+              {/* Start Date */}
+              <div>
+                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
+                  Start Date
+                </label>
+                <input
+                  type="date"
+                  value={payoutStartDate}
+                  onChange={(e) => setPayoutStartDate(e.target.value)}
+                  className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors [color-scheme:dark]"
+                />
+              </div>
+
+              {/* End Date */}
+              <div>
+                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
+                  End Date
+                </label>
+                <input
+                  type="date"
+                  value={payoutEndDate}
+                  onChange={(e) => setPayoutEndDate(e.target.value)}
+                  className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors [color-scheme:dark]"
+                />
+              </div>
+
+              {/* Sort */}
+              <div>
+                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
+                  Sort by Date
+                </label>
+                <button
+                  onClick={() =>
+                    setPayoutSortOrder((prev) =>
+                      prev === "desc" ? "asc" : "desc",
+                    )
+                  }
+                  className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2 text-sm text-white hover:border-cyan-500/50 transition-colors text-left flex justify-between items-center"
+                >
+                  <span>
+                    {payoutSortOrder === "desc"
+                      ? "↓ Newest First"
+                      : "↑ Oldest First"}
+                  </span>
+                  <span className="text-gray-500 text-xs">↻</span>
+                </button>
+              </div>
+            </div>
+
+            {/* ── Payouts Table ── */}
+            <div className="bg-[#121824] border border-white/5 rounded-xl overflow-hidden shadow-2xl">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-white/[0.03] border-b border-white/10 text-gray-400 text-xs uppercase tracking-wider">
+                      <th className="px-4 py-3 font-semibold">Payout #</th>
+                      <th className="px-4 py-3 font-semibold">Date</th>
+                      <th className="px-4 py-3 font-semibold text-right">
+                        Net USD
+                      </th>
+                      <th className="px-4 py-3 font-semibold text-right">
+                        Amount Paid
+                      </th>
+                      <th className="px-4 py-3 font-semibold text-right">
+                        Carried Debt
+                      </th>
+                      <th className="px-4 py-3 font-semibold text-right">
+                        Orders
+                      </th>
+                      <th className="px-4 py-3 font-semibold">Status</th>
+                      <th className="px-4 py-3 font-semibold text-center">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {payoutLoading ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className="text-center py-12 text-gray-500"
+                        >
+                          Loading payout history...
+                        </td>
+                      </tr>
+                    ) : payoutHistory.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className="text-center py-12 text-gray-500 italic"
+                        >
+                          No payouts found matching the current filters.
+                        </td>
+                      </tr>
+                    ) : (
+                      payoutHistory.map((payout) => {
+                        const isExpanded = expandedPayoutIds.includes(
+                          payout.id,
+                        );
+                        const carriedDebtUsd = payout.remainingUsd ?? 0;
+                        const hasShortPay = carriedDebtUsd > 0.01;
+
+                        return (
+                          <Fragment key={payout.id}>
+                            {/* Main row */}
+                            <tr
+                              onClick={() => togglePayoutExpanded(payout.id)}
+                              className="border-b border-white/5 hover:bg-white/[0.03] transition-colors cursor-pointer group"
+                            >
+                              <td className="px-4 py-3 font-mono text-cyan-400 text-sm">
+                                #{payout.sequentialIndex}
+                              </td>
+                              <td className="px-4 py-3 text-gray-300 text-xs">
+                                {beirutDate(
+                                  payout.clearedAt || payout.createdAt,
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-green-400 text-sm text-right font-mono font-bold">
+                                ${payout.netUsd.toFixed(2)}
+                              </td>
+                              <td className="px-4 py-3 text-emerald-400 text-sm text-right font-mono">
+                                ${payout.amountPaidUsd.toFixed(2)}
+                              </td>
+                              <td
+                                className={`px-4 py-3 text-sm text-right font-mono font-bold ${
+                                  hasShortPay ? "text-red-400" : "text-gray-500"
+                                }`}
+                              >
+                                {hasShortPay
+                                  ? `$${carriedDebtUsd.toFixed(2)}`
+                                  : "$0.00"}
+                              </td>
+                              <td className="px-4 py-3 text-gray-300 text-sm text-right">
+                                {payout.orders.length}
+                              </td>
+                              <td className="px-4 py-3">
+                                <span
+                                  className={`px-2 py-0.5 text-[10px] font-bold rounded border ${
+                                    payout.status === "CLEARED"
+                                      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                      : payout.status === "PAID"
+                                        ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                                        : "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                  }`}
+                                >
+                                  {payout.status}
+                                </span>
+                              </td>
+                              <td
+                                className="px-4 py-3 text-center"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    onClick={() =>
+                                      handleViewPrintPayout(payout)
+                                    }
+                                    disabled={
+                                      !payout.orders ||
+                                      payout.orders.length === 0
+                                    }
+                                    title="View / Print Orders"
+                                    className="px-2.5 py-1 text-[10px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded hover:bg-cyan-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                  >
+                                    🖨 View/Print
+                                  </button>
+                                  <button
+                                    onClick={() => printPayoutInvoice(payout)}
+                                    title="Export PDF"
+                                    className="px-2 py-1 text-[10px] font-bold bg-red-500/10 text-red-400 border border-red-500/30 rounded hover:bg-red-500/20 transition-colors"
+                                  >
+                                    📄 PDF
+                                  </button>
+                                  <button
+                                    onClick={() => exportPayoutToExcel(payout)}
+                                    title="Export to Excel"
+                                    className="px-2 py-1 text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded hover:bg-emerald-500/20 transition-colors"
+                                  >
+                                    📊 Excel
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+
+                            {/* Expanded sub-row: Order details */}
+                            {isExpanded && (
+                              <tr>
+                                <td
+                                  colSpan={8}
+                                  className="bg-[#0a0f1a] border-b border-white/10 px-6 py-5"
+                                >
+                                  <div className="flex justify-between items-center mb-3">
+                                    <h4 className="text-sm font-bold text-white uppercase tracking-wider">
+                                      Itemized Orders — Payout #
+                                      {payout.sequentialIndex}
+                                    </h4>
+                                    <span className="text-xs text-gray-500">
+                                      {payout.orders.length} order
+                                      {payout.orders.length !== 1 ? "s" : ""}
+                                    </span>
+                                  </div>
+
+                                  {payout.orders.length === 0 ? (
+                                    <p className="text-gray-600 text-sm italic">
+                                      No orders associated with this payout.
+                                    </p>
+                                  ) : (
+                                    <div className="overflow-x-auto rounded-lg border border-white/5">
+                                      <table className="w-full text-left border-collapse">
+                                        <thead>
+                                          <tr className="bg-white/[0.02] text-gray-500 text-[11px] uppercase tracking-wider">
+                                            <th className="px-4 py-2 font-semibold">
+                                              Tracking ID
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold">
+                                              Customer
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold">
+                                              Zone
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold">
+                                              Seller
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold text-right">
+                                              Amount USD
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold text-right">
+                                              Amount LBP
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold text-right">
+                                              Collected USD
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold text-right">
+                                              Collected LBP
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold text-right">
+                                              Commission
+                                            </th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {payout.orders.map((order) => (
+                                            <tr
+                                              key={order.id}
+                                              className="border-b border-white/5 text-sm hover:bg-white/[0.02] transition-colors"
+                                            >
+                                              <td className="px-4 py-2 font-mono text-cyan-400">
+                                                {order.orderId}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-300">
+                                                {order.customerName}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-400">
+                                                {order.zone?.name || "—"}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-400">
+                                                {order.merchant?.merchantName ||
+                                                  "—"}
+                                              </td>
+                                              <td className="px-4 py-2 text-green-400 text-right font-mono">
+                                                $
+                                                {(order.amountUsd ?? 0).toFixed(
+                                                  2,
+                                                )}
+                                              </td>
+                                              <td className="px-4 py-2 text-yellow-400 text-right font-mono">
+                                                {(
+                                                  order.amountLbp ?? 0
+                                                ).toLocaleString()}
+                                              </td>
+                                              <td className="px-4 py-2 text-green-400 text-right font-mono">
+                                                $
+                                                {(
+                                                  order.collectedUsd ?? 0
+                                                ).toFixed(2)}
+                                              </td>
+                                              <td className="px-4 py-2 text-yellow-400 text-right font-mono">
+                                                {(
+                                                  order.collectedLbp ?? 0
+                                                ).toLocaleString()}
+                                              </td>
+                                              <td className="px-4 py-2 text-cyan-400 text-right font-mono">
+                                                $
+                                                {(
+                                                  order.driverCommissionUsd ?? 0
+                                                ).toFixed(2)}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         )}
       </main>
 
@@ -957,88 +1571,16 @@ export default function DriverClient({ driver }: Props) {
           PAYOUT SETTLEMENT MODAL
           ════════════════════════════════════════════════════════════════ */}
       {payoutModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="bg-[#0B0F17] w-full max-w-md rounded-2xl border border-white/10 shadow-2xl overflow-hidden flex flex-col">
-            <div className="p-6">
-              <h2 className="text-xl font-bold text-white mb-1">
-                Confirm Payout Batch
-              </h2>
-              <p className="text-sm text-gray-400 mb-6">
-                You are about to create a payout for{" "}
-                <span className="font-bold text-cyan-400">
-                  {deliveredOrders.length}
-                </span>{" "}
-                delivered orders.
-              </p>
-
-              {/* Inner Ledger Box */}
-              <div className="bg-[#121824] rounded-xl border border-white/5 p-5 flex flex-col gap-3 font-mono text-sm">
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-400 font-sans">Total USD</span>
-                  <span className="text-green-400 font-bold">
-                    ${payoutReceipt.totalUsdCollected.toFixed(2)}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-400 font-sans">Total LBP</span>
-                  <span className="text-yellow-400 font-bold">
-                    {payoutReceipt.totalLbpCollected.toLocaleString()} LL
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-400 font-sans">Order Count</span>
-                  <span className="text-white font-bold">
-                    {deliveredOrders.length}
-                  </span>
-                </div>
-
-                <hr className="border-white/10 my-1" />
-
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-400 font-sans">
-                    Commission (zone-based)
-                  </span>
-                  <span className="text-red-400 font-bold">
-                    -${payoutReceipt.totalCommissionUsd.toFixed(2)}
-                  </span>
-                </div>
-
-                <hr className="border-white/10 my-1" />
-
-                <div className="flex justify-between items-center">
-                  <span className="text-white font-sans font-bold">
-                    Net Payout
-                  </span>
-                  <span className="text-cyan-400 font-bold text-lg">
-                    ${payoutReceipt.netToOfficeUsd.toFixed(2)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Action Buttons */}
-            <div className="p-6 pt-0 flex gap-4 mt-2">
-              <button
-                onClick={() => setPayoutModalOpen(false)}
-                disabled={submitting === "__payout__"}
-                className="flex-1 py-3 px-4 rounded-xl border border-white/10 text-gray-300 font-bold text-sm hover:bg-white/5 transition-colors disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmPayout}
-                disabled={submitting === "__payout__"}
-                className="flex-1 py-3 px-4 rounded-xl bg-cyan-500 text-white font-bold text-sm shadow-[0_0_15px_rgba(6,182,212,0.4)] hover:bg-cyan-400 transition-all disabled:opacity-50"
-              >
-                {submitting === "__payout__"
-                  ? "Submitting…"
-                  : "Confirm & Submit"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmPayoutModal
+          orders={deliveredOrders}
+          driverSellerRates={driver.driverSellerRates}
+          driverZoneRates={driver.zoneRates}
+          totalUsd={payoutReceipt.totalUsdCollected}
+          totalLbp={payoutReceipt.totalLbpCollected}
+          onConfirm={handleConfirmPayout}
+          onCancel={() => setPayoutModalOpen(false)}
+          submitting={submitting === "__payout__"}
+        />
       )}
 
       {/* ── Settings Modal ──────────────────────────────────────────────── */}

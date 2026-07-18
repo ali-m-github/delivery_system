@@ -14,14 +14,22 @@ interface Order {
   location: string;
   amountUsd: number;
   amountLbp: number;
-  merchant: { ownerFirstName: string; ownerLastName: string; merchantName: string } | null;
+  merchant: {
+    ownerFirstName: string;
+    ownerLastName: string;
+    merchantName: string;
+  } | null;
   createdAt: string;
 }
 
 // ─── Helper ────────────────────────────────────────────────────────────────────
 function shortDate(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "2-digit" });
+  return d.toLocaleDateString("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "2-digit",
+  });
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -56,26 +64,34 @@ export default function PrintPage() {
     if (orders.length > 0 && searchParams.get("pdf") === "true") {
       import("html2pdf.js").then((html2pdf) => {
         const element = document.getElementById("print-container");
-        const opt = { margin: 0.5, filename: "Orders_Export.pdf", image: { type: "jpeg", quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: "in", format: "letter", orientation: "landscape" } };
-        html2pdf.default().set(opt).from(element).save().then(() => window.close());
+        if (!element) return;
+        const opt = {
+          margin: 0.5,
+          filename: "Orders_Export.pdf",
+          image: { type: "jpeg" as const, quality: 0.98 },
+          html2canvas: { scale: 2 },
+          jsPDF: {
+            unit: "in" as const,
+            format: "letter" as const,
+            orientation: "landscape" as const,
+          },
+        };
+        html2pdf
+          .default()
+          .set(opt)
+          .from(element)
+          .save()
+          .then(() => window.close());
       });
     }
   }, [orders, searchParams]);
 
   if (loading) {
-    return (
-      <div className="bg-white text-black p-8">
-        Loading orders...
-      </div>
-    );
+    return <div className="bg-white text-black p-8">Loading orders...</div>;
   }
 
   if (orders.length === 0) {
-    return (
-      <div className="bg-white text-black p-8">
-        No orders selected.
-      </div>
-    );
+    return <div className="bg-white text-black p-8">No orders selected.</div>;
   }
 
   const sellerName = (o: Order) =>
@@ -121,16 +137,36 @@ export default function PrintPage() {
         <tbody>
           {orders.map((o) => (
             <tr key={o.id}>
-              <td className="border border-gray-800 p-2 text-center text-black">{o.orderId}</td>
-              <td className="border border-gray-800 p-2 text-center text-black">{shortDate(o.createdAt)}</td>
-              <td className="border border-gray-800 p-2 text-center text-black">{sellerName(o)}</td>
-              <td className="border border-gray-800 p-2 text-center text-black">{o.customerName}</td>
-              <td className="border border-gray-800 p-2 text-center text-black">{o.customerPhone}</td>
-              <td className="border border-gray-800 p-2 text-center text-black">{o.customerAddress}</td>
-              <td className="border border-gray-800 p-2 text-center text-black">{o.city || "—"}</td>
-              <td className="border border-gray-800 p-2 text-center text-black">${o.amountUsd.toFixed(2)}</td>
-              <td className="border border-gray-800 p-2 text-center text-black">{o.amountLbp.toLocaleString()}</td>
-              <td className="border border-gray-800 p-2 text-center text-black">{o.location}</td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                {o.orderId}
+              </td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                {shortDate(o.createdAt)}
+              </td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                {sellerName(o)}
+              </td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                {o.customerName}
+              </td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                {o.customerPhone}
+              </td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                {o.customerAddress}
+              </td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                {o.city || "—"}
+              </td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                ${o.amountUsd.toFixed(2)}
+              </td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                {o.amountLbp.toLocaleString()}
+              </td>
+              <td className="border border-gray-800 p-2 text-center text-black">
+                {o.location}
+              </td>
             </tr>
           ))}
         </tbody>

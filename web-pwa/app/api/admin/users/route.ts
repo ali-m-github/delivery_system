@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-import { hashPassword } from '@/helpers/auth';
+import { NextResponse } from "next/server";
+import { PrismaClient } from "@prisma/client";
+import { hashPassword } from "@/helpers/auth";
 
 const prisma = new PrismaClient();
 
@@ -15,12 +15,15 @@ export async function GET() {
         role: true,
         permissions: true,
       },
-      orderBy: { username: 'asc' },
+      orderBy: { username: "asc" },
     });
     return NextResponse.json(users, { status: 200 });
   } catch (error) {
-    console.error('GET /api/admin/users Error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    console.error("GET /api/admin/users Error:", error);
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }
 
@@ -33,15 +36,29 @@ export async function POST(request: Request) {
     // Validate required fields
     if (!username || !email || !password || !role) {
       return NextResponse.json(
-        { error: 'Missing required fields: username, email, password, role' },
-        { status: 400 }
+        { error: "Missing required fields: username, email, password, role" },
+        { status: 400 },
       );
     }
 
     // Check for existing user by email
     const existingUser = await prisma.user.findUnique({ where: { email } });
     if (existingUser) {
-      return NextResponse.json({ error: 'Email already registered' }, { status: 409 });
+      return NextResponse.json(
+        { error: "Email already registered" },
+        { status: 409 },
+      );
+    }
+
+    // Check for existing user by username
+    const existingUsername = await prisma.user.findUnique({
+      where: { username },
+    });
+    if (existingUsername) {
+      return NextResponse.json(
+        { error: "Username already taken" },
+        { status: 409 },
+      );
     }
 
     // Hash the password
@@ -67,7 +84,10 @@ export async function POST(request: Request) {
 
     return NextResponse.json(user, { status: 201 });
   } catch (error) {
-    console.error('POST /api/admin/users Error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    console.error("POST /api/admin/users Error:", error);
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }

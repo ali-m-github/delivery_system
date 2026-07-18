@@ -67,7 +67,7 @@ export default async function DashboardPage() {
   });
 
   // ── Derived values ──────────────────────────────────────────────────────
-  const grossRevenueUsd = financialData._sum.collectedUsd || 0;
+  const grossRevenueUsd = financialData._sum.collectedUsd ?? 0;
 
   // ── Render ──────────────────────────────────────────────────────────────
   return (

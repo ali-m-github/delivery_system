@@ -53,24 +53,24 @@ export default function MerchantProfilePage() {
   );
 
   const activeVolumeUsd = useMemo(
-    () => activeOrders.reduce((s: number, o: any) => s + (o.amountUsd || 0), 0),
+    () => activeOrders.reduce((s: number, o: any) => s + (o.amountUsd ?? 0), 0),
     [activeOrders],
   );
 
   const activeVolumeLbp = useMemo(
-    () => activeOrders.reduce((s: number, o: any) => s + (o.amountLbp || 0), 0),
+    () => activeOrders.reduce((s: number, o: any) => s + (o.amountLbp ?? 0), 0),
     [activeOrders],
   );
 
   const deliveredVolumeUsd = useMemo(
     () =>
-      deliveredOrders.reduce((s: number, o: any) => s + (o.amountUsd || 0), 0),
+      deliveredOrders.reduce((s: number, o: any) => s + (o.amountUsd ?? 0), 0),
     [deliveredOrders],
   );
 
   const deliveredVolumeLbp = useMemo(
     () =>
-      deliveredOrders.reduce((s: number, o: any) => s + (o.amountLbp || 0), 0),
+      deliveredOrders.reduce((s: number, o: any) => s + (o.amountLbp ?? 0), 0),
     [deliveredOrders],
   );
 
@@ -280,10 +280,10 @@ export default function MerchantProfilePage() {
                         <FinancialBadge status={order.financialStatus} />
                       </td>
                       <td className="px-5 py-3.5 text-right text-green-400 font-mono text-sm">
-                        ${(order.amountUsd || 0).toFixed(2)}
+                        ${(order.amountUsd ?? 0).toFixed(2)}
                       </td>
                       <td className="px-5 py-3.5 text-right text-yellow-400 font-mono text-sm">
-                        {(order.amountLbp || 0).toLocaleString()} LL
+                        {(order.amountLbp ?? 0).toLocaleString()} LL
                       </td>
                     </tr>
                   ))

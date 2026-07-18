@@ -50,7 +50,6 @@ export async function POST(request: Request) {
           customerName: originalOrder.customerName,
           customerPhone: originalOrder.customerPhone,
           customerAddress: originalOrder.customerAddress,
-          city: originalOrder.city,
           zoneId: originalOrder.zoneId,
           amountUsd: -netPaidUsd, // Negative value to deduct from wrong seller's balance
           merchantId: originalOrder.merchantId,

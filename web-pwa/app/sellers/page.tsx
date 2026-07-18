@@ -16,15 +16,17 @@ export default function SellersPage() {
     phone: "",
     address: "",
     socialMedia: "",
+    isCashSeller: false,
+    defaultSellerRate: "",
+    defaultCompanyRate: "",
   });
   const [submitting, setSubmitting] = useState(false);
 
-  // Rates Modal State
+  // Zone Overrides Modal State
   const [isRatesModalOpen, setIsRatesModalOpen] = useState(false);
   const [selectedSeller, setSelectedSeller] = useState<any | null>(null);
+  // stagedRates now includes: { zone, rateUsd, rateLbp, overridden }
   const [stagedRates, setStagedRates] = useState<any[]>([]);
-  const [zoneRangeInput, setZoneRangeInput] = useState("");
-  const [rateInput, setRateInput] = useState("");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -61,6 +63,13 @@ export default function SellersPage() {
           phone: newSeller.phone.trim() || null,
           address: newSeller.address?.trim() || null,
           socialMedia: newSeller.socialMedia?.trim() || null,
+          isCashSeller: newSeller.isCashSeller,
+          defaultSellerRate: newSeller.isCashSeller
+            ? parseFloat(newSeller.defaultSellerRate) || null
+            : null,
+          defaultCompanyRate: newSeller.isCashSeller
+            ? parseFloat(newSeller.defaultCompanyRate) || null
+            : null,
         }),
       });
       if (res.ok) {
@@ -70,6 +79,9 @@ export default function SellersPage() {
           phone: "",
           address: "",
           socialMedia: "",
+          isCashSeller: false,
+          defaultSellerRate: "",
+          defaultCompanyRate: "",
         });
         setIsAddModalOpen(false);
         await fetchData();
@@ -85,60 +97,26 @@ export default function SellersPage() {
 
   const handleOpenRates = (seller: any) => {
     setSelectedSeller(seller);
-    const existing = (seller.zoneRates || [])
-      .map((zr: any) => ({
-        zone: zones.find((z) => z.id === zr.zoneId),
-        rate: zr.rate,
-      }))
-      .filter((sr: any) => sr.zone);
-    setStagedRates(existing);
+    // Build override map from existing merchant zone rates
+    const overrideMap = new Map();
+    (seller.zoneRates || []).forEach((zr: any) => {
+      overrideMap.set(zr.zoneId, {
+        rateUsd: zr.rate,
+        rateLbp: zr.rateLbp || 0,
+      });
+    });
+    // Build staged rates from ALL zones, marking which have overrides
+    const allRates = zones.map((z: any) => {
+      const existing = overrideMap.get(z.id);
+      return {
+        zone: z,
+        rateUsd: existing ? existing.rateUsd : z.basePriceUsd,
+        rateLbp: existing ? existing.rateLbp : z.basePriceLbp,
+        overridden: !!existing,
+      };
+    });
+    setStagedRates(allRates);
     setIsRatesModalOpen(true);
-  };
-
-  const handleAddBatchRates = () => {
-    if (!zoneRangeInput || !rateInput) return;
-    const rVal = parseFloat(rateInput);
-    if (isNaN(rVal)) return;
-
-    let targetNames: string[] = [];
-    const parts = zoneRangeInput.split(",");
-
-    parts.forEach((p) => {
-      const trimmed = p.trim();
-      if (trimmed.includes("-")) {
-        const [startStr, endStr] = trimmed.split("-");
-        const start = parseInt(startStr.replace(/\D/g, ""));
-        const end = parseInt(endStr.replace(/\D/g, ""));
-        if (!isNaN(start) && !isNaN(end) && start <= end) {
-          for (let i = start; i <= end; i++) {
-            targetNames.push(i.toString());
-            targetNames.push(`Z${i}`);
-          }
-        }
-      } else {
-        targetNames.push(trimmed);
-        targetNames.push(`Z${trimmed}`);
-      }
-    });
-
-    const matched = zones.filter(
-      (z) =>
-        targetNames.includes(z.name) ||
-        targetNames.includes(z.name.toUpperCase()),
-    );
-
-    if (matched.length === 0)
-      return alert(`No zones found matching: ${zoneRangeInput}`);
-
-    const updated = [...stagedRates];
-    matched.forEach((mz) => {
-      const idx = updated.findIndex((sr) => sr.zone.id === mz.id);
-      if (idx > -1) updated[idx].rate = rVal;
-      else updated.push({ zone: mz, rate: rVal });
-    });
-
-    setStagedRates(updated);
-    setZoneRangeInput("");
   };
 
   const handleDeleteSeller = async (id: string, name: string) => {
@@ -160,11 +138,54 @@ export default function SellersPage() {
     }
   };
 
+  const handleUpdateRate = (
+    index: number,
+    field: "rateUsd" | "rateLbp",
+    value: string,
+  ) => {
+    const updated = [...stagedRates];
+    const numVal = value === "" ? 0 : parseFloat(value);
+    updated[index] = {
+      ...updated[index],
+      [field]: isNaN(numVal) ? 0 : numVal,
+      overridden: true,
+    };
+    setStagedRates(updated);
+  };
+
+  const handleResetRate = (index: number) => {
+    const z = stagedRates[index].zone;
+    const updated = [...stagedRates];
+    updated[index] = {
+      ...updated[index],
+      rateUsd: z.basePriceUsd,
+      rateLbp: z.basePriceLbp,
+      overridden: false,
+    };
+    setStagedRates(updated);
+  };
+
+  const handleApplyUniversal = () => {
+    const updated = stagedRates.map((sr: any) => ({
+      ...sr,
+      rateUsd: sr.zone.basePriceUsd,
+      rateLbp: sr.zone.basePriceLbp,
+      overridden: false,
+    }));
+    setStagedRates(updated);
+  };
+
   const handleSaveRates = async () => {
     try {
       const payload = {
         merchantId: selectedSeller.id,
-        rates: stagedRates.map((sr) => ({ zoneId: sr.zone.id, rate: sr.rate })),
+        rates: stagedRates
+          .filter((sr: any) => sr.overridden)
+          .map((sr: any) => ({
+            zoneId: sr.zone.id,
+            rate: sr.rateUsd,
+            rateLbp: sr.rateLbp,
+          })),
       };
       const res = await fetch("/api/sellers", {
         method: "PATCH",
@@ -173,7 +194,7 @@ export default function SellersPage() {
       });
       if (res.ok) {
         setIsRatesModalOpen(false);
-        fetchData(); // Refreshes the board to show updated data
+        fetchData();
       } else {
         alert("Failed to save rates");
       }
@@ -258,7 +279,7 @@ export default function SellersPage() {
                           onClick={() => handleOpenRates(seller)}
                           className="bg-purple-600/20 text-purple-400 hover:bg-purple-600/40 border border-purple-500/30 px-3 py-1.5 rounded transition-colors text-xs font-bold mr-2"
                         >
-                          Edit Rates
+                          Zone Overrides
                         </button>
                         <button
                           onClick={() =>
@@ -374,6 +395,80 @@ export default function SellersPage() {
                     className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors"
                   />
                 </div>
+
+                {/* ── Cash Seller Toggle ── */}
+                <div className="border-t border-gray-800 pt-4 mt-2">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newSeller.isCashSeller}
+                      onChange={(e) =>
+                        setNewSeller({
+                          ...newSeller,
+                          isCashSeller: e.target.checked,
+                        })
+                      }
+                      className="rounded border-gray-700 bg-[#111318] text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-4 h-4"
+                    />
+                    <span className="text-xs font-medium text-gray-300">
+                      Enable Prepaid (Cash Seller) Factoring
+                    </span>
+                  </label>
+                  <p className="text-[10px] text-gray-600 mt-1 ml-7">
+                    When enabled, you can advance cash to this seller before
+                    delivery, deducting a per-order fee.
+                  </p>
+                </div>
+
+                {/* ── Conditional Rate Inputs ── */}
+                {newSeller.isCashSeller && (
+                  <div className="grid grid-cols-2 gap-3 mt-3 ml-7 p-3 bg-cyan-500/5 border border-cyan-500/10 rounded-lg">
+                    <div>
+                      <label className="block text-[10px] font-medium text-gray-400 mb-1">
+                        Default Seller Rate ($USD)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="$4.00"
+                        value={newSeller.defaultSellerRate}
+                        onChange={(e) =>
+                          setNewSeller({
+                            ...newSeller,
+                            defaultSellerRate: e.target.value,
+                          })
+                        }
+                        className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors text-sm"
+                      />
+                      <p className="text-[10px] text-gray-600 mt-1">
+                        Fee charged to seller per order
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-medium text-gray-400 mb-1">
+                        Default Company Cost Rate ($USD)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="$3.00"
+                        value={newSeller.defaultCompanyRate}
+                        onChange={(e) =>
+                          setNewSeller({
+                            ...newSeller,
+                            defaultCompanyRate: e.target.value,
+                          })
+                        }
+                        className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors text-sm"
+                      />
+                      <p className="text-[10px] text-gray-600 mt-1">
+                        Baseline delivery cost / target margin
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="flex justify-end space-x-3 mt-8">
                 <button
@@ -396,91 +491,171 @@ export default function SellersPage() {
         </div>
       )}
 
-      {/* SMART RATES MODAL */}
+      {/* ZONE OVERRIDES MODAL */}
       {isRatesModalOpen && selectedSeller && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] relative z-10">
+          <div className="bg-slate-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh] relative z-10">
             <div className="p-6 border-b border-gray-800 bg-slate-950 flex justify-between items-center shrink-0">
               <div>
                 <h2 className="text-xl font-bold text-white">
-                  Zone Rates: {selectedSeller.merchantName}
+                  Zone Overrides: {selectedSeller.merchantName}
                 </h2>
-                <p className="text-sm text-gray-400">
-                  Batch add rates using ranges (e.g., 2-9) or specific zones.
+                <p className="text-sm text-gray-400 mt-1">
+                  Override universal zone rates for this seller. Edit USD/LBP
+                  values to set custom rates.
                 </p>
+              </div>
+              <div className="flex gap-2">
+                <span className="inline-flex items-center gap-1.5 text-xs text-gray-400">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                  Overridden
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-xs text-gray-400">
+                  <span className="w-2.5 h-2.5 rounded-full bg-gray-600" />
+                  Default (Universal)
+                </span>
               </div>
             </div>
 
             <div className="p-6 flex-1 overflow-y-auto">
-              <div className="flex gap-3 items-end bg-slate-800/50 p-4 rounded-lg border border-gray-700 mb-6">
-                <div className="flex-1">
-                  <label className="block text-xs font-bold text-gray-400 uppercase mb-2">
-                    Zone(s) or Range
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g., 1, 2-9, Z14"
-                    value={zoneRangeInput}
-                    onChange={(e) => setZoneRangeInput(e.target.value)}
-                    className="w-full bg-slate-950 border border-gray-600 rounded p-2.5 text-white focus:border-cyan-500 focus:outline-none placeholder-gray-600"
-                  />
-                </div>
-                <div className="w-32">
-                  <label className="block text-xs font-bold text-gray-400 uppercase mb-2">
-                    Rate ($)
-                  </label>
-                  <input
-                    type="number"
-                    placeholder="0.00"
-                    value={rateInput}
-                    onChange={(e) => setRateInput(e.target.value)}
-                    className="w-full bg-slate-950 border border-gray-600 rounded p-2.5 text-white focus:border-cyan-500 focus:outline-none"
-                  />
-                </div>
-                <button
-                  onClick={handleAddBatchRates}
-                  className="bg-cyan-700 hover:bg-cyan-600 text-white font-bold py-2.5 px-6 rounded transition-colors h-[46px]"
-                >
-                  Add
-                </button>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-900 z-10">
+                    <tr className="border-b border-gray-700 text-xs text-gray-400 uppercase tracking-wider">
+                      <th className="py-3 px-3 text-left font-medium">Zone</th>
+                      <th className="py-3 px-3 text-center font-medium">
+                        Universal USD
+                      </th>
+                      <th className="py-3 px-3 text-center font-medium">
+                        Universal LBP
+                      </th>
+                      <th className="py-3 px-3 text-center font-medium">
+                        Seller USD
+                      </th>
+                      <th className="py-3 px-3 text-center font-medium">
+                        Seller LBP
+                      </th>
+                      <th className="py-3 px-3 text-center font-medium">
+                        Status
+                      </th>
+                      <th className="py-3 px-3 text-center font-medium">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800">
+                    {stagedRates.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          className="p-8 text-center text-gray-500"
+                        >
+                          No zones configured yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      stagedRates.map((sr: any, index: number) => (
+                        <tr
+                          key={sr.zone.id}
+                          className={`hover:bg-slate-800/30 transition-colors ${sr.overridden ? "bg-emerald-500/5" : ""}`}
+                        >
+                          {/* Zone Name */}
+                          <td className="py-3 px-3 font-semibold text-white">
+                            {sr.zone.name}
+                          </td>
+
+                          {/* Universal USD */}
+                          <td className="py-3 px-3 text-center text-gray-400 font-mono text-xs">
+                            ${sr.zone.basePriceUsd?.toFixed(2) ?? "0.00"}
+                          </td>
+
+                          {/* Universal LBP */}
+                          <td className="py-3 px-3 text-center text-gray-400 font-mono text-xs">
+                            {(sr.zone.basePriceLbp ?? 0).toLocaleString()}
+                          </td>
+
+                          {/* Seller USD - editable */}
+                          <td className="py-3 px-3">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={sr.rateUsd ?? ""}
+                              onChange={(e) =>
+                                handleUpdateRate(
+                                  index,
+                                  "rateUsd",
+                                  e.target.value,
+                                )
+                              }
+                              className="w-24 mx-auto block bg-slate-950 border border-gray-700 rounded px-2 py-1 text-center text-white font-mono text-sm focus:border-cyan-500 focus:outline-none"
+                            />
+                          </td>
+
+                          {/* Seller LBP - editable */}
+                          <td className="py-3 px-3">
+                            <input
+                              type="number"
+                              step="1"
+                              min="0"
+                              value={sr.rateLbp ?? ""}
+                              onChange={(e) =>
+                                handleUpdateRate(
+                                  index,
+                                  "rateLbp",
+                                  e.target.value,
+                                )
+                              }
+                              className="w-28 mx-auto block bg-slate-950 border border-gray-700 rounded px-2 py-1 text-center text-white font-mono text-sm focus:border-cyan-500 focus:outline-none"
+                            />
+                          </td>
+
+                          {/* Status Badge */}
+                          <td className="py-3 px-3 text-center">
+                            {sr.overridden ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                Custom
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-700/50 text-gray-500">
+                                <span className="w-1.5 h-1.5 rounded-full bg-gray-500" />
+                                Default
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Actions */}
+                          <td className="py-3 px-3 text-center">
+                            {sr.overridden && (
+                              <button
+                                onClick={() => handleResetRate(index)}
+                                className="text-xs text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 px-2 py-1 rounded transition-colors"
+                                title="Reset to universal rate"
+                              >
+                                Reset
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
               </div>
 
-              <h3 className="text-sm font-bold text-gray-400 uppercase mb-3 border-b border-gray-800 pb-2">
-                Configured Rates ({stagedRates.length})
-              </h3>
-              {stagedRates.length === 0 ? (
-                <p className="text-gray-500 text-sm text-center py-8">
-                  No rates configured yet. Use the batch tool above.
-                </p>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  {stagedRates.map((sr, index) => (
-                    <div
-                      key={index}
-                      className="flex justify-between items-center bg-slate-950 border border-gray-800 rounded p-3"
-                    >
-                      <span className="font-bold text-cyan-400">
-                        {sr.zone.name}
-                      </span>
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono text-gray-300">
-                          ${sr.rate.toFixed(2)}
-                        </span>
-                        <button
-                          onClick={() =>
-                            setStagedRates(
-                              stagedRates.filter((_, i) => i !== index),
-                            )
-                          }
-                          className="text-red-500 hover:text-red-400 font-bold"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
+                <span>
+                  {stagedRates.filter((s: any) => s.overridden).length} of{" "}
+                  {stagedRates.length} zones overridden
+                </span>
+                <button
+                  onClick={handleApplyUniversal}
+                  className="text-cyan-400 hover:text-cyan-300 transition-colors"
+                >
+                  Apply Universal Rates to All
+                </button>
+              </div>
             </div>
 
             <div className="p-6 border-t border-gray-800 bg-slate-950 flex justify-end space-x-3 shrink-0">
@@ -494,7 +669,7 @@ export default function SellersPage() {
                 onClick={handleSaveRates}
                 className="bg-green-600 hover:bg-green-500 text-white px-8 py-2.5 rounded font-bold transition-colors shadow-lg shadow-green-900/20"
               >
-                Save All Rates
+                Save Overrides
               </button>
             </div>
           </div>

@@ -1,10 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -34,12 +32,13 @@ export default function LoginPage() {
 
       const data = await res.json();
 
+      // Hard navigation to force root layout remount and auth state re-read
       if (data.role === "DRIVER") {
-        router.push("/driver");
+        window.location.href = "/driver";
       } else if (data.role === "MERCHANT") {
-        router.push("/merchant");
+        window.location.href = "/merchant";
       } else {
-        router.push("/orders"); // Default Admin route
+        window.location.href = "/orders"; // Default Admin route
       }
       setLoading(false);
     } catch (err: unknown) {

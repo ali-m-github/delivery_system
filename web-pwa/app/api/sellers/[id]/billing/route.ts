@@ -23,10 +23,10 @@ export async function GET(
     let totalFeesUsd = 0;
 
     pendingOrders.forEach((order) => {
-      totalCollectedUsd += order.collectedUsd || 0;
-      totalCollectedLbp += order.collectedLbp || 0;
+      totalCollectedUsd += order.collectedUsd ?? 0;
+      totalCollectedLbp += order.collectedLbp ?? 0;
       // Subtracting base delivery fees (amountUsd)
-      totalFeesUsd += order.amountUsd || 0;
+      totalFeesUsd += order.amountUsd ?? 0;
     });
 
     return NextResponse.json(

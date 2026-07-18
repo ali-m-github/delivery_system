@@ -37,6 +37,7 @@ enum FinancialStatus {
   UD
   PAID
   PENDING
+  WD
   WO
   PS
   PP
@@ -57,7 +58,8 @@ model User {
   driverProfile DriverProfile?
   merchant      Merchant?
 
-  ordersCreated Order[] @relation("EmployeeOrders")
+  ordersCreated          Order[]                  @relation("EmployeeOrders")
+  driverCashSellerRates  DriverCashSellerRate[]
 }
 
 model Merchant {
@@ -81,8 +83,33 @@ model Merchant {
   balance Float            @default(0)
   payouts MerchantPayout[]
 
+  isCashSeller          Boolean                @default(false)
+  defaultSellerRate     Float?                 // e.g., 4.00 (Fee charged to seller per order)
+  defaultCompanyRate    Float?                 // e.g., 3.00 (Internal baseline cost/target margin)
+  driverRates           DriverCashSellerRate[]
+  driverSellerRates     DriverSellerRate[]
+  cashPayoutBatches     CashPayoutBatch[]
+
+  // Saved Google Sheets import template mapping
+  sheetImportConfig Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model DriverSellerRate {
+  id         Int      @id @default(autoincrement())
+  driverId   String
+  merchantId String
+  rateUsd    Float    @default(0)
+  rateLbp    Float    @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  driver   DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  merchant Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, merchantId])
 }
 
 model MerchantPayout {
@@ -109,6 +136,45 @@ model MerchantPayout {
   createdAt DateTime @default(now())
 }
 
+model DriverCashSellerRate {
+  id         Int      @id @default(autoincrement())
+  driverId   String
+  driver     User     @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  rateUsd    Float
+
+  @@unique([driverId, merchantId])
+}
+
+model CashPayoutBatch {
+  id              Int      @id @default(autoincrement())
+  merchantId      String
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  batchReference  String   @unique
+  grossAdvance    Float    // Total COD minus seller shipping fees advanced
+  deductedReturns Float    @default(0) // Value of past returned orders subtracted from this payout
+  netPaid         Float    // grossAdvance minus deductedReturns
+  companyProfit   Float    @default(0) // Realized profit as orders are delivered
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  orders          Order[]           @relation("OrderCashBatch")
+  resolvedReturns Order[]           @relation("OrderReturnDeductionBatch")
+  adjustments     PayoutAdjustment[]
+}
+
+model PayoutAdjustment {
+  id          Int      @id @default(autoincrement())
+  batchId     Int
+  description String
+  amountUsd   Float    @default(0)
+  amountLbp   Float    @default(0)
+  createdAt   DateTime @default(now())
+
+  batch       CashPayoutBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+}
+
 model MerchantZoneRate {
   id         String   @id @default(uuid())
   merchantId String
@@ -133,9 +199,14 @@ model DriverProfile {
   isAvailable   Boolean       @default(false)
   photoUrl      String?
 
-  zoneRates  DriverZoneRate[]
-  payouts    DriverPayout[]
-  deliveries Order[]          @relation("DriverOrders")
+  zoneRates         DriverZoneRate[]
+  driverSellerRates DriverSellerRate[]
+  payouts           DriverPayout[]
+  deliveries        Order[]          @relation("DriverOrders")
+
+  // Rolling debt carried over from partial settlements
+  carriedDebtUsd Float @default(0)
+  carriedDebtLbp Float @default(0)
 }
 
 model Order {
@@ -184,6 +255,17 @@ model Order {
   // FIX 5: Locks the order to a specific Merchant Payout Statement
   merchantPayoutId String?
   merchantPayout   MerchantPayout? @relation(fields: [merchantPayoutId], references: [id])
+
+  cashPayoutBatchId      Int?
+  cashPayoutBatch        CashPayoutBatch? @relation("OrderCashBatch", fields: [cashPayoutBatchId], references: [id], onDelete: SetNull)
+
+  cashPayoutExcluded     Boolean @default(false) // When true, order is excluded from advance payout eligibility
+
+  returnDeductionBatchId Int?
+  returnDeductionBatch   CashPayoutBatch? @relation("OrderReturnDeductionBatch", fields: [returnDeductionBatchId], references: [id], onDelete: SetNull)
+
+  waybillUrl       String?
+
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   dispatchedAt     DateTime?
@@ -219,11 +301,20 @@ model DriverPayout {
 
   status          String @default("PENDING")
   sequentialIndex Int    @default(1)
+  payoutReference String? // Human-readable ID like D001-001
   totalUsd        Float  @default(0)
   totalLbp        Float  @default(0)
   commissionUsd   Float  @default(0)
   netUsd          Float  @default(0)
   totalCollected  Float  @default(0)
+
+  // Partial settlement / debt carryover
+  previousDebtUsd Float @default(0)
+  previousDebtLbp Float @default(0)
+  amountPaidUsd   Float @default(0)
+  amountPaidLbp   Float @default(0)
+  remainingUsd    Float @default(0)
+  remainingLbp    Float @default(0)
 
   orders    Order[]
   createdAt DateTime  @default(now())
@@ -243,4 +334,31 @@ model OrderHistory {
   user   User   @relation(fields: [userId], references: [id])
 
   createdAt DateTime @default(now())
+}
+
+// ==========================================
+// Treasury / Cash Management
+// ==========================================
+
+model TreasuryBox {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  isPositive  Boolean  @default(true) // true = Asset/Income (Main), false = Liability/Expense (Sellers)
+  balanceUsd  Float    @default(0)
+  balanceLbp  Float    @default(0)
+  transactions TreasuryTransaction[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model TreasuryTransaction {
+  id          String   @id @default(cuid())
+  boxId       String
+  box         TreasuryBox @relation(fields: [boxId], references: [id], onDelete: Cascade)
+  type        String   // "IN" or "OUT"
+  amountUsd   Float    @default(0)
+  amountLbp   Float    @default(0)
+  description String?
+  referenceId String?  // ID of the DriverPayout
+  createdAt   DateTime @default(now())
 }

@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useMemo, useRef, Suspense } from "react";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import SharedOrderTable, {
   formatDDMMYYYY,
 } from "@/components/SharedOrderTable";
+import GlobalSheetImportModal from "@/components/orders/GlobalSheetImportModal";
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Zone {
   id: string;
@@ -43,6 +44,7 @@ interface Order {
     driverId: string;
     userId: string;
   } | null;
+  waybillUrl?: string | null;
   isArchived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -66,6 +68,7 @@ const LOCATION_LABELS: Record<string, string> = {
   DELIVERED: "Delivered",
   RETURN: "Returned",
   Re: "Returned",
+  RTS: "Returned to Seller",
 };
 
 const LOCATION_COLORS: Record<string, string> = {
@@ -74,6 +77,7 @@ const LOCATION_COLORS: Record<string, string> = {
   DELIVERED: "text-green-400 bg-green-500/10 border-green-500/30",
   RETURN: "text-red-400 bg-red-500/10 border-red-500/30",
   Re: "text-red-400 bg-red-500/10 border-red-500/30",
+  RTS: "text-purple-400 bg-purple-500/10 border-purple-500/30",
 };
 
 const ZONE_BADGE_COLORS = [
@@ -121,8 +125,17 @@ function shortDate(iso: string): string {
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
-export default function OrdersPage() {
+function OrdersPageInner() {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const currentTab = (searchParams.get("tab") || "all") as Tab;
+
+  const handleTabChange = (tabName: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", tabName);
+    router.push(`${pathname}?${params.toString()}`);
+  };
 
   // ── Data ──
   const [orders, setOrders] = useState<Order[]>([]);
@@ -145,8 +158,7 @@ export default function OrdersPage() {
     null,
   );
 
-  // ── Tabs & Filters ──
-  const [activeTab, setActiveTab] = useState<Tab>("all");
+  // ── Filters ──
   const [searchTerm, setSearchTerm] = useState("");
   const [locationFilter, setLocationFilter] = useState<string>("ALL");
   const [dateFilter, setDateFilter] = useState("");
@@ -160,6 +172,7 @@ export default function OrdersPage() {
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
+  const orderIdInputRef = useRef<HTMLInputElement>(null);
 
   // ── Excel column selector state ──
   const [excelModalOpen, setExcelModalOpen] = useState(false);
@@ -275,6 +288,63 @@ export default function OrdersPage() {
     };
     reader.readAsText(file);
   };
+
+  // ── Waybill Upload State & Handler ──
+  const [waybillUploading, setWaybillUploading] = useState(false);
+  const waybillInputRef = useRef<HTMLInputElement>(null);
+
+  const handleWaybillUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setWaybillUploading(true);
+    try {
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) {
+        formData.append("files", files[i]);
+      }
+
+      const res = await fetch("/api/orders/waybill", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (res.status === 404) {
+          alert(data.error || "Error: No matching Order ID found in database.");
+        } else {
+          alert(data.error || "Waybill upload failed.");
+        }
+      } else {
+        const successCount =
+          data.results?.filter((r: any) => r.success).length || 0;
+        const failCount =
+          data.results?.filter((r: any) => !r.success).length || 0;
+        if (failCount > 0) {
+          const failures = data.results
+            .filter((r: any) => !r.success)
+            .map((r: any) => `${r.fileName}: ${r.error}`)
+            .join("\n");
+          alert(
+            `Uploaded ${successCount} waybill(s) successfully.\n${failCount} failed:\n${failures}`,
+          );
+        } else {
+          alert(`Successfully uploaded ${successCount} waybill(s).`);
+        }
+        await fetchOrders();
+      }
+    } catch (err: any) {
+      alert("Waybill upload error: " + err.message);
+    } finally {
+      setWaybillUploading(false);
+      e.target.value = "";
+    }
+  };
+
   // ── Zone text input for order creation ──
   const [zoneInput, setZoneInput] = useState("");
 
@@ -324,12 +394,37 @@ export default function OrdersPage() {
   const [isSellerModalOpen, setIsSellerModalOpen] = useState(false);
   const [newSellerInput, setNewSellerInput] = useState("");
 
+  // ── Global Google Sheets Import Modal ──
+  const [globalSheetModalOpen, setGlobalSheetModalOpen] = useState(false);
+
   // ── Warehouse active zone sub-tab ──
   const [activeWarehouseZone, setActiveWarehouseZone] = useState<string>("");
+  const [batchSearchQuery, setBatchSearchQuery] = useState("");
+  const [warehousePage, setWarehousePage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(50);
+  // Pagination for "all" tab
+  const [allPage, setAllPage] = useState(1);
+  const [allItemsPerPage, setAllItemsPerPage] = useState(50);
+  // Pagination for "returns" tab
+  const [returnsItemsPerPage, setReturnsItemsPerPage] = useState(50);
+  const [returnsPage, setReturnsPage] = useState(1);
+
+  // Reset warehouse pagination when zone or search query changes
+  useEffect(() => {
+    setWarehousePage(1);
+  }, [activeWarehouseZone, batchSearchQuery]);
+
+  // ── Bulk Zone Reassignment State ──
+  const [bulkTargetZoneId, setBulkTargetZoneId] = useState<string>("");
 
   // ── Bulk Dispatch State ──
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [driverSearchTerm, setDriverSearchTerm] = useState("");
+
+  // ── Quick Assign State (type order IDs + pick driver) ──
+  const [quickAssignModalOpen, setQuickAssignModalOpen] = useState(false);
+  const [quickAssignOrderIdsText, setQuickAssignOrderIdsText] = useState("");
+  const [quickAssignDriverId, setQuickAssignDriverId] = useState("");
 
   // ── Fetch ──
   const fetchOrders = async () => {
@@ -488,6 +583,7 @@ export default function OrdersPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...formData,
+          customerName: formData.customerName?.trim() || "Unknown",
           merchantId: resolvedMerchantId,
           zoneId: matchedZone.id,
         }),
@@ -508,12 +604,12 @@ export default function OrdersPage() {
           notes: "",
         });
         setZoneInput("");
-        setIsCreateModalOpen(false);
         await fetchOrders();
+        orderIdInputRef.current?.focus();
       } else {
         const err = await res.json();
         console.error("POST error", err);
-        alert("Failed to create order.");
+        alert(err.error || "Failed to create order.");
       }
     } catch (err) {
       console.error("Failed to create order", err);
@@ -576,6 +672,78 @@ export default function OrdersPage() {
     } catch (error) {
       console.error("Failed to bulk assign orders", error);
       alert("An error occurred during bulk assignment.");
+    }
+  };
+
+  // ── Quick Assign (type order IDs + pick driver) ──
+  const handleQuickAssign = async () => {
+    if (!quickAssignDriverId) return alert("Please select a driver.");
+    if (!quickAssignOrderIdsText.trim())
+      return alert("Please enter at least one order ID.");
+
+    const matchedDriver = availableDrivers.find(
+      (d: any) => d.id === quickAssignDriverId,
+    );
+    if (!matchedDriver)
+      return alert("Driver not found. Please select from the list.");
+
+    // Parse order IDs: one per line, strip whitespace and leading #
+    const rawIds = quickAssignOrderIdsText
+      .split("\n")
+      .map((id) => id.trim().replace(/^#/, ""))
+      .filter(Boolean);
+    if (rawIds.length === 0) return alert("No valid order IDs found.");
+
+    // Match raw IDs against orders (by orderId or id)
+    const matchedOrders = orders.filter((o) => {
+      const orderNumStr = String(o.orderId || "").toLowerCase();
+      const orderUuid = String(o.id || "").toLowerCase();
+      return rawIds.some((raw) => {
+        const normalized = raw.toLowerCase();
+        return orderNumStr === normalized || orderUuid === normalized;
+      });
+    });
+
+    if (matchedOrders.length === 0)
+      return alert(
+        `None of the entered order IDs matched any orders in the system. Found ${rawIds.length} ID(s) but 0 matched.`,
+      );
+
+    const unmatched = rawIds.length - matchedOrders.length;
+    if (unmatched > 0) {
+      alert(
+        `⚠️ ${unmatched} order(s) could not be found. Proceeding with ${matchedOrders.length} matched order(s).`,
+      );
+    }
+
+    try {
+      await Promise.all(
+        matchedOrders.map((o) =>
+          fetch("/api/orders", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: o.id,
+              driverId: matchedDriver.id,
+              location: "ASSIGNED",
+              financialStatus: "UD",
+              collectedUsd: 0,
+              collectedLbp: 0,
+            }),
+          }),
+        ),
+      );
+
+      setQuickAssignModalOpen(false);
+      setQuickAssignOrderIdsText("");
+      setQuickAssignDriverId("");
+      fetchOrders();
+      alert(
+        `Successfully assigned ${matchedOrders.length} order(s) to ${matchedDriver.firstName} ${matchedDriver.lastName}.`,
+      );
+    } catch (error) {
+      console.error("Failed to quick-assign orders", error);
+      alert("An error occurred during assignment.");
     }
   };
 
@@ -655,9 +823,11 @@ export default function OrdersPage() {
 
   // ── Returns filtered & grouped ──
   const returnsOrders = useMemo(() => {
-    let list = orders.filter(
-      (o) => o.financialStatus === "Re" || o.financialStatus === "RTS",
-    );
+    let list = orders.filter((o) => {
+      const loc = String(o.location).toUpperCase();
+      const fin = String(o.financialStatus).toUpperCase();
+      return loc === "RETURN" && (fin === "RE" || fin === "RTS");
+    });
 
     if (returnDate) {
       list = list.filter(
@@ -694,7 +864,9 @@ export default function OrdersPage() {
   const returnSellerOptions = useMemo(() => {
     const sellers = new Set<string>();
     for (const o of orders) {
-      if (o.financialStatus === "Re" || o.financialStatus === "RTS") {
+      const loc = String(o.location).toUpperCase();
+      const fin = String(o.financialStatus).toUpperCase();
+      if (loc === "RETURN" && (fin === "RE" || fin === "RTS")) {
         const name =
           o.merchant?.ownerFirstName || o.merchant?.merchantName || "—";
         sellers.add(name);
@@ -786,31 +958,149 @@ export default function OrdersPage() {
     }
   };
 
-  // ── Clear Returns Handler ──
+  // ── Permanent Archive Deletion Handler ──
+  const handlePermanentDelete = async (deleteAll: boolean = false) => {
+    const countText = deleteAll
+      ? "ALL archived orders"
+      : `${selectedOrderIds.length} selected order(s)`;
+
+    // Mandatory confirmation safeguard
+    const isConfirmed = window.confirm(
+      `⚠️ WARNING: You are about to PERMANENTLY DELETE ${countText}.\n\nThis action cannot be undone and will erase these records from the database forever. Do you wish to proceed?`,
+    );
+
+    if (!isConfirmed) return;
+
+    try {
+      const res = await fetch("/api/admin/orders/archive", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderIds: selectedOrderIds,
+          deleteAll: deleteAll,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(`Error: ${data.error}`);
+        return;
+      }
+
+      alert(`Successfully deleted ${data.count} order(s) permanently.`);
+      setSelectedOrderIds([]);
+      fetchOrders();
+    } catch (err) {
+      console.error("Deletion failed:", err);
+      alert("A network error occurred while attempting to delete orders.");
+    }
+  };
+
+  // ── Bulk Zone Reassignment Handler ──
+  const handleBulkZoneMove = async () => {
+    if (!bulkTargetZoneId) {
+      alert("Please select a target zone.");
+      return;
+    }
+    if (selectedOrderIds.length === 0) {
+      alert("No orders selected.");
+      return;
+    }
+    const zoneName =
+      zones.find((z) => z.id === bulkTargetZoneId)?.name || bulkTargetZoneId;
+    if (
+      !window.confirm(
+        `Move ${selectedOrderIds.length} order(s) to zone "${zoneName}"?`,
+      )
+    )
+      return;
+
+    try {
+      const res = await fetch("/api/admin/orders/bulk-zone", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderIds: selectedOrderIds,
+          targetZoneId: bulkTargetZoneId,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to reassign zones");
+      }
+
+      const data = await res.json();
+      setSelectedOrderIds([]);
+      setBulkTargetZoneId("");
+      fetchOrders();
+      alert(`Successfully moved ${data.count} order(s) to "${zoneName}".`);
+    } catch (error: any) {
+      alert(error.message || "Failed to reassign zones.");
+    }
+  };
+
+  // ── Clear Returns Handler (Re -> RTS) ──
   const handleClearReturns = async (sellerName: string, orderIds: string[]) => {
     if (
       !window.confirm(
-        `Clear ${orderIds.length} returned orders for ${sellerName}?\nThis marks the items as physically handed back to the merchant and removes them from this queue.`,
+        `Mark ${orderIds.length} returned orders as "Returned to Seller" for ${sellerName}?\nThis changes their status from Re (Warehouse) to RTS (Returned to Seller).`,
       )
     )
       return;
     try {
-      await Promise.all(
-        orderIds.map((id) =>
-          fetch("/api/orders", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id,
-              location: "MERCHANT_RETURNED",
-              financialStatus: "RTS_CLEARED",
-            }),
-          }),
-        ),
-      );
+      const res = await fetch("/api/admin/orders/returns", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds, newStatus: "RTS" }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to update returns");
+      }
       fetchOrders();
-    } catch (error) {
-      alert("Failed to clear returned orders.");
+    } catch (error: any) {
+      alert(error.message || "Failed to clear returned orders.");
+    }
+  };
+
+  // ── Bulk Returned to Seller Handler (Re -> RTS) ──
+  const [rtsUpdating, setRtsUpdating] = useState(false);
+  const handleBulkRTS = async () => {
+    if (selectedOrderIds.length === 0) return;
+    // Validate: all selected must have financialStatus === "Re"
+    const selectedOrders = orders.filter((o) =>
+      selectedOrderIds.includes(o.id),
+    );
+    const allRe = selectedOrders.every((o) => o.financialStatus === "Re");
+    if (!allRe) {
+      alert("All selected orders must have financial status 'Re' (Warehouse).");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Mark ${selectedOrderIds.length} order(s) as "Returned to Seller"?`,
+      )
+    )
+      return;
+    setRtsUpdating(true);
+    try {
+      const res = await fetch("/api/admin/orders/returns", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds: selectedOrderIds, newStatus: "RTS" }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to update returns");
+      }
+      setSelectedOrderIds([]);
+      fetchOrders();
+    } catch (error: any) {
+      alert(error.message || "Failed to update returns.");
+    } finally {
+      setRtsUpdating(false);
     }
   };
 
@@ -950,9 +1240,9 @@ export default function OrdersPage() {
           ].map((tab) => (
             <button
               key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => handleTabChange(tab.key)}
               className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
-                activeTab === tab.key
+                currentTab === tab.key
                   ? "bg-cyan-500/20 text-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.3)]"
                   : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
               }`}
@@ -965,91 +1255,51 @@ export default function OrdersPage() {
         {/* ════════════════════════════════ */}
         {/* ALL ORDERS TAB                   */}
         {/* ════════════════════════════════ */}
-        {activeTab === "all" && (
+        {currentTab === "all" && (
           <>
             {/* Smart Universal Action Bar */}
             <div className="flex flex-col gap-3 mb-4">
               {/* Row 1: Print/Export + Bulk Actions + Single Actions + New Order */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  {/* Print/Export Dropdown */}
-                  <div className="relative" ref={exportMenuRef}>
-                    <button
-                      onClick={() => setExportMenuOpen((prev) => !prev)}
-                      disabled={selectedOrderIds.length === 0}
-                      className="px-4 py-2 text-xs font-semibold rounded-lg
-                                 bg-white/5 text-gray-400 border border-white/10
-                                 hover:bg-white/10 hover:text-gray-300
-                                 disabled:opacity-30 disabled:cursor-not-allowed
-                                 transition-all duration-200"
-                    >
-                      Print/Export Selected ({selectedOrderIds.length}) ▾
-                    </button>
-
-                    {exportMenuOpen && (
-                      <div
-                        className="absolute top-full left-0 mt-1 w-56 z-50
-                                      backdrop-blur-xl bg-gray-900/95 border border-white/20
-                                      rounded-xl shadow-[0_0_30px_rgba(0,0,0,0.5)]
-                                      overflow-hidden"
+                  {/* Export Buttons (inline) */}
+                  {selectedOrderIds.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-400 mr-1">
+                        {selectedOrderIds.length} selected
+                      </span>
+                      <button
+                        onClick={() =>
+                          window.open(
+                            "/orders/print?ids=" + selectedOrderIds.join(","),
+                            "_blank",
+                          )
+                        }
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
                       >
-                        <button
-                          onClick={() => {
-                            setExportMenuOpen(false);
-                            window.open(
-                              "/orders/print?ids=" + selectedOrderIds.join(","),
-                              "_blank",
-                            );
-                          }}
-                          className="w-full text-left px-4 py-2.5 text-xs text-gray-300
-                                     hover:bg-cyan-500/10 hover:text-cyan-300
-                                     transition-all duration-150 border-b border-white/5"
-                        >
-                          🖨️ Open Selected
-                        </button>
-                        <button
-                          onClick={() => {
-                            setExportMenuOpen(false);
-                            setExcelModalOpen(true);
-                          }}
-                          className="w-full text-left px-4 py-2.5 text-xs text-gray-300
-                                     hover:bg-cyan-500/10 hover:text-cyan-300
-                                     transition-all duration-150 border-b border-white/5"
-                        >
-                          📊 Download Excel
-                        </button>
-                        <button
-                          onClick={() => {
-                            setExportMenuOpen(false);
-                            window.open(
-                              "/orders/print?ids=" +
-                                selectedOrderIds.join(",") +
-                                "&pdf=true",
-                              "_blank",
-                            );
-                          }}
-                          className="w-full text-left px-4 py-2.5 text-xs text-gray-300
-                                     hover:bg-cyan-500/10 hover:text-cyan-300
-                                     transition-all duration-150 border-b border-white/5"
-                        >
-                          📄 Download PDF
-                        </button>
-                        <button
-                          onClick={() => {
-                            setExportMenuOpen(false);
-                            alert(
-                              "Email functionality pending SMTP configuration.",
-                            );
-                          }}
-                          className="w-full text-left px-4 py-2.5 text-xs text-gray-300
-                                     hover:bg-cyan-500/10 hover:text-cyan-300
-                                     transition-all duration-150"
-                        >
-                          ✉️ Email
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                        🔗 New Tab
+                      </button>
+                      <button
+                        onClick={() => setExcelModalOpen(true)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 transition-colors"
+                      >
+                        📊 Excel
+                      </button>
+                      <button
+                        onClick={() =>
+                          window.open(
+                            "/orders/print?ids=" +
+                              selectedOrderIds.join(",") +
+                              "&pdf=true",
+                            "_blank",
+                          )
+                        }
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors"
+                      >
+                        📑 PDF
+                      </button>
+                    </div>
+                  )}
 
                   {/* Separator */}
                   <div className="w-px h-6 bg-white/10 mx-1" />
@@ -1136,6 +1386,35 @@ export default function OrdersPage() {
                     >
                       Delete
                     </button>
+                  )}
+
+                  {/* ── Archive Permanent Deletion Controls (archive view only) ── */}
+                  {showArchived && currentUser?.role === "ADMIN" && (
+                    <>
+                      <div className="w-px h-6 bg-white/10 mx-1" />
+                      <button
+                        onClick={() => handlePermanentDelete(false)}
+                        disabled={selectedOrderIds.length === 0}
+                        className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
+                                   bg-red-500/20 text-red-400 border border-red-500/30
+                                   hover:bg-red-500/30 hover:shadow-[0_0_12px_rgba(239,68,68,0.3)]
+                                   disabled:opacity-30 disabled:cursor-not-allowed
+                                   transition-all duration-200"
+                      >
+                        Delete Selected Permanently
+                      </button>
+                      <button
+                        onClick={() => handlePermanentDelete(true)}
+                        disabled={allFiltered.length === 0}
+                        className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
+                                   bg-red-600/20 text-red-400 border border-red-600/40
+                                   hover:bg-red-600/30 hover:shadow-[0_0_12px_rgba(220,38,38,0.3)]
+                                   disabled:opacity-30 disabled:cursor-not-allowed
+                                   transition-all duration-200"
+                      >
+                        Empty Entire Archive
+                      </button>
+                    </>
                   )}
 
                   {/* Separator */}
@@ -1293,6 +1572,34 @@ export default function OrdersPage() {
               />
             </div>
 
+            {/* Rows per page dropdown - top right */}
+            <div className="flex justify-end mb-3">
+              <div className="flex items-center space-x-2">
+                <label className="text-xs text-slate-400">Rows per page:</label>
+                <select
+                  value={
+                    [50, 100, 200, 300].includes(allItemsPerPage)
+                      ? allItemsPerPage
+                      : "all"
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setAllItemsPerPage(
+                      val === "all" ? allFiltered.length : Number(val),
+                    );
+                    setAllPage(1);
+                  }}
+                  className="bg-slate-800 text-white border border-slate-700 rounded px-2 py-1 text-xs outline-none focus:border-cyan-500 transition-all"
+                >
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                  <option value={300}>300</option>
+                  <option value="all">All</option>
+                </select>
+              </div>
+            </div>
+
             {/* High-Density Table */}
             {loading ? (
               <div className="flex items-center justify-center py-20">
@@ -1317,20 +1624,89 @@ export default function OrdersPage() {
                 </svg>
               </div>
             ) : (
-              <SharedOrderTable
-                orders={allFiltered}
-                selectedOrderIds={selectedOrderIds}
-                onToggleSelectOrder={toggleSelectOrder}
-                onToggleSelectAll={toggleSelectAll}
-                isAllSelected={
-                  selectedOrderIds.length === allFiltered.length &&
-                  allFiltered.length > 0
-                }
-                availableDrivers={availableDrivers}
-                onUpdateOrder={updateOrder}
-                currentUser={currentUser}
-                onCopyLink={handleCopyLink}
-              />
+              (() => {
+                const allTotalPages = Math.ceil(
+                  allFiltered.length / allItemsPerPage,
+                );
+                const paginatedAll = allFiltered.slice(
+                  (allPage - 1) * allItemsPerPage,
+                  allPage * allItemsPerPage,
+                );
+                return (
+                  <>
+                    <SharedOrderTable
+                      orders={paginatedAll}
+                      selectedOrderIds={selectedOrderIds}
+                      onToggleSelectOrder={toggleSelectOrder}
+                      onToggleSelectAll={toggleSelectAll}
+                      isAllSelected={
+                        selectedOrderIds.length === paginatedAll.length &&
+                        paginatedAll.length > 0
+                      }
+                      availableDrivers={availableDrivers}
+                      onUpdateOrder={updateOrder}
+                      currentUser={currentUser}
+                      onCopyLink={handleCopyLink}
+                    />
+                    {allTotalPages > 1 && (
+                      <div className="flex items-center justify-between mt-4 px-2">
+                        <p className="text-xs text-gray-500">
+                          Showing {(allPage - 1) * allItemsPerPage + 1}–
+                          {Math.min(
+                            allPage * allItemsPerPage,
+                            allFiltered.length,
+                          )}{" "}
+                          of {allFiltered.length}
+                        </p>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() =>
+                              setAllPage((p) => Math.max(1, p - 1))
+                            }
+                            disabled={allPage === 1}
+                            className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                          >
+                            Prev
+                          </button>
+                          {(() => {
+                            const pages: number[] = [];
+                            const visible = [1, allTotalPages];
+                            if (allPage > 1) pages.push(allPage - 1);
+                            pages.push(allPage);
+                            if (allPage < allTotalPages)
+                              pages.push(allPage + 1);
+                            const sorted = [
+                              ...new Set([...pages, ...visible]),
+                            ].sort((a, b) => a - b);
+                            return sorted.map((page) => (
+                              <button
+                                key={page}
+                                onClick={() => setAllPage(page)}
+                                className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                                  allPage === page
+                                    ? "bg-cyan-600 border-cyan-500 text-white"
+                                    : "border-white/10 bg-white/5 text-gray-400 hover:bg-white/10"
+                                }`}
+                              >
+                                {page}
+                              </button>
+                            ));
+                          })()}
+                          <button
+                            onClick={() =>
+                              setAllPage((p) => Math.min(allTotalPages, p + 1))
+                            }
+                            disabled={allPage === allTotalPages}
+                            className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()
             )}
           </>
         )}
@@ -1338,7 +1714,7 @@ export default function OrdersPage() {
         {/* ════════════════════════════════ */}
         {/* WAREHOUSE TAB                    */}
         {/* ════════════════════════════════ */}
-        {activeTab === "warehouse" && (
+        {currentTab === "warehouse" && (
           <>
             {loading ? (
               <div className="flex items-center justify-center py-20">
@@ -1368,6 +1744,28 @@ export default function OrdersPage() {
               </div>
             ) : (
               <>
+                {/* Batch Search Input */}
+                <div className="mb-4">
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">
+                      🔍
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="Batch Select (Paste comma-separated Order IDs) — e.g. 10049805, 10049806, #10049810..."
+                      value={batchSearchQuery}
+                      onChange={(e) => setBatchSearchQuery(e.target.value)}
+                      className="w-full md:w-[32rem] pl-9 pr-3 py-1.5 border border-gray-700 rounded-lg bg-slate-900 text-white text-sm placeholder-gray-500 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-all"
+                    />
+                  </div>
+                  {batchSearchQuery.trim() && (
+                    <p className="text-[11px] text-cyan-400 mt-1 ml-1">
+                      Filtering by batch IDs — select all will only apply to
+                      visible results.
+                    </p>
+                  )}
+                </div>
+
                 {/* Zone sub-tabs */}
                 <div className="flex gap-1 mb-6 p-1 rounded-xl backdrop-blur-xl bg-white/5 border border-white/10 overflow-x-auto">
                   {zones.map((zone) => {
@@ -1401,113 +1799,335 @@ export default function OrdersPage() {
                       <span>Select orders to assign</span>
                     )}
                   </div>
-                  <button
-                    onClick={() => setAssignModalOpen(true)}
-                    disabled={selectedOrderIds.length === 0}
-                    className="px-4 py-2 text-xs font-semibold rounded-lg
-                               bg-sky-500/20 text-sky-300 border border-sky-500/30
-                               hover:bg-sky-500/30 hover:shadow-[0_0_12px_rgba(14,165,233,0.3)]
-                               disabled:opacity-30 disabled:cursor-not-allowed
-                               transition-all duration-200"
-                  >
-                    Assign Selected to Driver ({selectedOrderIds.length})
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {/* Quick Assign (type IDs + pick driver) */}
+                    <button
+                      onClick={() => setQuickAssignModalOpen(true)}
+                      className="px-4 py-2 text-xs font-semibold rounded-lg
+                                 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30
+                                 hover:bg-emerald-500/30 hover:shadow-[0_0_12px_rgba(16,185,129,0.3)]
+                                 transition-all duration-200"
+                    >
+                      ⚡ Quick Assign
+                    </button>
+
+                    {/* Assign to Driver */}
+                    <button
+                      onClick={() => setAssignModalOpen(true)}
+                      disabled={selectedOrderIds.length === 0}
+                      className="px-4 py-2 text-xs font-semibold rounded-lg
+                                 bg-sky-500/20 text-sky-300 border border-sky-500/30
+                                 hover:bg-sky-500/30 hover:shadow-[0_0_12px_rgba(14,165,233,0.3)]
+                                 disabled:opacity-30 disabled:cursor-not-allowed
+                                 transition-all duration-200"
+                    >
+                      Assign Selected to Driver ({selectedOrderIds.length})
+                    </button>
+
+                    {/* Zone Dropdown + Move Button */}
+                    <select
+                      value={bulkTargetZoneId}
+                      onChange={(e) => setBulkTargetZoneId(e.target.value)}
+                      disabled={selectedOrderIds.length === 0}
+                      className="px-2 py-2 text-xs rounded-lg bg-slate-950 text-white border border-gray-700
+                                 outline-none focus:border-cyan-500 disabled:opacity-30 disabled:cursor-not-allowed
+                                 transition-all duration-200"
+                    >
+                      <option value="" className="bg-slate-950 text-white">
+                        Move to zone...
+                      </option>
+                      {zones.map((z) => (
+                        <option
+                          key={z.id}
+                          value={z.id}
+                          className="bg-slate-950 text-white"
+                        >
+                          {z.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={handleBulkZoneMove}
+                      disabled={
+                        selectedOrderIds.length === 0 || !bulkTargetZoneId
+                      }
+                      className="px-3 py-2 text-xs font-semibold rounded-lg
+                                  bg-purple-500/20 text-purple-300 border border-purple-500/30
+                                  hover:bg-purple-500/30 hover:shadow-[0_0_12px_rgba(168,85,247,0.3)]
+                                  disabled:opacity-30 disabled:cursor-not-allowed
+                                  transition-all duration-200"
+                    >
+                      Move
+                    </button>
+
+                    {/* Rows per page selector */}
+                    <div className="flex items-center space-x-2">
+                      <label className="text-xs text-slate-400">
+                        Rows per page:
+                      </label>
+                      <select
+                        value={
+                          [50, 100, 200, 300].includes(itemsPerPage)
+                            ? itemsPerPage
+                            : "all"
+                        }
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setItemsPerPage(
+                            val === "all"
+                              ? warehouseOrders.length
+                              : Number(val),
+                          );
+                          setWarehousePage(1);
+                        }}
+                        className="bg-slate-800 text-white border border-slate-700 rounded px-2 py-1 text-xs outline-none focus:border-cyan-500 transition-all"
+                      >
+                        <option value={50}>50</option>
+                        <option value={100}>100</option>
+                        <option value={200}>200</option>
+                        <option value={300}>300</option>
+                        <option value="all">All</option>
+                      </select>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Orders for selected zone — compact table */}
                 {activeWarehouseZone ? (
                   (() => {
-                    const items = warehouseOrders.filter(
+                    const zoneItems = warehouseOrders.filter(
                       (o) => o.zoneId === activeWarehouseZone,
                     );
+
+                    // Apply batch search filtering
+                    const items = (() => {
+                      if (!batchSearchQuery.trim()) return zoneItems;
+                      const targetIds = batchSearchQuery
+                        .split(/[\s,]+/)
+                        .map((id) => id.trim().replace(/^#/, "").toLowerCase())
+                        .filter(Boolean);
+                      if (targetIds.length === 0) return zoneItems;
+                      return zoneItems.filter((order) => {
+                        const orderNumStr = String(
+                          order.orderId || order.id || "",
+                        )
+                          .replace(/^#/, "")
+                          .toLowerCase();
+                        const trackingStr = String(
+                          (order as any).trackingNumber || "",
+                        )
+                          .replace(/^#/, "")
+                          .toLowerCase();
+                        // Strip non-digits from phone for easier matching
+                        const phoneStr = String(
+                          order.customerPhone || "",
+                        ).replace(/\D/g, "");
+                        return (
+                          targetIds.includes(orderNumStr) ||
+                          targetIds.includes(trackingStr) ||
+                          targetIds.some((target) =>
+                            phoneStr.includes(target.replace(/\D/g, "")),
+                          )
+                        );
+                      });
+                    })();
+
+                    const totalPages = Math.ceil(items.length / itemsPerPage);
+                    const paginatedItems = items.slice(
+                      (warehousePage - 1) * itemsPerPage,
+                      warehousePage * itemsPerPage,
+                    );
+
+                    const handleWarehouseSelectAll = () => {
+                      if (
+                        selectedOrderIds.length === items.length &&
+                        items.length > 0
+                      ) {
+                        setSelectedOrderIds([]);
+                      } else {
+                        setSelectedOrderIds(items.map((o) => o.id));
+                      }
+                    };
+
                     return items.length === 0 ? (
                       <div className="text-center py-20">
                         <p className="text-gray-500 text-sm">
-                          No orders in this zone.
+                          {batchSearchQuery.trim()
+                            ? "No orders match the batch search."
+                            : "No orders in this zone."}
                         </p>
                       </div>
                     ) : (
-                      <div className="overflow-x-auto rounded-xl border border-white/10">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[11px] uppercase tracking-wider">
-                              <th className="px-2 py-2 text-left font-medium w-8">
-                                <input
-                                  type="checkbox"
-                                  checked={
-                                    selectedOrderIds.length === items.length &&
-                                    items.length > 0
-                                  }
-                                  onChange={toggleSelectAll}
-                                  className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
-                                />
-                              </th>
-                              <th className="px-2 py-2 text-left font-medium">
-                                Order ID
-                              </th>
-                              <th className="px-2 py-2 text-left font-medium">
-                                Customer
-                              </th>
-                              <th className="px-2 py-2 text-left font-medium">
-                                Address
-                              </th>
-                              <th className="px-2 py-2 text-left font-medium">
-                                Driver
-                              </th>
-                              <th className="px-2 py-2 text-left font-medium">
-                                Fin Status
-                              </th>
-                              <th className="px-2 py-2 text-right font-medium">
-                                Amt $
-                              </th>
-                              <th className="px-2 py-2 text-right font-medium">
-                                Amt LL
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {items.map((order) => (
-                              <tr
-                                key={order.id}
-                                className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
-                              >
-                                <td className="px-2 py-1.5">
+                      <div>
+                        <div className="overflow-x-auto rounded-xl border border-white/10">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[11px] uppercase tracking-wider">
+                                <th className="px-2 py-2 text-left font-medium w-8">
                                   <input
                                     type="checkbox"
-                                    checked={selectedOrderIds.includes(
-                                      order.id,
-                                    )}
-                                    onChange={() => toggleSelectOrder(order.id)}
+                                    checked={
+                                      selectedOrderIds.length ===
+                                        items.length && items.length > 0
+                                    }
+                                    onChange={handleWarehouseSelectAll}
                                     className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
                                   />
-                                </td>
-                                <td className="px-2 py-1.5 text-xs font-mono text-gray-300">
-                                  #{order.orderId}
-                                </td>
-                                <td className="px-2 py-1.5 text-xs text-white">
-                                  {order.customerName}
-                                </td>
-                                <td className="px-2 py-1.5 text-xs text-gray-400 max-w-[120px] truncate">
-                                  {order.customerAddress}
-                                </td>
-                                <td className="px-2 py-1.5 text-xs text-gray-300">
-                                  {order.driver
-                                    ? `${order.driver.firstName} ${order.driver.lastName}`
-                                    : "—"}
-                                </td>
-                                <td className="px-2 py-1.5 text-xs text-gray-300">
-                                  {order.financialStatus}
-                                </td>
-                                <td className="px-2 py-1.5 text-xs text-gray-300 text-right">
-                                  ${order.amountUsd.toFixed(2)}
-                                </td>
-                                <td className="px-2 py-1.5 text-xs text-gray-300 text-right">
-                                  {order.amountLbp.toLocaleString()}
-                                </td>
+                                </th>
+                                <th className="px-2 py-2 text-left font-medium">
+                                  Order ID
+                                </th>
+                                <th className="px-2 py-2 text-left font-medium">
+                                  Customer
+                                </th>
+                                <th className="px-2 py-2 text-left font-medium">
+                                  Phone
+                                </th>
+                                <th className="px-2 py-2 text-left font-medium">
+                                  Address
+                                </th>
+                                <th className="px-2 py-2 text-left font-medium">
+                                  Driver
+                                </th>
+                                <th className="px-2 py-2 text-left font-medium">
+                                  Fin Status
+                                </th>
+                                <th className="px-2 py-2 text-right font-medium">
+                                  Amt $
+                                </th>
+                                <th className="px-2 py-2 text-right font-medium">
+                                  Amt LL
+                                </th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody>
+                              {paginatedItems.map((order) => (
+                                <tr
+                                  key={order.id}
+                                  className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
+                                >
+                                  <td className="px-2 py-1.5">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedOrderIds.includes(
+                                        order.id,
+                                      )}
+                                      onChange={() =>
+                                        toggleSelectOrder(order.id)
+                                      }
+                                      className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
+                                    />
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
+                                    #{order.orderId}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs text-white whitespace-nowrap">
+                                    {order.customerName}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs text-gray-400 whitespace-nowrap">
+                                    {order.customerPhone}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs text-gray-400 max-w-[120px] truncate">
+                                    {order.customerAddress}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                                    {order.driver
+                                      ? `${order.driver.firstName} ${order.driver.lastName}`
+                                      : "—"}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                                    {order.financialStatus}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs text-gray-300 text-right whitespace-nowrap">
+                                    ${order.amountUsd.toFixed(2)}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs text-gray-300 text-right whitespace-nowrap">
+                                    {order.amountLbp.toLocaleString()}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        {/* Pagination controls */}
+                        {totalPages > 1 && (
+                          <div className="flex items-center justify-between mt-3 px-2">
+                            <p className="text-xs text-gray-500">
+                              Showing {(warehousePage - 1) * itemsPerPage + 1} –{" "}
+                              {Math.min(
+                                warehousePage * itemsPerPage,
+                                items.length,
+                              )}{" "}
+                              of {items.length}
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() =>
+                                  setWarehousePage((p) => Math.max(1, p - 1))
+                                }
+                                disabled={warehousePage === 1}
+                                className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                              >
+                                ← Prev
+                              </button>
+                              {Array.from(
+                                { length: totalPages },
+                                (_, i) => i + 1,
+                              )
+                                .filter((page) => {
+                                  // Show first, last, current ± 1 pages
+                                  if (
+                                    page === 1 ||
+                                    page === totalPages ||
+                                    Math.abs(page - warehousePage) <= 1
+                                  ) {
+                                    return true;
+                                  }
+                                  return false;
+                                })
+                                .reduce((acc: number[], page, idx, arr) => {
+                                  if (idx > 0 && page - arr[idx - 1] > 1) {
+                                    acc.push(-1); // ellipsis marker
+                                  }
+                                  acc.push(page);
+                                  return acc;
+                                }, [])
+                                .map((page, idx) =>
+                                  page === -1 ? (
+                                    <span
+                                      key={`ellipsis-${idx}`}
+                                      className="px-1 text-gray-600"
+                                    >
+                                      …
+                                    </span>
+                                  ) : (
+                                    <button
+                                      key={page}
+                                      onClick={() => setWarehousePage(page)}
+                                      className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                                        warehousePage === page
+                                          ? "bg-cyan-600 border-cyan-500 text-white"
+                                          : "border-white/10 bg-white/5 text-gray-400 hover:bg-white/10"
+                                      }`}
+                                    >
+                                      {page}
+                                    </button>
+                                  ),
+                                )}
+                              <button
+                                onClick={() =>
+                                  setWarehousePage((p) =>
+                                    Math.min(totalPages, p + 1),
+                                  )
+                                }
+                                disabled={warehousePage === totalPages}
+                                className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                              >
+                                Next →
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })()
@@ -1526,7 +2146,7 @@ export default function OrdersPage() {
         {/* ════════════════════════════════ */}
         {/* REPORTS TAB                      */}
         {/* ════════════════════════════════ */}
-        {activeTab === "reports" && (
+        {currentTab === "reports" && (
           <>
             {loading ? (
               <div className="flex items-center justify-center py-20">
@@ -1666,108 +2286,60 @@ export default function OrdersPage() {
           </>
         )}
 
-        {/* --- HIGH-VOLUME ORDER ENTRY STATION --- */}
-        {activeTab === "order-entry" && (
-          <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fadeIn">
-            {/* Column 1: Bulk CSV Upload */}
-            <div className="bg-[#121824] border border-white/5 rounded-xl p-6 shadow-2xl lg:col-span-1 h-fit">
-              <h2 className="text-lg font-bold text-white mb-4 border-b border-white/10 pb-2 flex items-center gap-2">
-                <span className="bg-cyan-500/20 text-cyan-400 px-2 py-0.5 rounded text-xs">
-                  NEW
-                </span>
-                Bulk CSV Upload
-              </h2>
-              <p className="text-xs text-gray-400 mb-4">
-                Upload a standard CSV file to generate multiple orders
-                instantly. The system will automatically map seller names and
-                zones to their database IDs.
-              </p>
-              <div className="bg-slate-950 border border-gray-800 rounded p-4 mb-4 font-mono text-[10px] text-gray-400 overflow-x-auto whitespace-nowrap">
-                <span className="text-cyan-500 font-bold">
-                  Required CSV Format (Exact Columns):
-                </span>
-                <br />
-                orderId, seller, customer, phone, address, zone, usd, lbp
-                <br />
-                <span className="text-gray-600">
-                  1001, Tloba, Ali Kanj, 71352165, Beirut, 1, 50, 0
-                </span>
-              </div>
-              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-700 border-dashed rounded-lg cursor-pointer hover:bg-slate-900/50 hover:border-cyan-500/50 transition-all">
-                <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  <span className="text-sm text-cyan-400 font-bold">
-                    {csvUploading ? "Processing CSV..." : "Click to Upload CSV"}
-                  </span>
-                </div>
-                <input
-                  type="file"
-                  accept=".csv"
-                  className="hidden"
-                  onChange={handleCsvUpload}
-                  disabled={csvUploading}
-                />
-              </label>
-            </div>
-
-            {/* Column 2 & 3: Rapid Manual Entry Form */}
-            <div className="bg-[#121824] border border-white/5 rounded-xl p-6 shadow-2xl lg:col-span-2">
-              <div className="flex justify-between items-end mb-6 border-b border-white/10 pb-3">
-                <h2 className="text-xl font-bold text-white">
-                  Rapid Entry Terminal
+        {/* --- INLINE ORDER ENTRY STATION --- */}
+        {currentTab === "order-entry" && (
+          <div className="max-w-7xl mx-auto animate-fadeIn">
+            <div className="bg-[#121824] border border-white/5 rounded-xl p-4 shadow-2xl">
+              <div className="flex items-center gap-3 mb-3">
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">
+                  Order Entry
                 </h2>
-                <span className="text-xs text-gray-500 font-mono">
-                  Silent submit active. Form auto-clears.
+                <span className="text-[10px] text-gray-500 font-mono">
+                  Fields auto-clear on save &middot; Press Enter to submit
                 </span>
               </div>
-
-              <form onSubmit={handleCreateOrder} className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  {/* Order ID & Seller */}
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs text-gray-400 font-mono uppercase">
+              <form onSubmit={handleCreateOrder}>
+                <div className="flex flex-nowrap gap-2 items-end">
+                  {/* Order ID */}
+                  <div className="flex flex-col gap-1 min-w-[90px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
                       Order ID
                     </label>
                     <input
+                      type="text"
                       required
+                      ref={orderIdInputRef}
                       value={formData.orderId}
                       onChange={(e) =>
                         setFormData({ ...formData, orderId: e.target.value })
                       }
-                      className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
+                      placeholder="ORD-001"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
                     />
                   </div>
-
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs text-gray-400 font-mono uppercase">
-                      Assign Seller
+                  {/* Seller */}
+                  <div className="flex flex-col gap-1 min-w-[140px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Seller
                     </label>
                     <input
-                      required
+                      type="text"
                       list="tab-seller-options"
                       value={formData.merchantId}
                       onChange={(e) =>
                         setFormData({ ...formData, merchantId: e.target.value })
                       }
-                      placeholder="Search name or ID..."
-                      className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
+                      placeholder="Name or ID"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
                     />
-                    <datalist id="tab-seller-options">
-                      {sellersList.map((s: any) => (
-                        <option
-                          key={s.id}
-                          value={`${s.numericId} - ${s.name}`}
-                        />
-                      ))}
-                    </datalist>
                   </div>
-
-                  {/* Customer Info */}
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs text-gray-400 font-mono uppercase">
-                      Customer Name
+                  {/* Customer */}
+                  <div className="flex flex-col gap-1 min-w-[120px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Customer
                     </label>
                     <input
-                      required
+                      type="text"
                       value={formData.customerName}
                       onChange={(e) =>
                         setFormData({
@@ -1775,14 +2347,17 @@ export default function OrdersPage() {
                           customerName: e.target.value,
                         })
                       }
-                      className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
+                      placeholder="John Doe"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
                     />
                   </div>
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs text-gray-400 font-mono uppercase">
-                      Customer Phone
+                  {/* Phone */}
+                  <div className="flex flex-col gap-1 min-w-[120px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Phone
                     </label>
                     <input
+                      type="text"
                       required
                       value={formData.customerPhone}
                       onChange={(e) =>
@@ -1791,16 +2366,17 @@ export default function OrdersPage() {
                           customerPhone: e.target.value,
                         })
                       }
-                      className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
+                      placeholder="+1 555 123 4567"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
                     />
                   </div>
-
-                  {/* Location */}
-                  <div className="flex flex-col gap-1.5 md:col-span-2">
-                    <label className="text-xs text-gray-400 font-mono uppercase">
-                      Delivery Address
+                  {/* Address */}
+                  <div className="flex flex-col gap-1 min-w-[200px] flex-1">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Address
                     </label>
                     <input
+                      type="text"
                       required
                       value={formData.customerAddress}
                       onChange={(e) =>
@@ -1809,72 +2385,338 @@ export default function OrdersPage() {
                           customerAddress: e.target.value,
                         })
                       }
-                      className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
+                      placeholder="123 Main St, City"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
                     />
                   </div>
-                  <div className="flex flex-col gap-1.5 md:col-span-2">
-                    <label className="text-xs text-gray-400 font-mono uppercase">
-                      Dispatch Zone
+                  {/* Zone */}
+                  <div className="flex flex-col gap-1 min-w-[110px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Zone
                     </label>
                     <input
+                      type="text"
                       required
                       list="tab-zone-options"
                       value={zoneInput}
                       onChange={(e) => setZoneInput(e.target.value)}
-                      placeholder="Search zone name..."
-                      className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
+                      placeholder="Zone name"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
                     />
-                    <datalist id="tab-zone-options">
-                      {zones.map((z: any) => (
-                        <option key={z.id} value={z.name} />
-                      ))}
-                    </datalist>
                   </div>
-
-                  {/* Financials */}
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs text-gray-400 font-mono uppercase">
-                      Price (USD)
+                  {/* Amount USD */}
+                  <div className="flex flex-col gap-1 min-w-[80px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      USD
                     </label>
                     <input
-                      required
                       type="number"
                       step="0.01"
+                      required
                       value={formData.price}
                       onChange={(e) =>
                         setFormData({ ...formData, price: e.target.value })
                       }
-                      className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
+                      placeholder="0.00"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
                     />
                   </div>
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs text-gray-400 font-mono uppercase">
-                      Price (LBP)
+                  {/* Amount LBP */}
+                  <div className="flex flex-col gap-1 min-w-[80px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      LBP
                     </label>
                     <input
-                      required
                       type="number"
+                      step="1"
                       value={formData.amountLbp}
                       onChange={(e) =>
                         setFormData({ ...formData, amountLbp: e.target.value })
                       }
-                      className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
+                      placeholder="0"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
                     />
                   </div>
-                </div>
-
-                <div className="flex justify-end pt-4 border-t border-white/10">
-                  <button
-                    disabled={submitting}
-                    type="submit"
-                    className="bg-cyan-600 hover:bg-cyan-500 text-white px-8 py-2.5 rounded font-bold shadow-lg transition-colors disabled:opacity-50"
-                  >
-                    {submitting
-                      ? "Writing to Database..."
-                      : "Log Order & Reset"}
-                  </button>
+                  {/* Ex Shipping */}
+                  <div className="flex flex-col gap-1 min-w-[80px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Ex Ship
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={formData.extraShipping}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          extraShipping: e.target.value,
+                        })
+                      }
+                      placeholder="0.00"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                    />
+                  </div>
+                  {/* Pckgs */}
+                  <div className="flex flex-col gap-1 min-w-[60px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Pckgs
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={formData.packages}
+                      onChange={(e) =>
+                        setFormData({ ...formData, packages: e.target.value })
+                      }
+                      placeholder="1"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                    />
+                  </div>
+                  {/* Exch */}
+                  <div className="flex flex-col gap-1 min-w-[50px] items-center">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Exch
+                    </label>
+                    <label className="flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.hasExchange}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            hasExchange: e.target.checked,
+                          })
+                        }
+                        className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                      />
+                    </label>
+                  </div>
+                  {/* Notes */}
+                  <div className="flex flex-col gap-1 min-w-[120px]">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Notes
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.notes}
+                      onChange={(e) =>
+                        setFormData({ ...formData, notes: e.target.value })
+                      }
+                      placeholder="Optional"
+                      className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                    />
+                  </div>
+                  {/* Save Button */}
+                  <div className="flex flex-col gap-1 min-w-[80px]">
+                    <div className="h-[10px]" />
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="w-full px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
+                    >
+                      {submitting ? "..." : "Save"}
+                    </button>
+                  </div>
                 </div>
               </form>
+
+              {/* Waybill Upload */}
+              <div className="mt-3 pt-3 border-t border-white/5 flex items-center gap-2">
+                <input
+                  ref={waybillInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleWaybillUpload}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => waybillInputRef.current?.click()}
+                  disabled={waybillUploading}
+                  className="px-4 py-1.5 text-xs font-semibold rounded-lg
+                             bg-purple-500/20 text-purple-300 border border-purple-500/30
+                             hover:bg-purple-500/30 hover:shadow-[0_0_16px_rgba(168,85,247,0.3)]
+                             disabled:opacity-50 disabled:cursor-not-allowed
+                             transition-all duration-200"
+                >
+                  {waybillUploading ? "Uploading..." : "📄 Upload Waybill"}
+                </button>
+                <span className="text-[10px] text-gray-500 font-mono">
+                  Upload waybill image(s) — order number extracted automatically
+                </span>
+              </div>
+            </div>
+            {/* Hidden datalists */}
+            <datalist id="tab-seller-options">
+              {sellersList.map((s: any) => (
+                <option key={s.id} value={`${s.numericId} - ${s.name}`} />
+              ))}
+            </datalist>
+            <datalist id="tab-zone-options">
+              {zones.map((z: any) => (
+                <option key={z.id} value={z.name} />
+              ))}
+            </datalist>
+
+            {/* Recently Added Orders */}
+            {orders
+              .filter((o) => !o.isArchived)
+              .sort(
+                (a, b) =>
+                  new Date(b.createdAt).getTime() -
+                  new Date(a.createdAt).getTime(),
+              )
+              .slice(0, 5).length > 0 && (
+              <div className="mt-4">
+                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
+                  Recently Added
+                </h3>
+                <div className="bg-[#121824] border border-white/5 rounded-xl overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-white/5 text-gray-500 text-[10px] uppercase tracking-wider">
+                        <th className="px-3 py-2 text-left font-medium">
+                          Order ID
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Seller
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Customer
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Phone
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Address
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Zone
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">USD</th>
+                        <th className="px-3 py-2 text-left font-medium">LBP</th>
+                        <th className="px-3 py-2 text-center font-medium">
+                          Action
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orders
+                        .filter((o) => !o.isArchived)
+                        .sort(
+                          (a, b) =>
+                            new Date(b.createdAt).getTime() -
+                            new Date(a.createdAt).getTime(),
+                        )
+                        .slice(0, 5)
+                        .map((order) => (
+                          <tr
+                            key={order.id}
+                            className="border-b border-white/5 hover:bg-white/[0.02] transition-colors"
+                          >
+                            <td className="px-3 py-2 text-cyan-300 font-mono">
+                              {order.orderId}
+                            </td>
+                            <td className="px-3 py-2 text-gray-300">
+                              {order.merchant?.merchantName || "—"}
+                            </td>
+                            <td className="px-3 py-2 text-white">
+                              {order.customerName}
+                            </td>
+                            <td className="px-3 py-2 text-gray-300 font-mono">
+                              {order.customerPhone}
+                            </td>
+                            <td className="px-3 py-2 text-gray-400 max-w-[200px] truncate">
+                              {order.customerAddress}
+                            </td>
+                            <td className="px-3 py-2 text-gray-300">
+                              {order.zone?.name || "—"}
+                            </td>
+                            <td className="px-3 py-2 text-green-400 font-mono">
+                              {order.amountUsd}
+                            </td>
+                            <td className="px-3 py-2 text-gray-400 font-mono">
+                              {order.amountLbp}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <button
+                                onClick={() => openEditModal(order)}
+                                className="px-2 py-1 text-[10px] font-semibold rounded bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-all"
+                              >
+                                Edit
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Import Options */}
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* CSV Upload */}
+              <div className="bg-[#121824] border border-white/5 rounded-xl p-4">
+                <h3 className="text-xs font-bold text-white mb-2 flex items-center gap-2">
+                  <span className="bg-cyan-500/20 text-cyan-400 px-1.5 py-0.5 rounded text-[10px]">
+                    BULK
+                  </span>
+                  CSV Upload
+                </h3>
+                <p className="text-[10px] text-gray-500 mb-3">
+                  Upload a CSV with columns: orderId, seller, customer, phone,
+                  address, zone, usd, lbp
+                </p>
+                <label className="flex flex-col items-center justify-center w-full h-20 border-2 border-gray-700 border-dashed rounded-lg cursor-pointer hover:bg-slate-900/50 hover:border-cyan-500/50 transition-all">
+                  <span className="text-xs text-cyan-400 font-bold">
+                    {csvUploading ? "Processing..." : "Click to Upload CSV"}
+                  </span>
+                  <input
+                    type="file"
+                    accept=".csv"
+                    className="hidden"
+                    onChange={handleCsvUpload}
+                    disabled={csvUploading}
+                  />
+                </label>
+              </div>
+
+              {/* Google Sheets Import */}
+              <div className="bg-[#121824] border border-white/5 rounded-xl p-4">
+                <h3 className="text-xs font-bold text-white mb-2 flex items-center gap-2">
+                  <span className="bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded text-[10px]">
+                    SHEETS
+                  </span>
+                  Google Sheets Import
+                </h3>
+                <p className="text-[10px] text-gray-500 mb-3">
+                  Import orders from any seller's shared Google Sheet.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setGlobalSheetModalOpen(true)}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold rounded-lg
+                             bg-emerald-500/20 text-emerald-400 border border-emerald-500/30
+                             hover:bg-emerald-500/30 hover:shadow-[0_0_16px_rgba(52,211,153,0.25)]
+                             transition-all duration-200"
+                >
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"
+                    />
+                  </svg>
+                  Import from Google Sheets
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1882,7 +2724,7 @@ export default function OrdersPage() {
         {/* ════════════════════════════════════ */}
         {/* RETURNS TAB                          */}
         {/* ════════════════════════════════════ */}
-        {activeTab === "returns" && (
+        {currentTab === "returns" && (
           <>
             {/* Filter row */}
             <div className="flex flex-col sm:flex-row gap-3 mb-6">
@@ -1937,15 +2779,67 @@ export default function OrdersPage() {
                   All Statuses
                 </option>
                 <option value="Re" className="bg-slate-950 text-white">
-                  Re
+                  Warehouse (Re)
                 </option>
                 <option value="RTS" className="bg-slate-950 text-white">
-                  RTS
+                  Returned to Seller (RTS)
                 </option>
               </select>
+
+              {/* Bulk "Returned to seller" button */}
+              {selectedOrderIds.length > 0 && (
+                <button
+                  onClick={handleBulkRTS}
+                  disabled={
+                    rtsUpdating ||
+                    !orders
+                      .filter((o) => selectedOrderIds.includes(o.id))
+                      .every((o) => o.financialStatus === "Re")
+                  }
+                  className={`px-4 py-2.5 text-sm font-bold rounded-xl transition-all duration-200 shadow-lg ${
+                    orders
+                      .filter((o) => selectedOrderIds.includes(o.id))
+                      .every((o) => o.financialStatus === "Re")
+                      ? "bg-purple-600 hover:bg-purple-500 text-white shadow-purple-500/20"
+                      : "bg-gray-700 text-gray-500 cursor-not-allowed"
+                  } ${rtsUpdating ? "opacity-50" : ""}`}
+                >
+                  {rtsUpdating
+                    ? "Updating…"
+                    : `↩ Returned to Seller (${selectedOrderIds.length})`}
+                </button>
+              )}
             </div>
 
-            {/* Returns table grouped by seller */}
+            {/* Rows per page dropdown - top right */}
+            <div className="flex justify-end mb-3">
+              <div className="flex items-center space-x-2">
+                <label className="text-xs text-slate-400">Rows per page:</label>
+                <select
+                  value={
+                    [50, 100, 200, 300].includes(returnsItemsPerPage)
+                      ? returnsItemsPerPage
+                      : "all"
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setReturnsItemsPerPage(
+                      val === "all" ? returnsOrders.length : Number(val),
+                    );
+                    setReturnsPage(1);
+                  }}
+                  className="bg-slate-800 text-white border border-slate-700 rounded px-2 py-1 text-xs outline-none focus:border-cyan-500 transition-all"
+                >
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                  <option value={300}>300</option>
+                  <option value="all">All</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Returns table - flat single list */}
             {loading ? (
               <div className="flex items-center justify-center py-20">
                 <svg
@@ -1968,141 +2862,269 @@ export default function OrdersPage() {
                   />
                 </svg>
               </div>
-            ) : Object.keys(returnsBySeller).length === 0 ? (
+            ) : returnsOrders.length === 0 ? (
               <div className="text-center py-20">
                 <p className="text-gray-500 text-sm">No return orders found.</p>
               </div>
             ) : (
-              <div className="space-y-6">
-                {Object.entries(returnsBySeller).map(([seller, items]) => (
-                  <div
-                    key={seller}
-                    className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 overflow-hidden"
-                  >
-                    {/* Seller group header */}
-                    <div className="px-5 py-3 border-b border-white/10 bg-white/[0.03] flex justify-between items-center">
-                      <h3 className="text-sm font-bold text-cyan-300 uppercase tracking-wider">
-                        {seller}
-                        <span className="ml-2 text-xs font-normal text-gray-500">
-                          ({items.length} order{items.length !== 1 ? "s" : ""})
-                        </span>
-                      </h3>
-                      <div className="flex gap-3">
+              <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
+                {/* Action bar */}
+                <div className="px-5 py-3 border-b border-white/10 bg-white/[0.03] flex justify-between items-center">
+                  <h3 className="text-sm font-bold text-cyan-300 uppercase tracking-wider">
+                    All Returns
+                    <span className="ml-2 text-xs font-normal text-gray-500">
+                      ({returnsOrders.length} order
+                      {returnsOrders.length !== 1 ? "s" : ""})
+                    </span>
+                  </h3>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() =>
+                        window.open(
+                          `/orders/print?ids=${returnsOrders.map((o) => o.id).join(",")}&pdf=true`,
+                          "_blank",
+                        )
+                      }
+                      className="px-3 py-1.5 text-xs font-bold rounded bg-white/10 text-white border border-white/20 hover:bg-white/20 transition-all shadow-sm"
+                    >
+                      Print RTS Manifest
+                    </button>
+                    <button
+                      onClick={() => handleBulkRTS()}
+                      disabled={
+                        rtsUpdating ||
+                        selectedOrderIds.length === 0 ||
+                        !returnsOrders
+                          .filter((o) => selectedOrderIds.includes(o.id))
+                          .every((o) => o.financialStatus === "Re")
+                      }
+                      className={`px-3 py-1.5 text-xs font-bold rounded transition-all shadow-sm ${
+                        selectedOrderIds.length > 0 &&
+                        returnsOrders
+                          .filter((o) => selectedOrderIds.includes(o.id))
+                          .every((o) => o.financialStatus === "Re")
+                          ? "bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30"
+                          : "bg-gray-700 text-gray-500 cursor-not-allowed border border-gray-600"
+                      } ${rtsUpdating ? "opacity-50" : ""}`}
+                    >
+                      {rtsUpdating ? "Updating…" : "Returned to Seller"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Orders table */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-white/5 text-gray-500 text-[11px] uppercase tracking-wider">
+                        <th className="px-3 py-2 text-center font-medium w-10">
+                          <input
+                            type="checkbox"
+                            checked={
+                              selectedOrderIds.length ===
+                                returnsOrders.length && returnsOrders.length > 0
+                            }
+                            onChange={() => {
+                              if (
+                                selectedOrderIds.length === returnsOrders.length
+                              ) {
+                                setSelectedOrderIds((prev) =>
+                                  prev.filter(
+                                    (id) =>
+                                      !returnsOrders.find((o) => o.id === id),
+                                  ),
+                                );
+                              } else {
+                                setSelectedOrderIds((prev) => {
+                                  const newIds = new Set([...prev]);
+                                  returnsOrders.forEach((o) =>
+                                    newIds.add(o.id),
+                                  );
+                                  return Array.from(newIds);
+                                });
+                              }
+                            }}
+                            className="w-4 h-4 rounded border-gray-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0 cursor-pointer"
+                          />
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Order ID
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Seller
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Date
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Customer
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Phone
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Address
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Zone
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Driver
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Status
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium">
+                          Amt $
+                        </th>
+                        <th className="px-3 py-2 text-right font-medium">
+                          Amt LL
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(() => {
+                        const totalPages = Math.ceil(
+                          returnsOrders.length / returnsItemsPerPage,
+                        );
+                        const paginatedItems = returnsOrders.slice(
+                          (returnsPage - 1) * returnsItemsPerPage,
+                          returnsPage * returnsItemsPerPage,
+                        );
+                        return paginatedItems.map((order) => (
+                          <tr
+                            key={order.id}
+                            className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
+                          >
+                            <td className="px-3 py-1.5 text-center whitespace-nowrap">
+                              <input
+                                type="checkbox"
+                                checked={selectedOrderIds.includes(order.id)}
+                                onChange={() => toggleSelectOrder(order.id)}
+                                className="w-4 h-4 rounded border-gray-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0 cursor-pointer"
+                              />
+                            </td>
+                            <td className="px-3 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
+                              #{order.orderId}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
+                              {order.merchant?.merchantName ||
+                                order.merchant?.ownerFirstName ||
+                                "—"}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
+                              {shortDate(order.createdAt)}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-white whitespace-nowrap">
+                              {order.customerName}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
+                              {order.customerPhone}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-400 max-w-[120px] truncate">
+                              {order.customerAddress}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                              {order.zone?.name || order.zoneId}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                              {order.driver
+                                ? `${order.driver.firstName} ${order.driver.lastName}`
+                                : "—"}
+                            </td>
+                            <td className="px-3 py-1.5 whitespace-nowrap">
+                              <span
+                                className={`px-1.5 py-0.5 text-[10px] font-semibold rounded-full border ${
+                                  order.financialStatus === "Re"
+                                    ? "text-red-400 bg-red-500/10 border-red-500/30"
+                                    : "text-purple-400 bg-purple-500/10 border-purple-500/30"
+                                }`}
+                                title={
+                                  order.financialStatus === "Re"
+                                    ? "Returned (at warehouse)"
+                                    : "Returned to Seller"
+                                }
+                              >
+                                {order.financialStatus === "Re" ? "Re" : "RTS"}
+                              </span>
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
+                              ${order.amountUsd.toFixed(2)}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
+                              {order.amountLbp.toLocaleString()}
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Global pagination */}
+                {(() => {
+                  const totalPages = Math.ceil(
+                    returnsOrders.length / returnsItemsPerPage,
+                  );
+                  if (totalPages <= 1) return null;
+                  return (
+                    <div className="flex items-center justify-between px-5 py-2 border-t border-white/5">
+                      <p className="text-xs text-gray-500">
+                        Showing {(returnsPage - 1) * returnsItemsPerPage + 1}–
+                        {Math.min(
+                          returnsPage * returnsItemsPerPage,
+                          returnsOrders.length,
+                        )}{" "}
+                        of {returnsOrders.length}
+                      </p>
+                      <div className="flex items-center gap-1">
                         <button
                           onClick={() =>
-                            window.open(
-                              `/orders/print?ids=${items.map((o) => o.id).join(",")}&pdf=true`,
-                              "_blank",
-                            )
+                            setReturnsPage(Math.max(1, returnsPage - 1))
                           }
-                          className="px-3 py-1.5 text-xs font-bold rounded bg-white/10 text-white border border-white/20 hover:bg-white/20 transition-all shadow-sm"
+                          disabled={returnsPage === 1}
+                          className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                         >
-                          Print RTS Manifest
+                          Prev
                         </button>
+                        {(() => {
+                          const pages: number[] = [];
+                          if (returnsPage > 1) pages.push(returnsPage - 1);
+                          pages.push(returnsPage);
+                          if (returnsPage < totalPages)
+                            pages.push(returnsPage + 1);
+                          const sorted = [
+                            ...new Set([1, totalPages, ...pages]),
+                          ].sort((a, b) => a - b);
+                          return sorted.map((page) => (
+                            <button
+                              key={page}
+                              onClick={() => setReturnsPage(page)}
+                              className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                                returnsPage === page
+                                  ? "bg-cyan-600 border-cyan-500 text-white"
+                                  : "border-white/10 bg-white/5 text-gray-400 hover:bg-white/10"
+                              }`}
+                            >
+                              {page}
+                            </button>
+                          ));
+                        })()}
                         <button
                           onClick={() =>
-                            handleClearReturns(
-                              seller,
-                              items.map((o) => o.id),
+                            setReturnsPage(
+                              Math.min(totalPages, returnsPage + 1),
                             )
                           }
-                          className="px-3 py-1.5 text-xs font-bold rounded bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 transition-all shadow-sm"
+                          disabled={returnsPage === totalPages}
+                          className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                         >
-                          Clear Returns
+                          Next
                         </button>
                       </div>
                     </div>
-
-                    {/* Orders table */}
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-white/5 text-gray-500 text-[11px] uppercase tracking-wider">
-                            <th className="px-3 py-2 text-left font-medium">
-                              Order ID
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Date
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Customer
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Phone
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Address
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Zone
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Driver
-                            </th>
-                            <th className="px-3 py-2 text-left font-medium">
-                              Status
-                            </th>
-                            <th className="px-3 py-2 text-right font-medium">
-                              Amt $
-                            </th>
-                            <th className="px-3 py-2 text-right font-medium">
-                              Amt LL
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {items.map((order) => (
-                            <tr
-                              key={order.id}
-                              className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
-                            >
-                              <td className="px-3 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
-                                #{order.orderId}
-                              </td>
-                              <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
-                                {shortDate(order.createdAt)}
-                              </td>
-                              <td className="px-3 py-1.5 text-xs text-white whitespace-nowrap">
-                                {order.customerName}
-                              </td>
-                              <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
-                                {order.customerPhone}
-                              </td>
-                              <td className="px-3 py-1.5 text-xs text-gray-400 max-w-[120px] truncate">
-                                {order.customerAddress}
-                              </td>
-                              <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
-                                {order.zone?.name || order.zoneId}
-                              </td>
-                              <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
-                                {order.driver
-                                  ? `${order.driver.firstName} ${order.driver.lastName}`
-                                  : "—"}
-                              </td>
-                              <td className="px-3 py-1.5 whitespace-nowrap">
-                                <span
-                                  className={`px-1.5 py-0.5 text-[10px] font-semibold rounded-full border ${
-                                    order.financialStatus === "Re"
-                                      ? "text-red-400 bg-red-500/10 border-red-500/30"
-                                      : "text-orange-400 bg-orange-500/10 border-orange-500/30"
-                                  }`}
-                                >
-                                  {order.financialStatus}
-                                </span>
-                              </td>
-                              <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
-                                ${order.amountUsd.toFixed(2)}
-                              </td>
-                              <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
-                                {order.amountLbp.toLocaleString()}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })()}
               </div>
             )}
           </>
@@ -2387,7 +3409,6 @@ export default function OrdersPage() {
                   <input
                     type="number"
                     step="0.01"
-                    min="0"
                     value={editFormData.amountUsd}
                     onChange={(e) =>
                       setEditFormData((p) => ({
@@ -2407,7 +3428,6 @@ export default function OrdersPage() {
                   <input
                     type="number"
                     step="1"
-                    min="0"
                     value={editFormData.amountLbp}
                     onChange={(e) =>
                       setEditFormData((p) => ({
@@ -2427,7 +3447,6 @@ export default function OrdersPage() {
                   <input
                     type="number"
                     step="0.01"
-                    min="0"
                     value={editFormData.extraShipping}
                     onChange={(e) =>
                       setEditFormData((p) => ({
@@ -2665,7 +3684,6 @@ export default function OrdersPage() {
                   <input
                     type="number"
                     step="0.01"
-                    min="0"
                     value={customUsd}
                     onChange={(e) => setCustomUsd(e.target.value)}
                     placeholder="0.00"
@@ -2685,7 +3703,6 @@ export default function OrdersPage() {
                   <input
                     type="number"
                     step="1"
-                    min="0"
                     value={customLbp}
                     onChange={(e) => setCustomLbp(e.target.value)}
                     placeholder="0"
@@ -3101,7 +4118,6 @@ export default function OrdersPage() {
                       </label>
                       <input
                         type="text"
-                        required
                         value={formData.customerName}
                         onChange={(e) =>
                           setFormData((prev) => ({
@@ -3220,7 +4236,6 @@ export default function OrdersPage() {
                       <input
                         type="number"
                         step="0.01"
-                        min="0"
                         required
                         value={formData.price}
                         onChange={(e) =>
@@ -3246,7 +4261,6 @@ export default function OrdersPage() {
                       <input
                         type="number"
                         step="1"
-                        min="0"
                         value={formData.amountLbp}
                         onChange={(e) =>
                           setFormData((prev) => ({
@@ -3271,7 +4285,6 @@ export default function OrdersPage() {
                       <input
                         type="number"
                         step="0.01"
-                        min="0"
                         value={formData.extraShipping}
                         onChange={(e) =>
                           setFormData((prev) => ({
@@ -3402,6 +4415,114 @@ export default function OrdersPage() {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* ════════════════════════════════════════ */}
+        {/* QUICK ASSIGN MODAL (type IDs + driver)   */}
+        {/* ════════════════════════════════════════ */}
+        {quickAssignModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <div
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => {
+                setQuickAssignModalOpen(false);
+                setQuickAssignOrderIdsText("");
+                setQuickAssignDriverId("");
+              }}
+            />
+
+            {/* Modal */}
+            <div
+              className="relative w-full max-w-lg backdrop-blur-2xl bg-white/10 rounded-3xl
+                         border border-white/20 shadow-[0_0_40px_rgba(16,185,129,0.2)]
+                         p-6 sm:p-8"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-lg font-bold text-white mb-1">
+                ⚡ Quick Assign Orders
+              </h2>
+              <p className="text-xs text-gray-400 mb-6">
+                Enter order IDs (one per line) and select a driver to assign
+                them to.
+              </p>
+
+              {/* Order IDs textarea */}
+              <div className="mb-5">
+                <label className="block text-xs font-medium text-gray-500 mb-1.5">
+                  Order IDs (one per line)
+                </label>
+                <textarea
+                  value={quickAssignOrderIdsText}
+                  onChange={(e) => setQuickAssignOrderIdsText(e.target.value)}
+                  placeholder={"10049805\n10049806\n10049810"}
+                  rows={6}
+                  className="w-full px-4 py-2.5 text-sm rounded-xl
+                             bg-white/5 border border-white/10 text-white placeholder-gray-500
+                             focus:outline-none focus:border-emerald-500/50
+                             focus:shadow-[0_0_12px_rgba(16,185,129,0.15)]
+                             transition-all duration-200 resize-y font-mono"
+                />
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Supports order IDs, UUIDs, or tracking numbers — one per line.
+                </p>
+              </div>
+
+              {/* Driver selector */}
+              <div className="mb-6">
+                <label className="block text-xs font-medium text-gray-500 mb-1.5">
+                  Assign to Driver
+                </label>
+                <select
+                  value={quickAssignDriverId}
+                  onChange={(e) => setQuickAssignDriverId(e.target.value)}
+                  className="w-full px-4 py-2.5 text-sm rounded-xl
+                             bg-white/5 border border-white/10 text-white
+                             focus:outline-none focus:border-emerald-500/50
+                             focus:shadow-[0_0_12px_rgba(16,185,129,0.15)]
+                             transition-all duration-200"
+                >
+                  <option value="" className="bg-slate-900 text-gray-400">
+                    -- Select a driver --
+                  </option>
+                  {availableDrivers.map((driver: any) => (
+                    <option
+                      key={driver.id}
+                      value={driver.id}
+                      className="bg-slate-900 text-white"
+                    >
+                      {driver.firstName} {driver.lastName} ({driver.driverId})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setQuickAssignModalOpen(false);
+                    setQuickAssignOrderIdsText("");
+                    setQuickAssignDriverId("");
+                  }}
+                  className="flex-1 px-4 py-2.5 text-sm font-semibold rounded-xl
+                             bg-white/5 text-gray-400 border border-white/10
+                             hover:text-white hover:bg-white/10 transition-all duration-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleQuickAssign}
+                  className="flex-1 px-4 py-2.5 text-sm font-semibold rounded-xl
+                             bg-emerald-500/20 text-emerald-300 border border-emerald-500/30
+                             hover:bg-emerald-500/30 hover:shadow-[0_0_16px_rgba(16,185,129,0.3)]
+                             transition-all duration-200"
+                >
+                  Submit Assignment
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -3604,8 +4725,34 @@ export default function OrdersPage() {
             </div>
           </div>
         )}
+
+        {/* ════════════════════════════════════════ */}
+        {/* GLOBAL GOOGLE SHEETS IMPORT MODAL        */}
+        {/* ════════════════════════════════════════ */}
+        {globalSheetModalOpen && (
+          <GlobalSheetImportModal
+            onSuccess={() => {
+              router.refresh();
+            }}
+            onClose={() => setGlobalSheetModalOpen(false)}
+          />
+        )}
       </div>
     </div>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+          <p className="text-gray-400">Loading...</p>
+        </div>
+      }
+    >
+      <OrdersPageInner />
+    </Suspense>
   );
 }
 

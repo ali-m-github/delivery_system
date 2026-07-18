@@ -6,7 +6,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const {
-      driverId,
+      driverId: identifier,
       orderIds,
       totalCollectedUsd,
       totalCollectedLbp,
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     } = body;
 
     if (
-      !driverId ||
+      !identifier ||
       !orderIds ||
       !Array.isArray(orderIds) ||
       orderIds.length === 0
@@ -25,6 +25,23 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+
+    // Resolve human-readable driverId (e.g., "d001") to CUID
+    const profile = await prisma.driverProfile.findFirst({
+      where: {
+        driverId: {
+          equals: identifier,
+          mode: "insensitive",
+        },
+      },
+      select: { id: true },
+    });
+
+    if (!profile) {
+      return NextResponse.json({ error: "Driver not found" }, { status: 404 });
+    }
+
+    const driverId = profile.id;
 
     // Validate orders belong to the driver, are delivered, and in WD status
     const orders = await prisma.order.findMany({
@@ -45,26 +62,51 @@ export async function POST(request: Request) {
       );
     }
 
-    // Recalculate totals server-side from actual DB values (collectedUsd || amountUsd)
+    // Recalculate totals server-side from actual DB values (collectedUsd ?? amountUsd)
     const dbTotalUsd = orders.reduce(
-      (sum, o) => sum + (o.collectedUsd || o.amountUsd || 0),
+      (sum, o) => sum + (o.collectedUsd ?? o.amountUsd ?? 0),
       0,
     );
     const dbTotalLbp = orders.reduce(
-      (sum, o) => sum + (o.collectedLbp || o.amountLbp || 0),
+      (sum, o) => sum + (o.collectedLbp ?? o.amountLbp ?? 0),
       0,
     );
 
-    // Fetch driver zone rates for server-side commission fallback
-    const zoneRates = await prisma.driverZoneRate.findMany({
-      where: { driverId },
+    // Fetch driver zone rates AND seller exception rates for server-side commission fallback
+    const driverProfile = await prisma.driverProfile.findUnique({
+      where: { id: driverId },
+      select: { userId: true },
     });
-    const rateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
+    const userId = driverProfile?.userId;
 
-    const dbCommission = orders.reduce(
-      (sum, o) => sum + (rateMap.get(o.zoneId) ?? 0),
-      0,
-    );
+    const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
+      prisma.driverZoneRate.findMany({ where: { driverId } }),
+      prisma.driverSellerRate.findMany({ where: { driverId } }),
+      userId
+        ? prisma.driverCashSellerRate.findMany({ where: { driverId: userId } })
+        : Promise.resolve([]),
+    ]);
+
+    const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
+    const sellerExceptionMap = new Map<string, number>();
+    for (const sr of sellerRates) {
+      if (sr.rateUsd > 0) sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+    }
+    for (const cr of cashSellerRates) {
+      if (cr.rateUsd > 0) sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
+    }
+
+    const dbCommission = orders.reduce((sum, o) => {
+      const orderMerchantId = String(o.merchantId ?? "");
+      const orderZoneId = String(o.zoneId);
+      // Tier 1: Seller Exception (includes DriverSellerRate + DriverCashSellerRate)
+      const exceptionRate = orderMerchantId
+        ? sellerExceptionMap.get(orderMerchantId)
+        : undefined;
+      if (exceptionRate !== undefined) return sum + exceptionRate;
+      // Tier 2: Zone Rate
+      return sum + (zoneRateMap.get(orderZoneId) ?? 0);
+    }, 0);
 
     // Sanitize values
     const safeTotalUsd =

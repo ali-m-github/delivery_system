@@ -10,7 +10,24 @@ export async function PATCH(
 ) {
   try {
     const resolvedParams = await params;
-    const { id: driverId, payoutId } = resolvedParams;
+    const { id: identifier, payoutId } = resolvedParams;
+
+    // Resolve human-readable driverId (e.g., "d001") to CUID
+    const profile = await prisma.driverProfile.findFirst({
+      where: {
+        driverId: {
+          equals: identifier,
+          mode: "insensitive",
+        },
+      },
+      select: { id: true },
+    });
+
+    if (!profile) {
+      return NextResponse.json({ error: "Driver not found" }, { status: 404 });
+    }
+
+    const driverId = profile.id;
 
     const body = await request.json();
     const { status } = body;
@@ -53,14 +70,15 @@ export async function PATCH(
         include: { orders: true },
       });
 
-      // Clear the driver's ledger: mark linked orders as PAID_TO_MERCHANT
+      // Clear the driver's ledger: mark linked orders as WO (With Office)
+      // Cash is now in company treasury, awaiting processing for the merchant
       await tx.order.updateMany({
         where: {
           driverPayoutId: payoutId,
           driverId,
         },
         data: {
-          financialStatus: "PAID_TO_MERCHANT",
+          financialStatus: "WO",
         },
       });
 

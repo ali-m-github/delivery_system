@@ -28,11 +28,12 @@ export default async function DriverPage() {
     include: {
       deliveries: {
         where: {
-          location: { in: ["ASSIGNED", "WITH_DRIVER", "DELIVERED"] },
+          location: { in: ["WITH_DRIVER", "DELIVERED"] },
           financialStatus: { notIn: ["PS", "WO", "Arc"] },
         },
       },
       zoneRates: true,
+      driverSellerRates: true,
     },
   });
 
