@@ -96,7 +96,7 @@ export default function SharedOrderTable({
             : "border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
         }
       >
-        <td className="px-2 py-1.5">
+        <td className="px-1 py-1.5">
           <input
             type="checkbox"
             checked={selectedOrderIds.includes(order.id)}
@@ -105,7 +105,7 @@ export default function SharedOrderTable({
           />
         </td>
 
-        <td className="px-2 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
+        <td className="px-1 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
           <div className="flex items-center gap-1.5">
             <button
               onClick={() =>
@@ -126,31 +126,31 @@ export default function SharedOrderTable({
           </div>
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-400 whitespace-nowrap">
+        <td className="px-1 py-1.5 text-xs text-gray-400 whitespace-nowrap">
           {formatDDMMYYYY(order.createdAt)}
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap">
           {sellerName}
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-white whitespace-nowrap">
+        <td className="px-1 py-1.5 text-xs text-white whitespace-nowrap">
           {order.customerName}
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-400 whitespace-nowrap">
+        <td className="px-1 py-1.5 text-xs text-gray-400 whitespace-nowrap">
           {order.customerPhone}
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-400 max-w-[120px] truncate">
+        <td className="px-1 py-1.5 text-xs text-gray-400 max-w-[120px] truncate">
           {order.customerAddress}
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap">
           {order.zone?.name || order.zoneId || "—"}
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap">
           {order.driverId && order.driver ? (
             <span className="text-cyan-300 font-medium">
               {order.driver.firstName} {order.driver.lastName} (
@@ -198,33 +198,33 @@ export default function SharedOrderTable({
           )}
         </td>
 
-        <td className="px-2 py-1.5 whitespace-nowrap">
+        <td className="px-1 py-1.5 whitespace-nowrap">
           <span className={locationBadge}>
             {LOCATION_LABELS[order.location] || order.location}
           </span>
         </td>
 
-        <td className="px-2 py-1.5 whitespace-nowrap">
+        <td className="px-1 py-1.5 whitespace-nowrap">
           <span className={finStatusBadge}>{order.financialStatus}</span>
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
+        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
           ${(order.amountUsd ?? 0).toFixed(2)}
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
+        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
           {(order.amountLbp ?? 0).toLocaleString()}
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
+        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
           ${actualCollectedUsd.toFixed(2)}
         </td>
 
-        <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
+        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
           {actualCollectedLbp.toLocaleString()}
         </td>
 
-        <td className="px-2 py-1.5 whitespace-nowrap text-center">
+        <td className="px-1 py-1.5 whitespace-nowrap text-center">
           <a
             href={`https://wa.me/${order.customerPhone?.replace(/[^0-9]/g, "")}`}
             target="_blank"
@@ -236,7 +236,7 @@ export default function SharedOrderTable({
           </a>
         </td>
 
-        <td className="px-2 py-1.5 whitespace-nowrap text-center">
+        <td className="px-1 py-1.5 whitespace-nowrap text-center">
           {order.waybillUrl ? (
             <a
               href={order.waybillUrl}
@@ -284,7 +284,7 @@ export default function SharedOrderTable({
         </td>
 
         {onCopyLink && (
-          <td className="px-2 py-1.5 whitespace-nowrap text-right">
+          <td className="px-1 py-1.5 whitespace-nowrap text-right">
             <button
               onClick={() => onCopyLink(order.orderId)}
               className="px-3 py-1.5 text-xs font-bold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded transition-colors"
@@ -375,10 +375,10 @@ export default function SharedOrderTable({
 
   return (
     <div className="overflow-x-auto rounded-xl border border-white/10 bg-[#121824]">
-      <table className="w-full text-sm">
+      <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[11px] uppercase tracking-wider">
-            <th className="px-2 py-2 text-left font-medium w-8">
+          <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[10px] uppercase tracking-wider">
+            <th className="px-1 py-2 text-left font-medium w-8 min-w-[32px] max-w-[32px]">
               <input
                 type="checkbox"
                 checked={isAllSelected}
@@ -386,22 +386,54 @@ export default function SharedOrderTable({
                 className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
               />
             </th>
-            <th className="px-2 py-2 text-left font-medium">Order ID</th>
-            <th className="px-2 py-2 text-left font-medium">Date</th>
-            <th className="px-2 py-2 text-left font-medium">Seller</th>
-            <th className="px-2 py-2 text-left font-medium">Customer</th>
-            <th className="px-2 py-2 text-left font-medium">Tel Number</th>
-            <th className="px-2 py-2 text-left font-medium">Address</th>
-            <th className="px-2 py-2 text-left font-medium">Zone</th>
-            <th className="px-2 py-2 text-left font-medium">Driver</th>
-            <th className="px-2 py-2 text-left font-medium">Location</th>
-            <th className="px-2 py-2 text-left font-medium">Fin Status</th>
-            <th className="px-2 py-2 text-right font-medium">Amt $</th>
-            <th className="px-2 py-2 text-right font-medium">Amt LL</th>
-            <th className="px-2 py-2 text-right font-medium">$ Coll</th>
-            <th className="px-2 py-2 text-right font-medium">LL Coll</th>
-            <th className="px-2 py-2 text-center font-medium">WA</th>
-            <th className="px-2 py-2 text-center font-medium">Waybill</th>
+            <th className="px-1 py-2 text-left font-medium min-w-[70px] max-w-[90px]">
+              Order ID
+            </th>
+            <th className="px-1 py-2 text-left font-medium min-w-[65px] max-w-[75px]">
+              Date
+            </th>
+            <th className="px-1 py-2 text-left font-medium min-w-[80px] max-w-[120px]">
+              Seller
+            </th>
+            <th className="px-1 py-2 text-left font-medium min-w-[90px] max-w-[130px]">
+              Customer
+            </th>
+            <th className="px-1 py-2 text-left font-medium min-w-[90px] max-w-[120px]">
+              Tel Number
+            </th>
+            <th className="px-1 py-2 text-left font-medium min-w-[100px] max-w-[160px]">
+              Address
+            </th>
+            <th className="px-1 py-2 text-left font-medium min-w-[70px] max-w-[100px]">
+              Zone
+            </th>
+            <th className="px-1 py-2 text-left font-medium min-w-[110px] max-w-[160px]">
+              Driver
+            </th>
+            <th className="px-1 py-2 text-left font-medium min-w-[75px] max-w-[90px]">
+              Location
+            </th>
+            <th className="px-1 py-2 text-left font-medium min-w-[65px] max-w-[80px]">
+              Fin Status
+            </th>
+            <th className="px-1 py-2 text-right font-medium min-w-[65px] max-w-[80px]">
+              Amt $
+            </th>
+            <th className="px-1 py-2 text-right font-medium min-w-[70px] max-w-[90px]">
+              Amt LL
+            </th>
+            <th className="px-1 py-2 text-right font-medium min-w-[60px] max-w-[75px]">
+              $ Coll
+            </th>
+            <th className="px-1 py-2 text-right font-medium min-w-[65px] max-w-[85px]">
+              LL Coll
+            </th>
+            <th className="px-1 py-2 text-center font-medium min-w-[45px] max-w-[55px]">
+              WA
+            </th>
+            <th className="px-1 py-2 text-center font-medium min-w-[55px] max-w-[65px]">
+              Waybill
+            </th>
             {onCopyLink && (
               <th className="px-2 py-2 text-center font-medium"></th>
             )}

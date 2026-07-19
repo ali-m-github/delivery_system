@@ -44,3 +44,6 @@ next-env.d.ts
 
 # server uploads (waybills, driver docs, etc.)
 /public/uploads
+
+# Google credentials
+uplifted-earth-468521-v2-9418c17e7b6e.json

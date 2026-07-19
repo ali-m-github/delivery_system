@@ -300,49 +300,56 @@ function OrdersPageInner() {
     if (!files || files.length === 0) return;
 
     setWaybillUploading(true);
-    try {
+
+    const fileList = Array.from(files);
+    let successCount = 0;
+    const failedFiles: string[] = [];
+
+    // Sequential execution prevents CPU starvation on the backend
+    for (const file of fileList) {
       const formData = new FormData();
-      for (let i = 0; i < files.length; i++) {
-        formData.append("files", files[i]);
-      }
+      formData.append("file", file);
 
-      const res = await fetch("/api/orders/waybill", {
-        method: "POST",
-        body: formData,
-      });
+      try {
+        const res = await fetch("/api/orders/waybill", {
+          method: "POST",
+          body: formData,
+        });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        if (res.status === 404) {
-          alert(data.error || "Error: No matching Order ID found in database.");
+        if (res.ok) {
+          const data = await res.json();
+          // API returns { results: [{ fileName, success, error?, ... }] }
+          const fileResult = data.results?.[0];
+          if (fileResult?.success) {
+            successCount++;
+          } else {
+            failedFiles.push(
+              `${file.name}: ${fileResult?.error || "Unknown error"}`,
+            );
+          }
         } else {
-          alert(data.error || "Waybill upload failed.");
-        }
-      } else {
-        const successCount =
-          data.results?.filter((r: any) => r.success).length || 0;
-        const failCount =
-          data.results?.filter((r: any) => !r.success).length || 0;
-        if (failCount > 0) {
-          const failures = data.results
-            .filter((r: any) => !r.success)
-            .map((r: any) => `${r.fileName}: ${r.error}`)
-            .join("\n");
-          alert(
-            `Uploaded ${successCount} waybill(s) successfully.\n${failCount} failed:\n${failures}`,
+          const errorData = await res.json().catch(() => null);
+          failedFiles.push(
+            `${file.name}: ${errorData?.error || res.statusText || "Request failed"}`,
           );
-        } else {
-          alert(`Successfully uploaded ${successCount} waybill(s).`);
         }
-        await fetchOrders();
+      } catch (error) {
+        failedFiles.push(`${file.name}: Network or Server Error`);
       }
-    } catch (err: any) {
-      alert("Waybill upload error: " + err.message);
-    } finally {
-      setWaybillUploading(false);
-      e.target.value = "";
     }
+
+    // Handle alert rendering after the entire queue finishes
+    if (failedFiles.length > 0) {
+      alert(
+        `Uploaded ${successCount} successfully.\n${failedFiles.length} failed:\n${failedFiles.join("\n")}`,
+      );
+    } else {
+      alert(`Successfully uploaded all ${successCount} waybills.`);
+    }
+
+    await fetchOrders();
+    setWaybillUploading(false);
+    e.target.value = "";
   };
 
   // ── Zone text input for order creation ──
@@ -2289,6 +2296,31 @@ function OrdersPageInner() {
         {/* --- INLINE ORDER ENTRY STATION --- */}
         {currentTab === "order-entry" && (
           <div className="max-w-7xl mx-auto animate-fadeIn">
+            {/* Waybill Upload */}
+            <div className="mb-3 flex items-center gap-2">
+              <input
+                ref={waybillInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleWaybillUpload}
+                className="hidden"
+              />
+              <button
+                onClick={() => waybillInputRef.current?.click()}
+                disabled={waybillUploading}
+                className="px-4 py-1.5 text-xs font-semibold rounded-lg
+                           bg-purple-500/20 text-purple-300 border border-purple-500/30
+                           hover:bg-purple-500/30 hover:shadow-[0_0_16px_rgba(168,85,247,0.3)]
+                           disabled:opacity-50 disabled:cursor-not-allowed
+                           transition-all duration-200"
+              >
+                {waybillUploading ? "Uploading..." : "📄 Upload Waybill"}
+              </button>
+              <span className="text-[10px] text-gray-500 font-mono">
+                Upload waybill image(s) — order number extracted automatically
+              </span>
+            </div>
             <div className="bg-[#121824] border border-white/5 rounded-xl p-4 shadow-2xl">
               <div className="flex items-center gap-3 mb-3">
                 <h2 className="text-sm font-bold text-white uppercase tracking-wider">
@@ -2519,32 +2551,6 @@ function OrdersPageInner() {
                   </div>
                 </div>
               </form>
-
-              {/* Waybill Upload */}
-              <div className="mt-3 pt-3 border-t border-white/5 flex items-center gap-2">
-                <input
-                  ref={waybillInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleWaybillUpload}
-                  className="hidden"
-                />
-                <button
-                  onClick={() => waybillInputRef.current?.click()}
-                  disabled={waybillUploading}
-                  className="px-4 py-1.5 text-xs font-semibold rounded-lg
-                             bg-purple-500/20 text-purple-300 border border-purple-500/30
-                             hover:bg-purple-500/30 hover:shadow-[0_0_16px_rgba(168,85,247,0.3)]
-                             disabled:opacity-50 disabled:cursor-not-allowed
-                             transition-all duration-200"
-                >
-                  {waybillUploading ? "Uploading..." : "📄 Upload Waybill"}
-                </button>
-                <span className="text-[10px] text-gray-500 font-mono">
-                  Upload waybill image(s) — order number extracted automatically
-                </span>
-              </div>
             </div>
             {/* Hidden datalists */}
             <datalist id="tab-seller-options">
