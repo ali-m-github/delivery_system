@@ -1214,7 +1214,7 @@ function OrdersPageInner() {
       {/* Background grid */}
       <div className="fixed inset-0 bg-[linear-gradient(rgba(6,182,212,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(6,182,212,0.04)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_0%,#000_70%,transparent_110%)] pointer-events-none z-0" />
 
-      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 py-8">
+      <div className="relative z-10 w-full max-w-full px-2 lg:px-6 py-4 md:py-6">
         {/* ── Header ── */}
         <div className="mb-6">
           <div>
@@ -2295,7 +2295,7 @@ function OrdersPageInner() {
 
         {/* --- INLINE ORDER ENTRY STATION --- */}
         {currentTab === "order-entry" && (
-          <div className="max-w-7xl mx-auto animate-fadeIn">
+          <div className="w-full max-w-full animate-fadeIn">
             {/* Waybill Upload */}
             <div className="mb-3 flex items-center gap-2">
               <input

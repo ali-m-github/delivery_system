@@ -87,16 +87,16 @@ export default function SharedOrderTable({
       (Number(order.amountUsd) !== Number(actualCollectedUsd) ||
         Number(order.amountLbp) !== Number(actualCollectedLbp));
 
+    const rowClasses = isMismatched
+      ? "bg-yellow-500/20 transition-colors"
+      : "hover:bg-cyan-500/[0.03] transition-colors";
+
     const mainRow = (
       <tr
         key={order.id}
-        className={
-          isMismatched
-            ? "bg-yellow-500/20 border-b border-white/5 transition-colors"
-            : "border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
-        }
+        className={`block lg:table-row border-b border-gray-800 lg:border-none mb-4 lg:mb-0 p-2 lg:p-0 ${rowClasses}`}
       >
-        <td className="px-1 py-1.5">
+        <td className="flex lg:table-cell items-center px-0.5 py-2 whitespace-nowrap">
           <input
             type="checkbox"
             checked={selectedOrderIds.includes(order.id)}
@@ -105,7 +105,8 @@ export default function SharedOrderTable({
           />
         </td>
 
-        <td className="px-1 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">ID:</span>
           <div className="flex items-center gap-1.5">
             <button
               onClick={() =>
@@ -122,35 +123,48 @@ export default function SharedOrderTable({
             >
               &#9776;
             </button>
-            <span>#{order.orderId}</span>
+            <span className="font-mono text-gray-300">#{order.orderId}</span>
           </div>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-400 whitespace-nowrap">
-          {formatDDMMYYYY(order.createdAt)}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Date:</span>
+          <span className="text-gray-400">
+            {formatDDMMYYYY(order.createdAt)}
+          </span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap">
-          {sellerName}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Seller:</span>
+          <span className="text-gray-300">{sellerName}</span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-white whitespace-nowrap">
-          {order.customerName}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Customer:</span>
+          <span className="text-white">{order.customerName}</span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-400 whitespace-nowrap">
-          {order.customerPhone}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Tel:</span>
+          <span className="text-gray-400">{order.customerPhone}</span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-400 max-w-[120px] truncate">
-          {order.customerAddress}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Address:</span>
+          <span className="text-gray-400 truncate">
+            {order.customerAddress}
+          </span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap">
-          {order.zone?.name || order.zoneId || "—"}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Zone:</span>
+          <span className="text-gray-300">
+            {order.zone?.name || order.zoneId || "—"}
+          </span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Driver:</span>
           {order.driverId && order.driver ? (
             <span className="text-cyan-300 font-medium">
               {order.driver.firstName} {order.driver.lastName} (
@@ -198,33 +212,48 @@ export default function SharedOrderTable({
           )}
         </td>
 
-        <td className="px-1 py-1.5 whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Location:</span>
           <span className={locationBadge}>
             {LOCATION_LABELS[order.location] || order.location}
           </span>
         </td>
 
-        <td className="px-1 py-1.5 whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Fin:</span>
           <span className={finStatusBadge}>{order.financialStatus}</span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
-          ${(order.amountUsd ?? 0).toFixed(2)}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Amt $:</span>
+          <span className="text-gray-300 text-right">
+            ${(order.amountUsd ?? 0).toFixed(2)}
+          </span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
-          {(order.amountLbp ?? 0).toLocaleString()}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Amt LL:</span>
+          <span className="text-gray-300 text-right">
+            {(order.amountLbp ?? 0).toLocaleString()}
+          </span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
-          ${actualCollectedUsd.toFixed(2)}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">$ Coll:</span>
+          <span className="text-gray-300 text-right">
+            ${actualCollectedUsd.toFixed(2)}
+          </span>
         </td>
 
-        <td className="px-1 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">
-          {actualCollectedLbp.toLocaleString()}
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">LL Coll:</span>
+          <span className="text-gray-300 text-right">
+            {actualCollectedLbp.toLocaleString()}
+          </span>
         </td>
 
-        <td className="px-1 py-1.5 whitespace-nowrap text-center">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">WA:</span>
           <a
             href={`https://wa.me/${order.customerPhone?.replace(/[^0-9]/g, "")}`}
             target="_blank"
@@ -236,7 +265,8 @@ export default function SharedOrderTable({
           </a>
         </td>
 
-        <td className="px-1 py-1.5 whitespace-nowrap text-center">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
+          <span className="lg:hidden font-bold text-gray-400">Waybill:</span>
           {order.waybillUrl ? (
             <a
               href={order.waybillUrl}
@@ -284,12 +314,31 @@ export default function SharedOrderTable({
         </td>
 
         {onCopyLink && (
-          <td className="px-1 py-1.5 whitespace-nowrap text-right">
+          <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
+            <span className="lg:hidden font-bold text-gray-400">Link:</span>
             <button
-              onClick={() => onCopyLink(order.orderId)}
-              className="px-3 py-1.5 text-xs font-bold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded transition-colors"
+              onClick={() =>
+                navigator.clipboard.writeText(
+                  window.location.origin + "/track/" + order.orderId,
+                )
+              }
+              className="p-1 text-gray-400 hover:text-white transition-colors flex items-center justify-center"
+              title="Copy Link"
             >
-              🔗 Copy Link
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+                stroke="currentColor"
+                className="w-4 h-4"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"
+                />
+              </svg>
             </button>
           </td>
         )}
@@ -374,72 +423,33 @@ export default function SharedOrderTable({
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-white/10 bg-[#121824]">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[10px] uppercase tracking-wider">
-            <th className="px-1 py-2 text-left font-medium w-8 min-w-[32px] max-w-[32px]">
-              <input
-                type="checkbox"
-                checked={isAllSelected}
-                onChange={onToggleSelectAll}
-                className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
-              />
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[70px] max-w-[90px]">
-              Order ID
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[65px] max-w-[75px]">
-              Date
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[80px] max-w-[120px]">
-              Seller
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[90px] max-w-[130px]">
-              Customer
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[90px] max-w-[120px]">
-              Tel Number
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[100px] max-w-[160px]">
-              Address
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[70px] max-w-[100px]">
-              Zone
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[110px] max-w-[160px]">
-              Driver
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[75px] max-w-[90px]">
-              Location
-            </th>
-            <th className="px-1 py-2 text-left font-medium min-w-[65px] max-w-[80px]">
-              Fin Status
-            </th>
-            <th className="px-1 py-2 text-right font-medium min-w-[65px] max-w-[80px]">
-              Amt $
-            </th>
-            <th className="px-1 py-2 text-right font-medium min-w-[70px] max-w-[90px]">
-              Amt LL
-            </th>
-            <th className="px-1 py-2 text-right font-medium min-w-[60px] max-w-[75px]">
-              $ Coll
-            </th>
-            <th className="px-1 py-2 text-right font-medium min-w-[65px] max-w-[85px]">
-              LL Coll
-            </th>
-            <th className="px-1 py-2 text-center font-medium min-w-[45px] max-w-[55px]">
-              WA
-            </th>
-            <th className="px-1 py-2 text-center font-medium min-w-[55px] max-w-[65px]">
-              Waybill
-            </th>
-            {onCopyLink && (
-              <th className="px-2 py-2 text-center font-medium"></th>
-            )}
+    <div className="w-full max-w-full rounded-xl border border-white/10 bg-[#121824] overflow-x-auto">
+      <table className="w-full table-fixed text-[10px] md:text-xs min-w-[1000px] lg:min-w-full">
+        <thead className="hidden lg:table-header-group text-[10px] leading-tight">
+          <tr className="border-b border-gray-700 text-left">
+            <th className="w-[3%] px-0.5 py-2">SEL</th>
+            <th className="w-[5%] px-0.5 py-2">ID</th>
+            <th className="w-[6%] px-0.5 py-2">DATE</th>
+            <th className="w-[8%] px-0.5 py-2">SELLER</th>
+            <th className="w-[9%] px-0.5 py-2">CUSTOMER</th>
+            <th className="w-[7%] px-0.5 py-2">TEL NUMBER</th>
+            <th className="w-[12%] px-0.5 py-2">ADDRESS</th>
+            <th className="w-[4%] px-0.5 py-2">ZONE</th>
+            <th className="w-[8%] px-0.5 py-2">DRIVER</th>
+            <th className="w-[6%] px-0.5 py-2">LOCATION</th>
+            <th className="w-[4%] px-0.5 py-2">FIN</th>
+            <th className="w-[5%] px-0.5 py-2">AMT $</th>
+            <th className="w-[5%] px-0.5 py-2">AMT LL</th>
+            <th className="w-[5%] px-0.5 py-2">$ COLL</th>
+            <th className="w-[5%] px-0.5 py-2">LL COLL</th>
+            <th className="w-[3%] px-0.5 py-2">WA</th>
+            <th className="w-[2%] px-0.5 py-2">DOC</th>
+            {onCopyLink && <th className="w-[3%] px-0.5 py-2">LINK</th>}
           </tr>
         </thead>
-        <tbody>{orders.flatMap(renderTableRow)}</tbody>
+        <tbody className="block lg:table-row-group">
+          {orders.flatMap(renderTableRow)}
+        </tbody>
       </table>
     </div>
   );
