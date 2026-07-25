@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import SellerRateForm from "@/components/drivers/SellerRateForm";
 import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
+import OrderHistoryModal from "@/components/OrderHistoryModal";
 import * as XLSX from "xlsx";
 
 type Tab = "assigned" | "delivered" | "returns" | "payouts" | "rates";
@@ -39,6 +40,10 @@ export default function DriverProfilePage() {
   const [approving, setApproving] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [clearing, setClearing] = useState(false);
+  const [historyModalOrder, setHistoryModalOrder] = useState<{
+    id: string;
+    history: any[];
+  } | null>(null);
 
   // ─── Settlement Modal State ────────────────────────────────────────────
   const [treasuryBoxes, setTreasuryBoxes] = useState<any[]>([]);
@@ -55,6 +60,16 @@ export default function DriverProfilePage() {
     payouts: null,
     rates: null,
   });
+
+  // ─── Pagination State per Tab ────────────────────────────────────────────
+  const [assignedPage, setAssignedPage] = useState(1);
+  const [assignedItemsPerPage, setAssignedItemsPerPage] = useState(50);
+  const [deliveredPage, setDeliveredPage] = useState(1);
+  const [deliveredItemsPerPage, setDeliveredItemsPerPage] = useState(50);
+  const [returnsPage, setReturnsPage] = useState(1);
+  const [returnsItemsPerPage, setReturnsItemsPerPage] = useState(50);
+  const [payoutsPage, setPayoutsPage] = useState(1);
+  const [payoutsItemsPerPage, setPayoutsItemsPerPage] = useState(50);
 
   const handleSort = (tab: Tab, key: SortKey) => {
     setSortConfig((prev) => {
@@ -230,6 +245,30 @@ export default function DriverProfilePage() {
       }),
     [deliveries],
   );
+
+  // ─── Paginated Lists per Tab ────────────────────────────────────────────
+  const paginatedAssigned = useMemo(() => {
+    const sorted = sortOrders(assignedOrders, "assigned");
+    const start = (assignedPage - 1) * assignedItemsPerPage;
+    return sorted.slice(start, start + assignedItemsPerPage);
+  }, [assignedOrders, assignedPage, assignedItemsPerPage, sortConfig]);
+
+  const paginatedDelivered = useMemo(() => {
+    const sorted = sortOrders(deliveredOrders, "delivered");
+    const start = (deliveredPage - 1) * deliveredItemsPerPage;
+    return sorted.slice(start, start + deliveredItemsPerPage);
+  }, [deliveredOrders, deliveredPage, deliveredItemsPerPage, sortConfig]);
+
+  const paginatedReturned = useMemo(() => {
+    const sorted = sortOrders(returnedOrders, "returns");
+    const start = (returnsPage - 1) * returnsItemsPerPage;
+    return sorted.slice(start, start + returnsItemsPerPage);
+  }, [returnedOrders, returnsPage, returnsItemsPerPage, sortConfig]);
+
+  const paginatedPayouts = useMemo(() => {
+    const start = (payoutsPage - 1) * payoutsItemsPerPage;
+    return payouts.slice(start, start + payoutsItemsPerPage);
+  }, [payouts, payoutsPage, payoutsItemsPerPage]);
 
   // ─── Financial Aggregates ───────────────────────────────────────────────
   const assignedUsdSum = assignedOrders.reduce(
@@ -890,6 +929,62 @@ export default function DriverProfilePage() {
                 </div>
               )}
 
+              {/* Pagination Controls - Assigned */}
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <span>Rows per page:</span>
+                  <select
+                    value={assignedItemsPerPage}
+                    onChange={(e) => {
+                      setAssignedItemsPerPage(Number(e.target.value));
+                      setAssignedPage(1);
+                    }}
+                    className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300 focus:ring-cyan-500 focus:border-cyan-500"
+                  >
+                    {[50, 100, 200, 500, 1000].map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="ml-2">
+                    Showing{" "}
+                    {assignedOrders.length
+                      ? Math.min(
+                          assignedPage * assignedItemsPerPage,
+                          assignedOrders.length,
+                        )
+                      : 0}{" "}
+                    of {assignedOrders.length}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setAssignedPage((p) => Math.max(1, p - 1))}
+                    disabled={assignedPage === 1}
+                    className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    onClick={() =>
+                      setAssignedPage((p) =>
+                        p * assignedItemsPerPage < assignedOrders.length
+                          ? p + 1
+                          : p,
+                      )
+                    }
+                    disabled={
+                      assignedPage * assignedItemsPerPage >=
+                      assignedOrders.length
+                    }
+                    className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
@@ -945,7 +1040,8 @@ export default function DriverProfilePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortOrders(assignedOrders, "assigned").length === 0 ? (
+                    {paginatedAssigned.length === 0 &&
+                    assignedOrders.length === 0 ? (
                       <tr>
                         <td
                           colSpan={12}
@@ -955,68 +1051,82 @@ export default function DriverProfilePage() {
                         </td>
                       </tr>
                     ) : (
-                      sortOrders(assignedOrders, "assigned").map(
-                        (order: any) => (
-                          <tr
-                            key={order.id}
-                            className="border-b border-white/5 hover:bg-white/[0.02] transition-colors"
-                          >
-                            <td className="px-5 py-3.5">
-                              <input
-                                type="checkbox"
-                                checked={selectedOrders.includes(order.id)}
-                                onChange={() => toggleSelection(order.id)}
-                                className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
-                              />
-                            </td>
-                            <td className="px-5 py-3.5 font-mono text-cyan-400 text-sm">
-                              {order.orderId}
-                            </td>
-                            <td className="px-5 py-3.5 text-gray-300 text-sm whitespace-nowrap">
-                              {formatDate(order.createdAt)}
-                            </td>
-                            <td className="px-5 py-3.5 text-white text-sm">
-                              {order.merchant?.merchantName || "—"}
-                            </td>
-                            <td className="px-5 py-3.5 text-white text-sm">
-                              {order.customerName}
-                            </td>
-                            <td className="px-5 py-3.5 text-gray-300 text-sm font-mono">
-                              {order.customerPhone || "—"}
-                            </td>
-                            <td className="px-5 py-3.5 text-gray-400 text-sm max-w-[200px] truncate">
-                              {order.customerAddress || "—"}
-                            </td>
-                            <td className="px-5 py-3.5 text-gray-400 text-sm">
-                              {order.zone?.name || "—"}
-                            </td>
-                            <td className="px-5 py-3.5">
-                              <span
-                                className={`px-2 py-1 text-[10px] font-bold rounded border ${
-                                  order.location === "WITH_DRIVER"
-                                    ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
-                                    : order.location === "WAREHOUSE"
-                                      ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
-                                      : "bg-gray-500/10 text-gray-400 border-gray-500/20"
-                                }`}
+                      paginatedAssigned.map((order: any) => (
+                        <tr
+                          key={order.id}
+                          className="border-b border-white/5 hover:bg-white/[0.02] transition-colors"
+                        >
+                          <td className="px-5 py-3.5">
+                            <input
+                              type="checkbox"
+                              checked={selectedOrders.includes(order.id)}
+                              onChange={() => toggleSelection(order.id)}
+                              className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                            />
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={() =>
+                                  setHistoryModalOrder({
+                                    id: order.id,
+                                    history: order.history || [],
+                                  })
+                                }
+                                title="Order History"
+                                className="text-[10px] px-1 py-0.5 rounded border transition-all bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
                               >
-                                {order.location}
+                                &#9776;
+                              </button>
+                              <span className="font-mono text-cyan-400 text-sm">
+                                #{order.orderId}
                               </span>
-                            </td>
-                            <td className="px-5 py-3.5">
-                              <span className="px-2 py-1 text-[10px] font-bold rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-                                {order.financialStatus || "—"}
-                              </span>
-                            </td>
-                            <td className="px-5 py-3.5 text-right text-green-400 font-mono text-sm">
-                              ${(order.amountUsd ?? 0).toFixed(2)}
-                            </td>
-                            <td className="px-5 py-3.5 text-right text-yellow-400 font-mono text-sm">
-                              {(order.amountLbp ?? 0).toLocaleString()} LL
-                            </td>
-                          </tr>
-                        ),
-                      )
+                            </div>
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-300 text-sm whitespace-nowrap">
+                            {formatDate(order.createdAt)}
+                          </td>
+                          <td className="px-5 py-3.5 text-white text-sm">
+                            {order.merchant?.merchantName || "—"}
+                          </td>
+                          <td className="px-5 py-3.5 text-white text-sm">
+                            {order.customerName}
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-300 text-sm font-mono">
+                            {order.customerPhone || "—"}
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-400 text-sm max-w-[200px] truncate">
+                            {order.customerAddress || "—"}
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-400 text-sm">
+                            {order.zone?.name || "—"}
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span
+                              className={`px-2 py-1 text-[10px] font-bold rounded border ${
+                                order.location === "WITH_DRIVER"
+                                  ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                                  : order.location === "WAREHOUSE"
+                                    ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
+                                    : "bg-gray-500/10 text-gray-400 border-gray-500/20"
+                              }`}
+                            >
+                              {order.location}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span className="px-2 py-1 text-[10px] font-bold rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                              {order.financialStatus || "—"}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-right text-green-400 font-mono text-sm">
+                            ${(order.amountUsd ?? 0).toFixed(2)}
+                          </td>
+                          <td className="px-5 py-3.5 text-right text-yellow-400 font-mono text-sm">
+                            {(order.amountLbp ?? 0).toLocaleString()} LL
+                          </td>
+                        </tr>
+                      ))
                     )}
                   </tbody>
                 </table>
@@ -1158,6 +1268,62 @@ export default function DriverProfilePage() {
                 </button>
               </div>
 
+              {/* Pagination Controls - Delivered */}
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <span>Rows per page:</span>
+                  <select
+                    value={deliveredItemsPerPage}
+                    onChange={(e) => {
+                      setDeliveredItemsPerPage(Number(e.target.value));
+                      setDeliveredPage(1);
+                    }}
+                    className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300 focus:ring-cyan-500 focus:border-cyan-500"
+                  >
+                    {[50, 100, 200, 500, 1000].map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="ml-2">
+                    Showing{" "}
+                    {deliveredOrders.length
+                      ? Math.min(
+                          deliveredPage * deliveredItemsPerPage,
+                          deliveredOrders.length,
+                        )
+                      : 0}{" "}
+                    of {deliveredOrders.length}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setDeliveredPage((p) => Math.max(1, p - 1))}
+                    disabled={deliveredPage === 1}
+                    className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    onClick={() =>
+                      setDeliveredPage((p) =>
+                        p * deliveredItemsPerPage < deliveredOrders.length
+                          ? p + 1
+                          : p,
+                      )
+                    }
+                    disabled={
+                      deliveredPage * deliveredItemsPerPage >=
+                      deliveredOrders.length
+                    }
+                    className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
@@ -1212,7 +1378,8 @@ export default function DriverProfilePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortOrders(deliveredOrders, "delivered").length === 0 ? (
+                    {paginatedDelivered.length === 0 &&
+                    deliveredOrders.length === 0 ? (
                       <tr>
                         <td
                           colSpan={10}
@@ -1222,58 +1389,72 @@ export default function DriverProfilePage() {
                         </td>
                       </tr>
                     ) : (
-                      sortOrders(deliveredOrders, "delivered").map(
-                        (order: any) => {
-                          const isPayoutLocked = !!order.driverPayoutId;
-                          return (
-                            <tr
-                              key={order.id}
-                              className={`border-b border-white/5 hover:bg-white/[0.02] transition-colors ${
-                                isPayoutLocked ? "opacity-50" : ""
-                              }`}
-                            >
-                              <td className="px-5 py-3.5">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedOrders.includes(order.id)}
-                                  onChange={() => toggleSelection(order.id)}
-                                  disabled={isPayoutLocked}
-                                  className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0 disabled:opacity-30 disabled:cursor-not-allowed"
-                                />
-                              </td>
-                              <td className="px-5 py-3.5 font-mono text-cyan-400 text-sm">
-                                {order.orderId}
-                              </td>
-                              <td className="px-5 py-3.5 text-gray-300 text-sm whitespace-nowrap">
-                                {formatDate(order.createdAt)}
-                              </td>
-                              <td className="px-5 py-3.5 text-white text-sm">
-                                {order.merchant?.merchantName || "—"}
-                              </td>
-                              <td className="px-5 py-3.5 text-white text-sm">
-                                {order.customerName}
-                              </td>
-                              <td className="px-5 py-3.5 text-gray-400 text-sm max-w-[200px] truncate">
-                                {order.customerAddress || "—"}
-                              </td>
-                              <td className="px-5 py-3.5 text-gray-400 text-sm">
-                                {order.zone?.name || "—"}
-                              </td>
-                              <td className="px-5 py-3.5">
-                                <span className="px-2 py-1 text-[10px] font-bold rounded bg-green-500/10 text-green-400 border border-green-500/20">
-                                  {order.financialStatus}
+                      paginatedDelivered.map((order: any) => {
+                        const isPayoutLocked = !!order.driverPayoutId;
+                        return (
+                          <tr
+                            key={order.id}
+                            className={`border-b border-white/5 hover:bg-white/[0.02] transition-colors ${
+                              isPayoutLocked ? "opacity-50" : ""
+                            }`}
+                          >
+                            <td className="px-5 py-3.5">
+                              <input
+                                type="checkbox"
+                                checked={selectedOrders.includes(order.id)}
+                                onChange={() => toggleSelection(order.id)}
+                                disabled={isPayoutLocked}
+                                className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                              />
+                            </td>
+                            <td className="px-5 py-3.5">
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  onClick={() =>
+                                    setHistoryModalOrder({
+                                      id: order.id,
+                                      history: order.history || [],
+                                    })
+                                  }
+                                  title="Order History"
+                                  className="text-[10px] px-1 py-0.5 rounded border transition-all bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
+                                >
+                                  &#9776;
+                                </button>
+                                <span className="font-mono text-cyan-400 text-sm">
+                                  #{order.orderId}
                                 </span>
-                              </td>
-                              <td className="px-5 py-3.5 text-right text-green-400 font-mono text-sm">
-                                ${(order.amountUsd ?? 0).toFixed(2)}
-                              </td>
-                              <td className="px-5 py-3.5 text-right text-yellow-400 font-mono text-sm">
-                                {(order.amountLbp ?? 0).toLocaleString()} LL
-                              </td>
-                            </tr>
-                          );
-                        },
-                      )
+                              </div>
+                            </td>
+                            <td className="px-5 py-3.5 text-gray-300 text-sm whitespace-nowrap">
+                              {formatDate(order.createdAt)}
+                            </td>
+                            <td className="px-5 py-3.5 text-white text-sm">
+                              {order.merchant?.merchantName || "—"}
+                            </td>
+                            <td className="px-5 py-3.5 text-white text-sm">
+                              {order.customerName}
+                            </td>
+                            <td className="px-5 py-3.5 text-gray-400 text-sm max-w-[200px] truncate">
+                              {order.customerAddress || "—"}
+                            </td>
+                            <td className="px-5 py-3.5 text-gray-400 text-sm">
+                              {order.zone?.name || "—"}
+                            </td>
+                            <td className="px-5 py-3.5">
+                              <span className="px-2 py-1 text-[10px] font-bold rounded bg-green-500/10 text-green-400 border border-green-500/20">
+                                {order.financialStatus}
+                              </span>
+                            </td>
+                            <td className="px-5 py-3.5 text-right text-green-400 font-mono text-sm">
+                              ${(order.amountUsd ?? 0).toFixed(2)}
+                            </td>
+                            <td className="px-5 py-3.5 text-right text-yellow-400 font-mono text-sm">
+                              {(order.amountLbp ?? 0).toLocaleString()} LL
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -1328,6 +1509,60 @@ export default function DriverProfilePage() {
               </div>
             )}
             <div className="bg-white/[0.02] border border-white/5 rounded-xl overflow-hidden backdrop-blur-md">
+              {/* Pagination Controls - Returns */}
+              <div className="flex items-center justify-between px-5 py-3 border-b border-white/5">
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <span>Rows per page:</span>
+                  <select
+                    value={returnsItemsPerPage}
+                    onChange={(e) => {
+                      setReturnsItemsPerPage(Number(e.target.value));
+                      setReturnsPage(1);
+                    }}
+                    className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300 focus:ring-cyan-500 focus:border-cyan-500"
+                  >
+                    {[50, 100, 200, 500, 1000].map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="ml-2">
+                    Showing{" "}
+                    {returnedOrders.length
+                      ? Math.min(
+                          returnsPage * returnsItemsPerPage,
+                          returnedOrders.length,
+                        )
+                      : 0}{" "}
+                    of {returnedOrders.length}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setReturnsPage((p) => Math.max(1, p - 1))}
+                    disabled={returnsPage === 1}
+                    className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    onClick={() =>
+                      setReturnsPage((p) =>
+                        p * returnsItemsPerPage < returnedOrders.length
+                          ? p + 1
+                          : p,
+                      )
+                    }
+                    disabled={
+                      returnsPage * returnsItemsPerPage >= returnedOrders.length
+                    }
+                    className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
@@ -1380,7 +1615,8 @@ export default function DriverProfilePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortOrders(returnedOrders, "returns").length === 0 ? (
+                    {paginatedReturned.length === 0 &&
+                    returnedOrders.length === 0 ? (
                       <tr>
                         <td
                           colSpan={11}
@@ -1390,57 +1626,71 @@ export default function DriverProfilePage() {
                         </td>
                       </tr>
                     ) : (
-                      sortOrders(returnedOrders, "returns").map(
-                        (order: any) => (
-                          <tr
-                            key={order.id}
-                            className="border-b border-white/5 hover:bg-white/[0.02] transition-colors"
-                          >
-                            <td className="px-5 py-3.5">
-                              <input
-                                type="checkbox"
-                                checked={selectedOrders.includes(order.id)}
-                                onChange={() => toggleSelection(order.id)}
-                                className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
-                              />
-                            </td>
-                            <td className="px-5 py-3.5 font-mono text-cyan-400 text-sm">
-                              {order.orderId}
-                            </td>
-                            <td className="px-5 py-3.5 text-gray-300 text-sm whitespace-nowrap">
-                              {formatDate(order.createdAt)}
-                            </td>
-                            <td className="px-5 py-3.5 text-white text-sm">
-                              {order.merchant?.merchantName || "—"}
-                            </td>
-                            <td className="px-5 py-3.5 text-white text-sm">
-                              {order.customerName}
-                            </td>
-                            <td className="px-5 py-3.5 text-gray-400 text-sm max-w-[200px] truncate">
-                              {order.customerAddress || "—"}
-                            </td>
-                            <td className="px-5 py-3.5 text-gray-400 text-sm">
-                              {order.zone?.name || "—"}
-                            </td>
-                            <td className="px-5 py-3.5">
-                              <span className="px-2 py-1 text-[10px] font-bold rounded bg-red-500/10 text-red-400 border border-red-500/20">
-                                {order.location}
+                      paginatedReturned.map((order: any) => (
+                        <tr
+                          key={order.id}
+                          className="border-b border-white/5 hover:bg-white/[0.02] transition-colors"
+                        >
+                          <td className="px-5 py-3.5">
+                            <input
+                              type="checkbox"
+                              checked={selectedOrders.includes(order.id)}
+                              onChange={() => toggleSelection(order.id)}
+                              className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                            />
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={() =>
+                                  setHistoryModalOrder({
+                                    id: order.id,
+                                    history: order.history || [],
+                                  })
+                                }
+                                title="Order History"
+                                className="text-[10px] px-1 py-0.5 rounded border transition-all bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
+                              >
+                                &#9776;
+                              </button>
+                              <span className="font-mono text-cyan-400 text-sm">
+                                #{order.orderId}
                               </span>
-                            </td>
-                            <td className="px-5 py-3.5">
-                              <span className="px-2 py-1 text-[10px] font-bold rounded bg-orange-500/10 text-orange-400 border border-orange-500/20">
-                                RWD
-                              </span>
-                            </td>
-                            <td className="px-5 py-3.5 text-right text-red-400 font-mono text-sm">
-                              ${(order.amountUsd ?? 0).toFixed(2)}
-                            </td>
-                            <td className="px-5 py-3.5 text-right text-yellow-400 font-mono text-sm">
-                              {(order.amountLbp ?? 0).toLocaleString()} LL
-                            </td>
-                          </tr>
-                        ),
-                      )
+                            </div>
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-300 text-sm whitespace-nowrap">
+                            {formatDate(order.createdAt)}
+                          </td>
+                          <td className="px-5 py-3.5 text-white text-sm">
+                            {order.merchant?.merchantName || "—"}
+                          </td>
+                          <td className="px-5 py-3.5 text-white text-sm">
+                            {order.customerName}
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-400 text-sm max-w-[200px] truncate">
+                            {order.customerAddress || "—"}
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-400 text-sm">
+                            {order.zone?.name || "—"}
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span className="px-2 py-1 text-[10px] font-bold rounded bg-red-500/10 text-red-400 border border-red-500/20">
+                              {order.location}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span className="px-2 py-1 text-[10px] font-bold rounded bg-orange-500/10 text-orange-400 border border-orange-500/20">
+                              RWD
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-right text-red-400 font-mono text-sm">
+                            ${(order.amountUsd ?? 0).toFixed(2)}
+                          </td>
+                          <td className="px-5 py-3.5 text-right text-yellow-400 font-mono text-sm">
+                            {(order.amountLbp ?? 0).toLocaleString()} LL
+                          </td>
+                        </tr>
+                      ))
                     )}
                   </tbody>
                 </table>
@@ -1452,6 +1702,56 @@ export default function DriverProfilePage() {
         {/* ── Tab: Pending Payouts ───────────────────────────────────── */}
         {activeTab === "payouts" && (
           <div className="bg-white/[0.02] border border-white/5 rounded-xl overflow-hidden backdrop-blur-md">
+            {/* Pagination Controls - Payouts */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-white/5">
+              <div className="flex items-center gap-2 text-xs text-gray-400">
+                <span>Rows per page:</span>
+                <select
+                  value={payoutsItemsPerPage}
+                  onChange={(e) => {
+                    setPayoutsItemsPerPage(Number(e.target.value));
+                    setPayoutsPage(1);
+                  }}
+                  className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300 focus:ring-cyan-500 focus:border-cyan-500"
+                >
+                  {[50, 100, 200, 500, 1000].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+                <span className="ml-2">
+                  Showing{" "}
+                  {payouts.length
+                    ? Math.min(
+                        payoutsPage * payoutsItemsPerPage,
+                        payouts.length,
+                      )
+                    : 0}{" "}
+                  of {payouts.length}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPayoutsPage((p) => Math.max(1, p - 1))}
+                  disabled={payoutsPage === 1}
+                  className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Prev
+                </button>
+                <button
+                  onClick={() =>
+                    setPayoutsPage((p) =>
+                      p * payoutsItemsPerPage < payouts.length ? p + 1 : p,
+                    )
+                  }
+                  disabled={payoutsPage * payoutsItemsPerPage >= payouts.length}
+                  className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
@@ -1483,7 +1783,7 @@ export default function DriverProfilePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {payouts.length === 0 ? (
+                  {paginatedPayouts.length === 0 && payouts.length === 0 ? (
                     <tr>
                       <td
                         colSpan={10}
@@ -1493,7 +1793,7 @@ export default function DriverProfilePage() {
                       </td>
                     </tr>
                   ) : (
-                    payouts.map((payout: any) => {
+                    paginatedPayouts.map((payout: any) => {
                       const ordersNet =
                         (payout.netUsd || 0) - (payout.previousDebtUsd || 0);
                       const hasPreviousDebt =
@@ -1887,6 +2187,7 @@ export default function DriverProfilePage() {
                   <thead>
                     <tr className="bg-white/[0.03] border-b border-white/10 text-gray-400 uppercase tracking-wider">
                       <th className="px-4 py-2.5 font-semibold">Order ID</th>
+                      <th className="px-4 py-2.5 font-semibold">Seller</th>
                       <th className="px-4 py-2.5 font-semibold">Customer</th>
                       <th className="px-4 py-2.5 font-semibold text-right">
                         $ Amt
@@ -1900,7 +2201,7 @@ export default function DriverProfilePage() {
                     {(selectedPayout.orders || []).length === 0 ? (
                       <tr>
                         <td
-                          colSpan={4}
+                          colSpan={5}
                           className="text-center py-6 text-gray-500 italic"
                         >
                           No orders linked to this payout.
@@ -1914,6 +2215,9 @@ export default function DriverProfilePage() {
                         >
                           <td className="px-4 py-2.5 font-mono text-cyan-400">
                             {order.orderId}
+                          </td>
+                          <td className="px-4 py-2.5 text-white">
+                            {order.merchant?.merchantName || "—"}
                           </td>
                           <td className="px-4 py-2.5 text-white">
                             {order.customerName}
@@ -2187,6 +2491,15 @@ export default function DriverProfilePage() {
             onConfirm={handleGeneratePayout}
             onCancel={() => setShowPayoutModal(false)}
             submitting={submitting}
+          />
+        )}
+
+        {/* ── Order History Modal ────────────────────────────────────── */}
+        {historyModalOrder && (
+          <OrderHistoryModal
+            orderId={historyModalOrder.id}
+            orderHistory={historyModalOrder.history}
+            onClose={() => setHistoryModalOrder(null)}
           />
         )}
       </div>

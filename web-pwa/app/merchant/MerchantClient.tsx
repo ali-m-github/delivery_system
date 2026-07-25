@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import OrderHistoryModal from "@/components/OrderHistoryModal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Zone {
@@ -72,6 +73,10 @@ export default function MerchantClient({
 }: MerchantClientProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("deliveries");
   const [selectedStatement, setSelectedStatement] = useState<any | null>(null);
+  const [historyModalOrder, setHistoryModalOrder] = useState<{
+    id: string;
+    history: any[];
+  } | null>(null);
 
   // ── Interactive Data Grid states ─────────────────────────────────────────
   const [boxFilter, setBoxFilter] = useState<string | null>(null);
@@ -724,8 +729,24 @@ export default function MerchantClient({
                                 className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
                               />
                             </td>
-                            <td className="px-2 py-2.5 text-xs font-mono text-cyan-400">
-                              #{order.orderId}
+                            <td className="px-2 py-2.5 text-xs">
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  onClick={() =>
+                                    setHistoryModalOrder({
+                                      id: order.id,
+                                      history: [],
+                                    })
+                                  }
+                                  title="Order History"
+                                  className="text-[10px] px-1 py-0.5 rounded border transition-all bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
+                                >
+                                  &#9776;
+                                </button>
+                                <span className="font-mono text-cyan-400">
+                                  #{order.orderId}
+                                </span>
+                              </div>
                             </td>
                             <td className="px-2 py-2.5 text-xs text-gray-500">
                               {formatDate(order.createdAt)}
@@ -1282,6 +1303,15 @@ export default function MerchantClient({
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Order History Modal ──────────────────────────────────────────── */}
+      {historyModalOrder && (
+        <OrderHistoryModal
+          orderId={historyModalOrder.id}
+          orderHistory={historyModalOrder.history}
+          onClose={() => setHistoryModalOrder(null)}
+        />
       )}
     </>
   );

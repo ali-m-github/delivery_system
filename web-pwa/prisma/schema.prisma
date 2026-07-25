@@ -203,6 +203,7 @@ model DriverProfile {
   driverSellerRates DriverSellerRate[]
   payouts           DriverPayout[]
   deliveries        Order[]          @relation("DriverOrders")
+  assignedZones     DriverZoneAssignment[]
 
   // Rolling debt carried over from partial settlements
   carriedDebtUsd Float @default(0)
@@ -232,6 +233,13 @@ model Order {
   // --- Decoupled Tracking ---
   location        String @default("WAREHOUSE")
   financialStatus String @default("UD")
+
+  @@index([location])
+  @@index([financialStatus])
+  @@index([createdAt])
+  @@index([merchantId])
+  @@index([driverId])
+  @@index([isArchived])
 
   // --- Relations ---
   zoneId String
@@ -277,9 +285,10 @@ model Zone {
   name          String             @unique
   basePriceUsd  Float              @default(0)
   basePriceLbp  Float              @default(0)
-  orders        Order[]
-  driverRates   DriverZoneRate[]
-  merchantRates MerchantZoneRate[]
+  orders          Order[]
+  driverRates     DriverZoneRate[]
+  merchantRates   MerchantZoneRate[]
+  driverAssignments DriverZoneAssignment[]
 }
 
 model DriverZoneRate {
@@ -290,6 +299,17 @@ model DriverZoneRate {
 
   driver DriverProfile @relation(fields: [driverId], references: [id])
   zone   Zone          @relation(fields: [zoneId], references: [id])
+
+  @@unique([driverId, zoneId])
+}
+
+model DriverZoneAssignment {
+  id        String        @id @default(cuid())
+  driverId  String
+  zoneId    String
+  driver    DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  zone      Zone          @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
 
   @@unique([driverId, zoneId])
 }

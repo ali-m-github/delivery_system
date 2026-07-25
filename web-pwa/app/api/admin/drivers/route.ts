@@ -30,6 +30,20 @@ export async function GET() {
             },
           },
         },
+        driverSellerRates: {
+          include: {
+            merchant: {
+              select: { id: true, merchantName: true, merchantId: true },
+            },
+          },
+        },
+        assignedZones: {
+          include: {
+            zone: {
+              select: { id: true, name: true },
+            },
+          },
+        },
       },
       orderBy: { lastName: "asc" },
     });
@@ -226,6 +240,13 @@ export async function POST(request: Request) {
             include: {
               zone: {
                 select: { id: true, name: true },
+              },
+            },
+          },
+          driverSellerRates: {
+            include: {
+              merchant: {
+                select: { id: true, merchantName: true, merchantId: true },
               },
             },
           },

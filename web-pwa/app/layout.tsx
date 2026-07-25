@@ -31,10 +31,11 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <head>
-        {/* 2. Use strategy="beforeInteractive" to execute BEFORE vendor scripts */}
+        {/* Crypto polyfill — deferred to avoid blocking initial render.
+            crypto.randomUUID() is natively supported in Chrome 74+, Firefox 76+, Safari 15+. */}
         <Script
           id="crypto-polyfill"
-          strategy="beforeInteractive"
+          strategy="lazyOnload"
           dangerouslySetInnerHTML={{
             __html: `
               (function() {

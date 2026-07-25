@@ -38,6 +38,14 @@ interface DriverPayout {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+function capitalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function beirutDateTime(iso: string): string {
   return new Date(iso).toLocaleString("en-US", {
     timeZone: "Asia/Beirut",
@@ -191,7 +199,7 @@ export default function DriversDirectoryPage() {
       <body>
         <div class="header">
           <h2>Payout Invoice #${payout.sequentialIndex}</h2>
-          <p>Driver: ${payout.driver.firstName} ${payout.driver.lastName} (${payout.driver.driverId})</p>
+          <p>Driver: ${capitalizeName(payout.driver.firstName)} ${capitalizeName(payout.driver.lastName)} (${payout.driver.driverId})</p>
           <p>Execution Date: ${beirutTime} &mdash; Status: <span class="badge">${payout.status}</span></p>
         </div>
         <div class="summary">
@@ -426,7 +434,8 @@ export default function DriversDirectoryPage() {
                             {driver.driverId || "—"}
                           </td>
                           <td className="px-6 py-4 text-white text-sm font-medium">
-                            {driver.firstName} {driver.lastName}
+                            {capitalizeName(driver.firstName)}{" "}
+                            {capitalizeName(driver.lastName)}
                           </td>
                           <td className="px-6 py-4 text-gray-400 text-sm">
                             {driver.user?.username || driver.username || "—"}
@@ -445,7 +454,7 @@ export default function DriversDirectoryPage() {
                               }
                               className="bg-white/5 hover:bg-white/10 border border-white/10 text-white px-3 py-1.5 rounded text-xs font-semibold transition-colors"
                             >
-                              View Profile & Ledger &rarr;
+                              View Profile
                             </button>
                           </td>
                         </tr>
@@ -580,7 +589,7 @@ export default function DriversDirectoryPage() {
                       .filter((p) => selectedPayouts.includes(p.id))
                       .map((p) => ({
                         id: `${p.driver.driverId}-${String(p.sequentialIndex || 1).padStart(2, "0")}`,
-                        driverName: `${p.driver.firstName} ${p.driver.lastName}`,
+                        driverName: `${capitalizeName(p.driver.firstName)} ${capitalizeName(p.driver.lastName)}`,
                         totalUsd: p.totalUsd,
                         commission: p.commissionUsd,
                         netUsd: p.netUsd,
@@ -611,7 +620,7 @@ export default function DriversDirectoryPage() {
                       .filter((p) => selectedPayouts.includes(p.id))
                       .map((p) => ({
                         "Payout ID": `${p.driver.driverId}-${String(p.sequentialIndex || 1).padStart(2, "0")}`,
-                        Driver: `${p.driver.firstName} ${p.driver.lastName}`,
+                        Driver: `${capitalizeName(p.driver.firstName)} ${capitalizeName(p.driver.lastName)}`,
                         "Total USD": p.totalUsd,
                         Commission: p.commissionUsd,
                         "Net Paid": p.netUsd,
@@ -728,8 +737,8 @@ export default function DriversDirectoryPage() {
                                 #{payout.sequentialIndex}
                               </td>
                               <td className="px-4 py-3 text-white text-sm font-medium">
-                                {payout.driver.firstName}{" "}
-                                {payout.driver.lastName}
+                                {capitalizeName(payout.driver.firstName)}{" "}
+                                {capitalizeName(payout.driver.lastName)}
                                 <span className="text-gray-600 text-xs ml-1">
                                   ({payout.driver.driverId})
                                 </span>

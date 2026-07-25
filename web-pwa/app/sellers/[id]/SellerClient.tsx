@@ -681,6 +681,11 @@ export default function SellerClient({ merchant }: SellerClientProps) {
           </div>
         )}
 
+        {/* ── Order Count ── */}
+        <div className="mb-3 text-xs text-gray-500">
+          Showing {filteredOrders.length} of {normalizedOrders.length} order(s)
+        </div>
+
         {/* ── Shared Order Table ── */}
         <SharedOrderTable
           orders={filteredOrders}

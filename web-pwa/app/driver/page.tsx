@@ -22,15 +22,78 @@ export default async function DriverPage() {
     redirect("/login");
   }
 
+  // ── Fetch driver profile with zone assignments (with zone names) ────────
+  const driverWithZones = await prisma.driverProfile.findUnique({
+    where: { userId },
+    include: {
+      assignedZones: {
+        include: {
+          zone: {
+            select: { id: true, name: true },
+          },
+        },
+      },
+    },
+  });
+
+  if (!driverWithZones) {
+    return (
+      <div className="max-w-md mx-auto w-full min-h-screen bg-gray-950 flex items-center justify-center p-6">
+        <div className="text-center">
+          <p className="text-red-400 text-lg font-semibold">
+            No driver profile found.
+          </p>
+          <p className="text-gray-500 text-sm mt-2">
+            Your account is not linked to a driver profile.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Extract assigned zone IDs and build a map of zone id -> zone name
+  const assignedZoneIds = driverWithZones.assignedZones.map((az) => az.zoneId);
+  const assignedZonesWithNames = driverWithZones.assignedZones.map((az) => ({
+    id: az.zone.id,
+    name: az.zone.name,
+  }));
+
+  // Build delivery filter: only orders from assigned zones
+  // If no zones assigned, show all orders (backward compat)
+  const deliveryWhere = {
+    location: { in: ["WITH_DRIVER", "ASSIGNED", "DELIVERED"] },
+    financialStatus: { notIn: ["PS", "WO", "Arc"] },
+    ...(assignedZoneIds.length > 0 ? { zoneId: { in: assignedZoneIds } } : {}),
+  };
+
+  // ── Fetch warehouse orders from assigned zones ─────────────────────────
+  const warehouseOrders =
+    assignedZoneIds.length > 0
+      ? await prisma.order.findMany({
+          where: {
+            location: "WAREHOUSE",
+            zoneId: { in: assignedZoneIds },
+            driverId: null,
+          },
+          include: {
+            zone: {
+              select: { id: true, name: true },
+            },
+            merchant: {
+              select: { id: true, merchantName: true },
+            },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 500,
+        })
+      : [];
+
   // ── Fetch driver profile with active deliveries & zone rates ──────────
   const driver = await prisma.driverProfile.findUnique({
     where: { userId },
     include: {
       deliveries: {
-        where: {
-          location: { in: ["WITH_DRIVER", "DELIVERED"] },
-          financialStatus: { notIn: ["PS", "WO", "Arc"] },
-        },
+        where: deliveryWhere,
       },
       zoneRates: true,
       driverSellerRates: true,
@@ -54,6 +117,14 @@ export default async function DriverPage() {
 
   // ── Serialize for client component ────────────────────────────────────
   const plainDriver = JSON.parse(JSON.stringify(driver));
+  const plainWarehouseOrders = JSON.parse(JSON.stringify(warehouseOrders));
+  const plainAssignedZones = JSON.parse(JSON.stringify(assignedZonesWithNames));
 
-  return <DriverClient driver={plainDriver} />;
+  return (
+    <DriverClient
+      driver={plainDriver}
+      warehouseOrders={plainWarehouseOrders}
+      assignedZones={plainAssignedZones}
+    />
+  );
 }

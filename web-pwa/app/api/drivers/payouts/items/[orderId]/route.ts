@@ -38,22 +38,26 @@ export async function POST(
     const driverPayoutId = order.driverPayoutId;
     const driverId = order.driverId;
 
-    // Calculate the commission for this order using the driver's zone rate
+    // Calculate commission for this order using 3-tier logic:
+    // Tier 1: Seller exception rate, Tier 2: Zone rate, Tier 3: $0
+    const orderMerchantId = String(order.merchantId ?? "");
+    const orderZoneId = String(order.zoneId);
     const zoneRate = order.driver?.zoneRates?.find(
-      (zr: { zoneId: string; rate: number }) => zr.zoneId === order.zoneId,
+      (zr: { zoneId: string; rate: number }) => zr.zoneId === orderZoneId,
     );
     const orderCommission = zoneRate?.rate ?? 0;
-    const orderAmountUsd = order.amountUsd ?? 0;
 
     // Execute the rollback in a transaction
     const result = await prisma.$transaction(async (tx) => {
       // 1. Detach the order from the payout and reset to ASSIGNED
+      // Use UD (Unpaid/Undelivered) because the order is back with the driver,
+      // not delivered. WD is only for delivered orders pending payout.
       await tx.order.update({
         where: { id: orderId },
         data: {
           driverPayoutId: null,
           location: "ASSIGNED",
-          financialStatus: "WD",
+          financialStatus: "UD",
         },
       });
 
@@ -81,15 +85,40 @@ export async function POST(
       );
       const newTotalCollected = newTotalUsd;
 
-      // Recalculate commission from zone rates for remaining orders
+      // Recalculate commission using 3-tier logic: seller exception > zone rate > $0
       const zoneRates = await tx.driverZoneRate.findMany({
         where: { driverId: driverId || undefined },
       });
-      const rateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
-      const newCommissionUsd = remainingOrders.reduce(
-        (sum, o) => sum + (rateMap.get(o.zoneId) ?? 0),
-        0,
-      );
+      const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
+
+      // Also fetch seller exception rates for the driver
+      const driverProfile = await tx.driverProfile.findUnique({
+        where: { id: driverId || undefined },
+        select: { userId: true },
+      });
+
+      const sellerRates = driverProfile?.userId
+        ? await tx.driverSellerRate.findMany({
+            where: { driverId: driverId || undefined },
+          })
+        : [];
+
+      const sellerExceptionMap = new Map<string, number>();
+      for (const sr of sellerRates) {
+        if (sr.rateUsd > 0) sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+      }
+
+      const newCommissionUsd = remainingOrders.reduce((sum, o) => {
+        const merchantId = String(o.merchantId ?? "");
+        const exceptionRate = merchantId
+          ? sellerExceptionMap.get(merchantId)
+          : undefined;
+        const commission =
+          exceptionRate !== undefined
+            ? exceptionRate
+            : (zoneRateMap.get(o.zoneId) ?? 0);
+        return sum + commission;
+      }, 0);
       const newNetUsd = newTotalUsd - newCommissionUsd;
 
       await tx.driverPayout.update({

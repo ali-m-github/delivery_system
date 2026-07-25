@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Fragment } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -112,34 +112,38 @@ export default function CashSellerWorkspace({
   const [filterToDate, setFilterToDate] = useState<string>("");
 
   // ── Fetch workspace data ──
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams();
-      if (filterFromDate) params.set("from", filterFromDate);
-      if (filterToDate) params.set("to", filterToDate);
-      const res = await fetch(
-        `/api/admin/merchants/${merchantId}/cash-payouts?${params.toString()}`,
-      );
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.error || `HTTP ${res.status}`);
+  const applyDateFilter = useCallback(
+    async (from: string, to: string) => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const params = new URLSearchParams();
+        if (from) params.set("from", from);
+        if (to) params.set("to", to);
+        const res = await fetch(
+          `/api/admin/merchants/${merchantId}/cash-payouts?${params.toString()}`,
+        );
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.error || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        setUnpaidOrders(data.unpaidOrders || []);
+        setPendingReturns(data.pendingReturns || []);
+        setBatches(data.batches || []);
+      } catch (e: any) {
+        setError(e.message || "Failed to load workspace data");
+      } finally {
+        setIsLoading(false);
       }
-      const data = await res.json();
-      setUnpaidOrders(data.unpaidOrders || []);
-      setPendingReturns(data.pendingReturns || []);
-      setBatches(data.batches || []);
-    } catch (e: any) {
-      setError(e.message || "Failed to load workspace data");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [merchantId, filterFromDate, filterToDate]);
+    },
+    [merchantId],
+  );
 
+  // Initial load only
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    applyDateFilter("", "");
+  }, [applyDateFilter]);
 
   // ── Exclude Order Handler ──
   const excludeOrder = async (orderId: string, dbId: string) => {
@@ -306,7 +310,7 @@ export default function CashSellerWorkspace({
       setSelectedOrderIds(new Set());
       setSelectedReturnIds(new Set());
       setAdjustments([]);
-      await fetchData();
+      await applyDateFilter(filterFromDate, filterToDate);
     } catch (e: any) {
       setError(e.message || "Failed to generate payout batch");
     } finally {
@@ -456,29 +460,41 @@ export default function CashSellerWorkspace({
             </div>
             {/* Date Range Filter */}
             <div className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-1.5 text-[10px] text-gray-500 uppercase tracking-wider font-bold">
-                From
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">
+                  From
+                </span>
                 <input
                   type="date"
                   value={filterFromDate}
                   onChange={(e) => setFilterFromDate(e.target.value)}
-                  className="bg-[#0B0F17] border border-gray-800 rounded px-2 py-1 text-white text-xs outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-colors"
+                  className="bg-[#0B0F17] border border-gray-800 rounded px-2 py-1 text-white text-xs outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-colors cursor-pointer"
                 />
-              </label>
-              <label className="flex items-center gap-1.5 text-[10px] text-gray-500 uppercase tracking-wider font-bold">
-                To
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">
+                  To
+                </span>
                 <input
                   type="date"
                   value={filterToDate}
                   onChange={(e) => setFilterToDate(e.target.value)}
-                  className="bg-[#0B0F17] border border-gray-800 rounded px-2 py-1 text-white text-xs outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-colors"
+                  className="bg-[#0B0F17] border border-gray-800 rounded px-2 py-1 text-white text-xs outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-colors cursor-pointer"
                 />
-              </label>
+              </div>
+              <button
+                onClick={() => applyDateFilter(filterFromDate, filterToDate)}
+                disabled={isSubmitting || isLoading}
+                className="px-2 py-1 text-[10px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 rounded hover:bg-cyan-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Apply
+              </button>
               {(filterFromDate || filterToDate) && (
                 <button
                   onClick={() => {
                     setFilterFromDate("");
                     setFilterToDate("");
+                    applyDateFilter("", "");
                   }}
                   className="px-2 py-1 text-[10px] font-bold text-gray-400 bg-white/5 border border-white/10 rounded hover:bg-white/10 transition-colors"
                 >
@@ -821,9 +837,8 @@ export default function CashSellerWorkspace({
                 {batches.map((batch) => {
                   const isExpanded = expandedBatchId === batch.id;
                   return (
-                    <>
+                    <Fragment key={batch.id}>
                       <tr
-                        key={batch.id}
                         onClick={() =>
                           setExpandedBatchId(isExpanded ? null : batch.id)
                         }
@@ -870,7 +885,7 @@ export default function CashSellerWorkspace({
                       </tr>
                       {/* Expandable detail row */}
                       {isExpanded && (
-                        <tr key={`${batch.id}-detail`}>
+                        <tr>
                           <td colSpan={8} className="px-4 py-3 bg-[#0B0F17]/50">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                               {/* Advance Orders */}
@@ -928,7 +943,7 @@ export default function CashSellerWorkspace({
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   );
                 })}
               </tbody>

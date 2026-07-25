@@ -6,6 +6,17 @@ const prisma = new PrismaClient();
 export async function GET() {
   try {
     const zones = await prisma.zone.findMany({
+      include: {
+        driverAssignments: {
+          include: {
+            driver: {
+              include: {
+                user: true,
+              },
+            },
+          },
+        },
+      },
       orderBy: { name: "asc" },
     });
     return NextResponse.json(zones);

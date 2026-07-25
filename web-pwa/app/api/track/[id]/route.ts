@@ -11,13 +11,26 @@ export async function GET(
     where: { orderId: id },
     select: {
       id: true,
+      orderId: true,
       location: true,
       updatedAt: true,
       createdAt: true,
       customerName: true,
+      zone: {
+        select: {
+          name: true,
+        },
+      },
+      driver: {
+        select: {
+          firstName: true,
+          lastName: true,
+        },
+      },
       history: {
         select: {
           action: true,
+          location: true,
           createdAt: true,
         },
         orderBy: { createdAt: "asc" },

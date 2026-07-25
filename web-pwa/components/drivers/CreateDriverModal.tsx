@@ -512,15 +512,23 @@ export default function CreateDriverModal({
                       id="exceptionMerchant"
                       value={selectedMerchant}
                       onChange={(e) => setSelectedMerchant(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-gray-100
+                      className="w-full px-4 py-2.5 rounded-lg bg-[#0b1329] border border-gray-800 text-gray-200
                                  focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500/50
                                  transition-all duration-200 text-sm"
                     >
-                      <option value="" disabled>
+                      <option
+                        value=""
+                        disabled
+                        className="bg-[#0b1329] text-gray-400"
+                      >
                         Select seller...
                       </option>
                       {merchants.map((m) => (
-                        <option key={m.id} value={m.id}>
+                        <option
+                          key={m.id}
+                          value={m.id}
+                          className="bg-[#0b1329] text-gray-300"
+                        >
                           {m.merchantName}
                         </option>
                       ))}

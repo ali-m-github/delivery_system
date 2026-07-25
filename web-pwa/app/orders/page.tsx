@@ -6,6 +6,7 @@ import SharedOrderTable, {
   formatDDMMYYYY,
 } from "@/components/SharedOrderTable";
 import GlobalSheetImportModal from "@/components/orders/GlobalSheetImportModal";
+import OrderHistoryModal from "@/components/OrderHistoryModal";
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Zone {
   id: string;
@@ -60,7 +61,7 @@ interface Order {
   }>;
 }
 
-type Tab = "all" | "warehouse" | "reports" | "order-entry" | "returns";
+type Tab = "all" | "warehouse" | "reports" | "order-entry" | "returns" | "rwd";
 
 const LOCATION_LABELS: Record<string, string> = {
   WAREHOUSE: "Warehouse",
@@ -146,17 +147,13 @@ function OrdersPageInner() {
     { id: string; numericId: number; name: string }[]
   >([]);
   const [loading, setLoading] = useState(true);
+  const [totalOrders, setTotalOrders] = useState(0);
   const [currentUser, setCurrentUser] = useState<{
     id: string;
     username: string;
     role: string;
     permissions: string[];
   } | null>(null);
-
-  // ── Expandable history ──
-  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(
-    null,
-  );
 
   // ── Filters ──
   const [searchTerm, setSearchTerm] = useState("");
@@ -355,6 +352,12 @@ function OrdersPageInner() {
   // ── Zone text input for order creation ──
   const [zoneInput, setZoneInput] = useState("");
 
+  // ── History Modal ──
+  const [historyModalOrder, setHistoryModalOrder] = useState<{
+    id: string;
+    history: any[];
+  } | null>(null);
+
   // ── Modals ──
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [notesModal, setNotesModal] = useState<Order | null>(null);
@@ -415,6 +418,9 @@ function OrdersPageInner() {
   // Pagination for "returns" tab
   const [returnsItemsPerPage, setReturnsItemsPerPage] = useState(50);
   const [returnsPage, setReturnsPage] = useState(1);
+  // Pagination for "rwd" tab
+  const [rwdPage, setRwdPage] = useState(1);
+  const [rwdItemsPerPage, setRwdItemsPerPage] = useState(50);
 
   // Reset warehouse pagination when zone or search query changes
   useEffect(() => {
@@ -433,21 +439,41 @@ function OrdersPageInner() {
   const [quickAssignOrderIdsText, setQuickAssignOrderIdsText] = useState("");
   const [quickAssignDriverId, setQuickAssignDriverId] = useState("");
 
-  // ── Fetch ──
-  const fetchOrders = async () => {
+  // ── Fetch all tab data ──
+  // When called without params on the "All" tab, reuses current pagination state
+  const fetchOrders = async (params?: Record<string, string>) => {
+    if (!params && currentTab === "all") {
+      params = {
+        skip: String((allPage - 1) * allItemsPerPage),
+        take: String(allItemsPerPage),
+      };
+      if (searchTerm.trim()) params.search = searchTerm.trim();
+      if (locationFilter !== "ALL") params.location = locationFilter;
+      if (dateFilter) params.dateFrom = dateFilter;
+    }
     setLoading(true);
     try {
+      // Build query string for pagination/filters
+      const query = params ? "?" + new URLSearchParams(params).toString() : "";
       const [ordersRes, zonesRes, driversRes, merchantsRes, sellersRes] =
         await Promise.all([
-          fetch("/api/orders"),
+          fetch(`/api/orders${query}`),
           fetch("/api/admin/zones"),
           fetch("/api/admin/drivers"),
           fetch("/api/admin/merchants"),
           fetch("/api/sellers/list"),
         ]);
       if (ordersRes.ok) {
-        const data = await ordersRes.json();
-        setOrders(data);
+        const result = await ordersRes.json();
+        // Support both new { data, meta } format and legacy array format
+        const orderList = Array.isArray(result) ? result : (result.data ?? []);
+        setOrders(orderList);
+        // Track total count for server-side pagination
+        if (!Array.isArray(result) && result.meta) {
+          setTotalOrders(result.meta.total);
+        } else {
+          setTotalOrders(orderList.length);
+        }
       }
       if (zonesRes.ok) {
         const data = await zonesRes.json();
@@ -501,9 +527,40 @@ function OrdersPageInner() {
     }
   };
 
+  // ── Initial fetch ──
   useEffect(() => {
-    fetchOrders();
+    fetchOrders({
+      skip: "0",
+      take: String(allItemsPerPage === 0 ? 500 : allItemsPerPage),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Re-fetch when "All" tab pagination changes ──
+  useEffect(() => {
+    if (currentTab === "all") {
+      const params: Record<string, string> = {
+        skip: String((allPage - 1) * allItemsPerPage),
+        take: String(allItemsPerPage),
+      };
+      if (searchTerm.trim()) params.search = searchTerm.trim();
+      if (locationFilter !== "ALL") params.location = locationFilter;
+      if (dateFilter) params.dateFrom = dateFilter;
+      fetchOrders(params);
+    } else {
+      // For non-"all" tabs (warehouse, returns, rwd, etc.), fetch orders
+      // with a reasonable limit to avoid overloading the database
+      fetchOrders({ skip: "0", take: "500" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    allPage,
+    allItemsPerPage,
+    currentTab,
+    searchTerm,
+    locationFilter,
+    dateFilter,
+  ]);
 
   // ── Fetch auth state ──
   useEffect(() => {
@@ -654,9 +711,28 @@ function OrdersPageInner() {
     if (!matchedDriver)
       return alert("Driver not found. Please select from the list.");
 
+    // ── Filter out delivered/paid-out orders (WD/WO) ──
+    const selectedOrders = orders.filter((o) =>
+      selectedOrderIds.includes(o.id),
+    );
+    const lockedOrders = selectedOrders.filter((o) =>
+      ["WD", "WO"].includes(o.financialStatus),
+    );
+    const assignableOrderIds = selectedOrderIds.filter(
+      (id) => !lockedOrders.some((lo) => lo.id === id),
+    );
+
+    if (lockedOrders.length > 0) {
+      alert(
+        `⚠️ Skipped ${lockedOrders.length} order(s) with status WD/WO (Delivered/Paid-out). These cannot be reassigned.\nProceeding with ${assignableOrderIds.length} order(s).`,
+      );
+    }
+
+    if (assignableOrderIds.length === 0) return;
+
     try {
       await Promise.all(
-        selectedOrderIds.map((id) =>
+        assignableOrderIds.map((id) =>
           fetch("/api/orders", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -694,38 +770,70 @@ function OrdersPageInner() {
     if (!matchedDriver)
       return alert("Driver not found. Please select from the list.");
 
-    // Parse order IDs: one per line, strip whitespace and leading #
+    // Parse order IDs: one per line, strip whitespace and leading #, deduplicate
+    const seen = new Set<string>();
     const rawIds = quickAssignOrderIdsText
       .split("\n")
       .map((id) => id.trim().replace(/^#/, ""))
-      .filter(Boolean);
+      .filter((id) => {
+        if (!id || seen.has(id.toLowerCase())) return false;
+        seen.add(id.toLowerCase());
+        return true;
+      });
     if (rawIds.length === 0) return alert("No valid order IDs found.");
 
-    // Match raw IDs against orders (by orderId or id)
-    const matchedOrders = orders.filter((o) => {
-      const orderNumStr = String(o.orderId || "").toLowerCase();
-      const orderUuid = String(o.id || "").toLowerCase();
-      return rawIds.some((raw) => {
-        const normalized = raw.toLowerCase();
-        return orderNumStr === normalized || orderUuid === normalized;
+    // ── Server-side lookup: find orders by orderId in the database ──
+    let lookupResult: { found: any[]; notFound: string[]; stats: any };
+    try {
+      const res = await fetch("/api/orders/bulk/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds: rawIds }),
       });
-    });
-
-    if (matchedOrders.length === 0)
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Lookup failed");
+      }
+      lookupResult = await res.json();
+    } catch (error: any) {
+      console.error("Quick assign lookup failed:", error);
       return alert(
-        `None of the entered order IDs matched any orders in the system. Found ${rawIds.length} ID(s) but 0 matched.`,
-      );
-
-    const unmatched = rawIds.length - matchedOrders.length;
-    if (unmatched > 0) {
-      alert(
-        `⚠️ ${unmatched} order(s) could not be found. Proceeding with ${matchedOrders.length} matched order(s).`,
+        `Failed to look up orders: ${error.message || "Network error"}. Please try again.`,
       );
     }
 
+    const { found: matchedOrders, notFound } = lookupResult;
+
+    if (matchedOrders.length === 0)
+      return alert(
+        `None of the entered order IDs matched any orders in the database. Found ${rawIds.length} unique ID(s) but 0 matched.`,
+      );
+
+    // ── Filter out delivered/paid-out orders (WD/WO) ──
+    const lockedOrders = matchedOrders.filter((o: any) =>
+      ["WD", "WO"].includes(o.financialStatus),
+    );
+    const assignableOrders = matchedOrders.filter(
+      (o: any) => !["WD", "WO"].includes(o.financialStatus),
+    );
+
+    if (notFound.length > 0) {
+      alert(
+        `⚠️ ${notFound.length} order(s) could not be found in the database.\nProceeding with ${matchedOrders.length} matched order(s).`,
+      );
+    }
+
+    if (lockedOrders.length > 0) {
+      alert(
+        `⚠️ Skipped ${lockedOrders.length} delivered/paid-out order(s) (WD/WO). These cannot be reassigned.\nProceeding with ${assignableOrders.length} order(s).`,
+      );
+    }
+
+    if (assignableOrders.length === 0) return;
+
     try {
       await Promise.all(
-        matchedOrders.map((o) =>
+        assignableOrders.map((o) =>
           fetch("/api/orders", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -746,7 +854,7 @@ function OrdersPageInner() {
       setQuickAssignDriverId("");
       fetchOrders();
       alert(
-        `Successfully assigned ${matchedOrders.length} order(s) to ${matchedDriver.firstName} ${matchedDriver.lastName}.`,
+        `Successfully assigned ${assignableOrders.length} order(s) to ${matchedDriver.firstName} ${matchedDriver.lastName}.`,
       );
     } catch (error) {
       console.error("Failed to quick-assign orders", error);
@@ -759,6 +867,30 @@ function OrdersPageInner() {
     () => orders.filter((o) => o.isArchived === showArchived),
     [orders, showArchived],
   );
+
+  // Helper: check if a term matches a single order (with suffix matching for numeric terms)
+  const termMatchesOrder = (term: string, order: Order): boolean => {
+    const orderIdLower = order.orderId.toLowerCase();
+    // Suffix match for numeric terms (4+ digits): allows searching by last 4-5 digits
+    const isNumeric = /^\d{4,}$/.test(term);
+    if (isNumeric && orderIdLower.endsWith(term)) return true;
+    // Standard includes match
+    return (
+      orderIdLower.includes(term) ||
+      order.customerName.toLowerCase().includes(term) ||
+      order.customerPhone.toLowerCase().includes(term) ||
+      (order.customerAddress &&
+        order.customerAddress.toLowerCase().includes(term)) ||
+      (order.city && order.city.toLowerCase().includes(term)) ||
+      order.location.toLowerCase().includes(term) ||
+      String(order.amountUsd).includes(term) ||
+      String(order.amountLbp).includes(term) ||
+      !!(
+        order.driver?.firstName &&
+        order.driver.firstName.toLowerCase().includes(term)
+      )
+    );
+  };
 
   // ── Filtered & sorted orders ──
   const allFiltered = useMemo(() => {
@@ -774,25 +906,15 @@ function OrdersPageInner() {
         if (terms.length === 0) return true;
 
         // AND logic: Order must match ALL terms (great for parameter filtering)
-        const matchesAnd = terms.every(
-          (term) =>
-            order.orderId.toLowerCase().includes(term) ||
-            order.customerName.toLowerCase().includes(term) ||
-            order.customerPhone.toLowerCase().includes(term) ||
-            (order.customerAddress &&
-              order.customerAddress.toLowerCase().includes(term)) ||
-            (order.city && order.city.toLowerCase().includes(term)) ||
-            order.location.toLowerCase().includes(term) ||
-            String(order.amountUsd).includes(term) ||
-            String(order.amountLbp).includes(term) ||
-            (order.driver &&
-              order.driver.firstName.toLowerCase().includes(term)),
-        );
+        const matchesAnd = terms.every((term) => termMatchesOrder(term, order));
 
-        // OR logic: If ANY term matches the Order ID directly, include it (great for pasting multiple IDs)
-        const matchesOrId = terms.some((term) =>
-          order.orderId.toLowerCase().includes(term),
-        );
+        // OR logic: If ANY numeric/orderId-like term matches the Order ID (including suffix), include it
+        const matchesOrId = terms.some((term) => {
+          const orderIdLower = order.orderId.toLowerCase();
+          const isNumeric = /^\d{4,}$/.test(term);
+          if (isNumeric && orderIdLower.endsWith(term)) return true;
+          return orderIdLower.includes(term);
+        });
 
         return matchesAnd || matchesOrId;
       });
@@ -812,6 +934,31 @@ function OrdersPageInner() {
 
     return list;
   }, [activeOrArchivedOrders, searchTerm, locationFilter, dateFilter]);
+
+  // ── Not-found order numbers (for numeric search terms only) ──
+  // ── Not-found order numbers (for numeric search terms only) ──
+  const notFoundOrderNumbers = useMemo(() => {
+    if (!searchTerm.trim()) return [];
+    const terms = searchTerm
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    // Only track numeric terms (4+ digits) that look like order numbers
+    const numericTerms = terms.filter((t) => /^\d{4,}$/.test(t));
+    if (numericTerms.length === 0) return [];
+
+    const notFound: string[] = [];
+    for (const term of numericTerms) {
+      // Use the same matching logic as allFiltered for consistency
+      const found = activeOrArchivedOrders.some((order) =>
+        termMatchesOrder(term, order),
+      );
+      if (!found) {
+        notFound.push(term);
+      }
+    }
+    return notFound;
+  }, [activeOrArchivedOrders, searchTerm]);
 
   // ── Warehouse filtered & grouped ──
   const warehouseOrders = useMemo(
@@ -882,6 +1029,15 @@ function OrdersPageInner() {
     return Array.from(sellers).sort();
   }, [orders]);
 
+  // ── RWD (Return With Driver) orders ──
+  const rwdOrders = useMemo(() => {
+    return orders.filter((o) => {
+      const loc = String(o.location).toUpperCase();
+      const fin = String(o.financialStatus).toUpperCase();
+      return loc === "RETURN" && fin === "RWD";
+    });
+  }, [orders]);
+
   // ── Reports data ──
   const reports = useMemo(() => {
     const byDate = groupByDate(orders);
@@ -913,6 +1069,60 @@ function OrdersPageInner() {
 
     return entries;
   }, [orders]);
+
+  // ── Paginated values (for count displays) ──
+  const paginatedAll = useMemo(() => {
+    // Server-side pagination handles the slice for "All" tab
+    if (currentTab === "all") return orders;
+    // Fallback client-side slice for other tabs (warehouse, returns, etc.)
+    return allFiltered.slice(
+      (allPage - 1) * allItemsPerPage,
+      allPage * allItemsPerPage,
+    );
+  }, [allFiltered, allPage, allItemsPerPage, orders, currentTab]);
+
+  const zoneItems = useMemo(() => {
+    if (!activeWarehouseZone) return [];
+    return warehouseOrders.filter((o) => o.zoneId === activeWarehouseZone);
+  }, [warehouseOrders, activeWarehouseZone]);
+
+  const warehouseItems = useMemo(() => {
+    if (!activeWarehouseZone) return [];
+    if (!batchSearchQuery.trim()) return zoneItems;
+    const targetIds = batchSearchQuery
+      .split(/[\s,]+/)
+      .map((id) => id.trim().replace(/^#/, "").toLowerCase())
+      .filter(Boolean);
+    if (targetIds.length === 0) return zoneItems;
+    return zoneItems.filter((order) => {
+      const orderNumStr = String(order.orderId || order.id || "")
+        .replace(/^#/, "")
+        .toLowerCase();
+      const trackingStr = String((order as any).trackingNumber || "")
+        .replace(/^#/, "")
+        .toLowerCase();
+      const phoneStr = String(order.customerPhone || "").replace(/\D/g, "");
+      return (
+        targetIds.includes(orderNumStr) ||
+        targetIds.includes(trackingStr) ||
+        targetIds.some((target) => phoneStr.includes(target.replace(/\D/g, "")))
+      );
+    });
+  }, [zoneItems, batchSearchQuery]);
+
+  const paginatedWarehouseItems = useMemo(() => {
+    return warehouseItems.slice(
+      (warehousePage - 1) * itemsPerPage,
+      warehousePage * itemsPerPage,
+    );
+  }, [warehouseItems, warehousePage, itemsPerPage]);
+
+  const paginatedReturns = useMemo(() => {
+    return returnsOrders.slice(
+      (returnsPage - 1) * returnsItemsPerPage,
+      returnsPage * returnsItemsPerPage,
+    );
+  }, [returnsOrders, returnsPage, returnsItemsPerPage]);
 
   // ── Quick location actions ──
   const updateOrder = (id: string, payload: Record<string, unknown>) =>
@@ -1074,6 +1284,7 @@ function OrdersPageInner() {
 
   // ── Bulk Returned to Seller Handler (Re -> RTS) ──
   const [rtsUpdating, setRtsUpdating] = useState(false);
+  const [rwdUpdating, setRwdUpdating] = useState(false);
   const handleBulkRTS = async () => {
     if (selectedOrderIds.length === 0) return;
     // Validate: all selected must have financialStatus === "Re"
@@ -1108,6 +1319,45 @@ function OrdersPageInner() {
       alert(error.message || "Failed to update returns.");
     } finally {
       setRtsUpdating(false);
+    }
+  };
+
+  // ── Bulk RWD to Warehouse Handler (RWD -> Re) ──
+  const handleBulkRWDToWarehouse = async () => {
+    if (selectedOrderIds.length === 0) return;
+    const selectedOrders = orders.filter((o) =>
+      selectedOrderIds.includes(o.id),
+    );
+    const allRwd = selectedOrders.every((o) => o.financialStatus === "RWD");
+    if (!allRwd) {
+      alert(
+        "All selected orders must have financial status 'RWD' (Return with Driver).",
+      );
+      return;
+    }
+    if (
+      !window.confirm(
+        `Move ${selectedOrderIds.length} order(s) to returns warehouse?`,
+      )
+    )
+      return;
+    setRwdUpdating(true);
+    try {
+      const res = await fetch("/api/admin/orders/returns", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds: selectedOrderIds, newStatus: "Re" }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to update orders");
+      }
+      setSelectedOrderIds([]);
+      fetchOrders();
+    } catch (error: any) {
+      alert(error.message || "Failed to update orders.");
+    } finally {
+      setRwdUpdating(false);
     }
   };
 
@@ -1194,6 +1444,13 @@ function OrdersPageInner() {
 
   const submitDriver = async () => {
     if (!driverModal) return;
+    // Block reassignment on delivered/paid-out orders
+    if (["WD", "WO"].includes(driverModal.financialStatus)) {
+      alert(
+        `Cannot reassign driver on this order (status: ${driverModal.financialStatus}). Use the payout section to return it to warehouse first.`,
+      );
+      return;
+    }
     await patchOrder(driverModal.id, { driverId: newDriverId || null });
     setDriverModal(null);
   };
@@ -1240,6 +1497,10 @@ function OrdersPageInner() {
             { key: "all" as Tab, label: "All Orders" },
             { key: "warehouse" as Tab, label: "Warehouse" },
             { key: "reports" as Tab, label: "Reports" },
+            {
+              key: "rwd" as Tab,
+              label: `Return w/ Driver (${rwdOrders.length})`,
+            },
             { key: "returns" as Tab, label: "Returns" },
             ...(hasPermission("ORDERS_CREATE")
               ? [{ key: "order-entry" as Tab, label: "Order Entry" }]
@@ -1529,7 +1790,7 @@ function OrdersPageInner() {
                 </svg>
                 <input
                   type="text"
-                  placeholder="Search orders (e.g., Hamra, 10)..."
+                  placeholder="Search orders by last digits (e.g., 8627, 5117) or text (e.g., Hamra)..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="w-full pl-10 pr-4 py-2.5 text-sm rounded-xl
@@ -1540,6 +1801,13 @@ function OrdersPageInner() {
                              transition-all duration-200"
                 />
               </div>
+
+              {/* Not-found order numbers warning */}
+              {notFoundOrderNumbers.length > 0 && (
+                <div className="mt-1 text-xs text-red-400 font-medium">
+                  Not found: {notFoundOrderNumbers.join(", ")}
+                </div>
+              )}
 
               {/* Location filter */}
               <select
@@ -1585,15 +1853,13 @@ function OrdersPageInner() {
                 <label className="text-xs text-slate-400">Rows per page:</label>
                 <select
                   value={
-                    [50, 100, 200, 300].includes(allItemsPerPage)
+                    [50, 100, 200, 500, 1000].includes(allItemsPerPage)
                       ? allItemsPerPage
                       : "all"
                   }
                   onChange={(e) => {
                     const val = e.target.value;
-                    setAllItemsPerPage(
-                      val === "all" ? allFiltered.length : Number(val),
-                    );
+                    setAllItemsPerPage(val === "all" ? 5000 : Number(val));
                     setAllPage(1);
                   }}
                   className="bg-slate-800 text-white border border-slate-700 rounded px-2 py-1 text-xs outline-none focus:border-cyan-500 transition-all"
@@ -1601,9 +1867,13 @@ function OrdersPageInner() {
                   <option value={50}>50</option>
                   <option value={100}>100</option>
                   <option value={200}>200</option>
-                  <option value={300}>300</option>
-                  <option value="all">All</option>
+                  <option value={500}>500</option>
+                  <option value={1000}>1000</option>
+                  <option value={5000}>5000 (max)</option>
                 </select>
+                <span className="text-xs text-gray-500 ml-2">
+                  Showing {paginatedAll.length} of {totalOrders} order(s)
+                </span>
               </div>
             </div>
 
@@ -1632,13 +1902,7 @@ function OrdersPageInner() {
               </div>
             ) : (
               (() => {
-                const allTotalPages = Math.ceil(
-                  allFiltered.length / allItemsPerPage,
-                );
-                const paginatedAll = allFiltered.slice(
-                  (allPage - 1) * allItemsPerPage,
-                  allPage * allItemsPerPage,
-                );
+                const allTotalPages = Math.ceil(totalOrders / allItemsPerPage);
                 return (
                   <>
                     <SharedOrderTable
@@ -1659,11 +1923,8 @@ function OrdersPageInner() {
                       <div className="flex items-center justify-between mt-4 px-2">
                         <p className="text-xs text-gray-500">
                           Showing {(allPage - 1) * allItemsPerPage + 1}–
-                          {Math.min(
-                            allPage * allItemsPerPage,
-                            allFiltered.length,
-                          )}{" "}
-                          of {allFiltered.length}
+                          {Math.min(allPage * allItemsPerPage, totalOrders)} of{" "}
+                          {totalOrders}
                         </p>
                         <div className="flex items-center gap-1">
                           <button
@@ -1895,6 +2156,10 @@ function OrdersPageInner() {
                         <option value={300}>300</option>
                         <option value="all">All</option>
                       </select>
+                      <span className="text-xs text-gray-500 ml-2">
+                        Showing {paginatedWarehouseItems.length} of{" "}
+                        {warehouseItems.length} order(s)
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1902,61 +2167,23 @@ function OrdersPageInner() {
                 {/* Orders for selected zone — compact table */}
                 {activeWarehouseZone ? (
                   (() => {
-                    const zoneItems = warehouseOrders.filter(
-                      (o) => o.zoneId === activeWarehouseZone,
+                    const totalPages = Math.ceil(
+                      warehouseItems.length / itemsPerPage,
                     );
-
-                    // Apply batch search filtering
-                    const items = (() => {
-                      if (!batchSearchQuery.trim()) return zoneItems;
-                      const targetIds = batchSearchQuery
-                        .split(/[\s,]+/)
-                        .map((id) => id.trim().replace(/^#/, "").toLowerCase())
-                        .filter(Boolean);
-                      if (targetIds.length === 0) return zoneItems;
-                      return zoneItems.filter((order) => {
-                        const orderNumStr = String(
-                          order.orderId || order.id || "",
-                        )
-                          .replace(/^#/, "")
-                          .toLowerCase();
-                        const trackingStr = String(
-                          (order as any).trackingNumber || "",
-                        )
-                          .replace(/^#/, "")
-                          .toLowerCase();
-                        // Strip non-digits from phone for easier matching
-                        const phoneStr = String(
-                          order.customerPhone || "",
-                        ).replace(/\D/g, "");
-                        return (
-                          targetIds.includes(orderNumStr) ||
-                          targetIds.includes(trackingStr) ||
-                          targetIds.some((target) =>
-                            phoneStr.includes(target.replace(/\D/g, "")),
-                          )
-                        );
-                      });
-                    })();
-
-                    const totalPages = Math.ceil(items.length / itemsPerPage);
-                    const paginatedItems = items.slice(
-                      (warehousePage - 1) * itemsPerPage,
-                      warehousePage * itemsPerPage,
-                    );
+                    const paginatedItems = paginatedWarehouseItems;
 
                     const handleWarehouseSelectAll = () => {
                       if (
-                        selectedOrderIds.length === items.length &&
-                        items.length > 0
+                        selectedOrderIds.length === warehouseItems.length &&
+                        warehouseItems.length > 0
                       ) {
                         setSelectedOrderIds([]);
                       } else {
-                        setSelectedOrderIds(items.map((o) => o.id));
+                        setSelectedOrderIds(warehouseItems.map((o) => o.id));
                       }
                     };
 
-                    return items.length === 0 ? (
+                    return warehouseItems.length === 0 ? (
                       <div className="text-center py-20">
                         <p className="text-gray-500 text-sm">
                           {batchSearchQuery.trim()
@@ -1966,8 +2193,8 @@ function OrdersPageInner() {
                       </div>
                     ) : (
                       <div>
-                        <div className="overflow-x-auto rounded-xl border border-white/10">
-                          <table className="w-full text-sm">
+                        <div className="w-full overflow-x-auto rounded-xl border border-white/10">
+                          <table className="w-full min-w-max whitespace-nowrap text-sm">
                             <thead>
                               <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[11px] uppercase tracking-wider">
                                 <th className="px-2 py-2 text-left font-medium w-8">
@@ -1975,7 +2202,8 @@ function OrdersPageInner() {
                                     type="checkbox"
                                     checked={
                                       selectedOrderIds.length ===
-                                        items.length && items.length > 0
+                                        warehouseItems.length &&
+                                      warehouseItems.length > 0
                                     }
                                     onChange={handleWarehouseSelectAll}
                                     className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
@@ -2026,7 +2254,21 @@ function OrdersPageInner() {
                                     />
                                   </td>
                                   <td className="px-2 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
-                                    #{order.orderId}
+                                    <div className="flex items-center gap-1.5">
+                                      <button
+                                        onClick={() =>
+                                          setHistoryModalOrder({
+                                            id: order.id,
+                                            history: order.history || [],
+                                          })
+                                        }
+                                        title="Order History"
+                                        className="text-[10px] px-1 py-0.5 rounded border transition-all bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
+                                      >
+                                        &#9776;
+                                      </button>
+                                      <span>#{order.orderId}</span>
+                                    </div>
                                   </td>
                                   <td className="px-2 py-1.5 text-xs text-white whitespace-nowrap">
                                     {order.customerName}
@@ -2063,9 +2305,9 @@ function OrdersPageInner() {
                               Showing {(warehousePage - 1) * itemsPerPage + 1} –{" "}
                               {Math.min(
                                 warehousePage * itemsPerPage,
-                                items.length,
+                                warehouseItems.length,
                               )}{" "}
-                              of {items.length}
+                              of {warehouseItems.length}
                             </p>
                             <div className="flex items-center gap-2">
                               <button
@@ -2232,8 +2474,8 @@ function OrdersPageInner() {
                       Daily Breakdown
                     </h3>
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
+                  <div className="w-full overflow-x-auto">
+                    <table className="w-full min-w-max whitespace-nowrap text-sm">
                       <thead>
                         <tr className="border-b border-white/5 text-gray-500 text-xs uppercase tracking-wider">
                           <th className="text-left px-5 py-3 font-medium">
@@ -2577,8 +2819,8 @@ function OrdersPageInner() {
                 <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
                   Recently Added
                 </h3>
-                <div className="bg-[#121824] border border-white/5 rounded-xl overflow-hidden">
-                  <table className="w-full text-xs">
+                <div className="w-full overflow-x-auto bg-[#121824] border border-white/5 rounded-xl">
+                  <table className="w-full min-w-max whitespace-nowrap text-xs">
                     <thead>
                       <tr className="border-b border-white/5 text-gray-500 text-[10px] uppercase tracking-wider">
                         <th className="px-3 py-2 text-left font-medium">
@@ -2842,6 +3084,10 @@ function OrdersPageInner() {
                   <option value={300}>300</option>
                   <option value="all">All</option>
                 </select>
+                <span className="text-xs text-gray-500 ml-2">
+                  Showing {paginatedReturns.length} of {returnsOrders.length}{" "}
+                  return order(s)
+                </span>
               </div>
             </div>
 
@@ -2919,8 +3165,8 @@ function OrdersPageInner() {
                 </div>
 
                 {/* Orders table */}
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                <div className="w-full overflow-x-auto">
+                  <table className="w-full min-w-max whitespace-nowrap text-sm">
                     <thead>
                       <tr className="border-b border-white/5 text-gray-500 text-[11px] uppercase tracking-wider">
                         <th className="px-3 py-2 text-center font-medium w-10">
@@ -3123,6 +3369,228 @@ function OrdersPageInner() {
                             )
                           }
                           disabled={returnsPage === totalPages}
+                          className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ════════════════════════════════════════ */}
+        {/* RWD (Return With Driver) TAB             */}
+        {/* ════════════════════════════════════════ */}
+        {currentTab === "rwd" && (
+          <>
+            {/* Bulk action bar */}
+            {selectedOrderIds.length > 0 && (
+              <div className="flex items-center gap-3 mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                <span className="text-sm text-amber-300">
+                  {selectedOrderIds.length} order(s) selected
+                </span>
+                <button
+                  onClick={handleBulkRWDToWarehouse}
+                  disabled={rwdUpdating}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                    rwdUpdating
+                      ? "bg-gray-700 text-gray-500 cursor-not-allowed"
+                      : "bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30"
+                  } ${rwdUpdating ? "opacity-50" : ""}`}
+                >
+                  {rwdUpdating ? "Moving…" : "Move to returns warehouse"}
+                </button>
+                <button
+                  onClick={() => setSelectedOrderIds([])}
+                  className="px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-300 hover:bg-white/5 transition-colors"
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+
+            {loading ? (
+              <div className="flex items-center justify-center py-20">
+                <div className="flex items-center justify-center py-20">
+                  <div className="w-8 h-8 border-2 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin" />
+                </div>
+              </div>
+            ) : rwdOrders.length === 0 ? (
+              <div className="text-center py-20 text-gray-500">
+                No orders with driver to return.
+              </div>
+            ) : (
+              <div>
+                <div className="w-full overflow-x-auto">
+                  <table className="w-full min-w-max whitespace-nowrap text-sm">
+                    <thead>
+                      <tr className="border-b border-white/5 text-gray-500 text-[11px] uppercase tracking-wider">
+                        <th className="px-3 py-2 text-center font-medium w-10">
+                          <input
+                            type="checkbox"
+                            checked={
+                              rwdOrders.length > 0 &&
+                              selectedOrderIds.length === rwdOrders.length
+                            }
+                            onChange={() => {
+                              if (
+                                selectedOrderIds.length === rwdOrders.length
+                              ) {
+                                setSelectedOrderIds((prev) => {
+                                  const rwdIds = new Set(
+                                    rwdOrders.map((o) => o.id),
+                                  );
+                                  return prev.filter((id) => !rwdIds.has(id));
+                                });
+                              } else {
+                                setSelectedOrderIds((prev) => {
+                                  const existing = new Set(prev);
+                                  rwdOrders.forEach((o) => existing.add(o.id));
+                                  return Array.from(existing);
+                                });
+                              }
+                            }}
+                            className="rounded border-gray-600 bg-white/5 text-cyan-500 focus:ring-cyan-500/50"
+                          />
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">ID</th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Date
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Seller
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Customer
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Zone
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Driver
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Amount
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium">
+                          Status
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(() => {
+                        const indexed = rwdOrders.map((o, i) => ({
+                          order: o,
+                          index: i,
+                        }));
+                        const startIndex =
+                          rwdPage * rwdItemsPerPage - rwdItemsPerPage;
+                        const endIndex = rwdPage * rwdItemsPerPage;
+                        const paginatedItems = indexed
+                          .slice(startIndex, endIndex)
+                          .map((item) => item.order);
+
+                        return paginatedItems.map((order) => (
+                          <tr
+                            key={order.id}
+                            className={`border-b border-white/5 transition-colors ${
+                              selectedOrderIds.includes(order.id)
+                                ? "bg-cyan-500/10"
+                                : "hover:bg-white/[0.02]"
+                            }`}
+                          >
+                            <td className="px-3 py-1.5 text-center whitespace-nowrap">
+                              <input
+                                type="checkbox"
+                                checked={selectedOrderIds.includes(order.id)}
+                                onChange={() => toggleSelectOrder(order.id)}
+                                className="rounded border-gray-600 bg-white/5 text-cyan-500 focus:ring-cyan-500/50"
+                              />
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
+                              {order.id.slice(0, 8)}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                              {shortDate(order.createdAt)}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                              {order.merchant?.ownerFirstName ||
+                                order.merchant?.merchantName ||
+                                "—"}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                              {order.customerName || "—"}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                              {order.zone?.name || "—"}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                              {order.driver?.firstName || "—"}
+                            </td>
+                            <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
+                              {order.amountUsd ? `$${order.amountUsd}` : ""}
+                              {order.amountUsd && order.amountLbp ? " / " : ""}
+                              {order.amountLbp
+                                ? `${Number(order.amountLbp).toLocaleString()} LBP`
+                                : ""}
+                            </td>
+                            <td className="px-3 py-1.5 whitespace-nowrap">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                RWD
+                              </span>
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination */}
+                {(() => {
+                  const totalPages = Math.ceil(
+                    rwdOrders.length / rwdItemsPerPage,
+                  );
+                  if (totalPages <= 1) return null;
+                  return (
+                    <div className="flex items-center justify-between mt-4">
+                      <div className="flex items-center gap-2 text-xs text-gray-400">
+                        <span>Per page:</span>
+                        <select
+                          value={rwdItemsPerPage}
+                          onChange={(e) => {
+                            setRwdItemsPerPage(Number(e.target.value));
+                            setRwdPage(1);
+                          }}
+                          className="rounded border border-white/10 bg-white/5 text-gray-300 px-2 py-1 text-xs"
+                        >
+                          {[25, 50, 100, 200].map((n) => (
+                            <option key={n} value={n}>
+                              {n}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setRwdPage((p) => Math.max(1, p - 1))}
+                          disabled={rwdPage === 1}
+                          className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Prev
+                        </button>
+                        <span className="text-xs text-gray-400">
+                          Page {rwdPage} of {totalPages}
+                        </span>
+                        <button
+                          onClick={() =>
+                            setRwdPage((p) => Math.min(totalPages, p + 1))
+                          }
+                          disabled={rwdPage === totalPages}
                           className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                         >
                           Next
@@ -4741,6 +5209,17 @@ function OrdersPageInner() {
               router.refresh();
             }}
             onClose={() => setGlobalSheetModalOpen(false)}
+          />
+        )}
+
+        {/* ════════════════════════════════════════ */}
+        {/* ORDER HISTORY MODAL                      */}
+        {/* ════════════════════════════════════════ */}
+        {historyModalOrder && (
+          <OrderHistoryModal
+            orderId={historyModalOrder.id}
+            orderHistory={historyModalOrder.history}
+            onClose={() => setHistoryModalOrder(null)}
           />
         )}
       </div>

@@ -3,6 +3,71 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+// Enrich orders with per-order driver commission (3-tier logic)
+async function enrichOrdersWithCommission(payouts: any[]) {
+  return Promise.all(
+    payouts.map(async (payout) => {
+      const driverId = payout.driverId;
+      const userId = payout.driver?.userId;
+
+      const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
+        prisma.driverZoneRate.findMany({ where: { driverId } }),
+        prisma.driverSellerRate.findMany({ where: { driverId } }),
+        userId
+          ? prisma.driverCashSellerRate.findMany({
+              where: { driverId: userId },
+            })
+          : Promise.resolve([]),
+      ]);
+
+      const zoneRateMap = new Map(
+        zoneRates.map((zr: any) => [zr.zoneId, zr.rate]),
+      );
+      const sellerExceptionMap = new Map<string, number>();
+      for (const sr of sellerRates) {
+        if (sr.rateUsd > 0) sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+      }
+      for (const cr of cashSellerRates) {
+        if (cr.rateUsd > 0) sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
+      }
+
+      const ordersWithCommission = (payout.orders || []).map((order: any) => {
+        const orderMerchantId = String(order.merchantId ?? "");
+        const orderZoneId = String(order.zoneId);
+        const exceptionRate = orderMerchantId
+          ? sellerExceptionMap.get(orderMerchantId)
+          : undefined;
+        const driverCommissionUsd =
+          exceptionRate !== undefined
+            ? exceptionRate
+            : (zoneRateMap.get(orderZoneId) ?? 0);
+
+        // Normalize collected amounts — fallback to order amount when not explicitly set
+        const collectedUsd =
+          (order.collectedUsd ?? 0) > 0
+            ? order.collectedUsd
+            : (order.amountUsd ?? 0);
+        const collectedLbp =
+          (order.collectedLbp ?? 0) > 0
+            ? order.collectedLbp
+            : (order.amountLbp ?? 0);
+
+        return {
+          ...order,
+          collectedUsd,
+          collectedLbp,
+          driverCommissionUsd,
+        };
+      });
+
+      return {
+        ...payout,
+        orders: ordersWithCommission,
+      };
+    }),
+  );
+}
+
 // GET /api/admin/drivers/settlements — Fetch PENDING + historical (CLEARED/PAID) DriverPayouts
 export async function GET() {
   try {
@@ -18,21 +83,36 @@ export async function GET() {
             lastName: true,
             carriedDebtUsd: true,
             carriedDebtLbp: true,
+            userId: true,
           },
         },
         orders: {
           select: {
             id: true,
             orderId: true,
+            customerName: true,
+            createdAt: true,
             amountUsd: true,
             amountLbp: true,
             collectedUsd: true,
             collectedLbp: true,
+            financialStatus: true,
+            zoneId: true,
+            merchantId: true,
+            zone: {
+              select: { name: true },
+            },
+            merchant: {
+              select: { merchantName: true },
+            },
           },
         },
       },
       orderBy: { createdAt: "desc" },
     });
+
+    // Enrich pending payouts with per-order commission
+    const enrichedPending = await enrichOrdersWithCommission(pendingPayouts);
 
     // Fetch Historical (Settled) Payouts — limited to recent 50
     const settledPayouts = await prisma.driverPayout.findMany({
@@ -64,32 +144,40 @@ export async function GET() {
     });
 
     // Map to clean settlement objects
-    const mapPayout = (p: any) => ({
-      payoutId: p.id,
-      payoutReference: p.payoutReference || null,
-      driverId: p.driverId,
-      driverName: `${p.driver.firstName} ${p.driver.lastName}`,
-      driverInternalId: p.driver.driverId,
-      sequentialIndex: p.sequentialIndex,
-      orderCount: p.orders.length,
-      totalUsd: p.totalUsd,
-      totalLbp: p.totalLbp,
-      commissionUsd: p.commissionUsd,
-      netUsd: p.netUsd,
-      previousDebtUsd: p.previousDebtUsd,
-      previousDebtLbp: p.previousDebtLbp,
-      remainingUsd: p.remainingUsd,
-      remainingLbp: p.remainingLbp,
-      carriedDebtUsd: p.driver.carriedDebtUsd,
-      carriedDebtLbp: p.driver.carriedDebtLbp,
-      status: p.status,
-      clearedAt: p.clearedAt,
-      amountPaidUsd: p.amountPaidUsd,
-      amountPaidLbp: p.amountPaidLbp,
-      orders: p.orders,
-    });
+    const mapPayout = (p: any) => {
+      const totalCollected = (p.orders || []).reduce(
+        (sum: number, o: any) => sum + (Number(o.collectedUsd) || 0),
+        0,
+      );
+      return {
+        payoutId: p.id,
+        payoutReference: p.payoutReference || null,
+        driverId: p.driverId,
+        driverName: `${p.driver.firstName} ${p.driver.lastName}`,
+        driverInternalId: p.driver.driverId,
+        sequentialIndex: p.sequentialIndex,
+        orderCount: p.orders.length,
+        totalUsd: p.totalUsd,
+        totalLbp: p.totalLbp,
+        commissionUsd: p.commissionUsd,
+        netUsd: p.netUsd,
+        totalCollected,
+        previousDebtUsd: p.previousDebtUsd,
+        previousDebtLbp: p.previousDebtLbp,
+        remainingUsd: p.remainingUsd,
+        remainingLbp: p.remainingLbp,
+        carriedDebtUsd: p.driver.carriedDebtUsd,
+        carriedDebtLbp: p.driver.carriedDebtLbp,
+        status: p.status,
+        createdAt: p.createdAt,
+        clearedAt: p.clearedAt,
+        amountPaidUsd: p.amountPaidUsd,
+        amountPaidLbp: p.amountPaidLbp,
+        orders: p.orders,
+      };
+    };
 
-    const settlements = pendingPayouts.map(mapPayout);
+    const settlements = enrichedPending.map(mapPayout);
     const history = settledPayouts.map(mapPayout);
 
     return NextResponse.json({ settlements, history }, { status: 200 });

@@ -25,7 +25,10 @@ export async function GET(
               },
             },
           },
-          include: { driver: true },
+          include: {
+            driver: true,
+            history: { include: { user: true }, orderBy: { createdAt: "asc" } },
+          },
           orderBy: { createdAt: "desc" },
         },
       },

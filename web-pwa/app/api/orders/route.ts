@@ -1,33 +1,137 @@
-import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import { NextRequest, NextResponse } from "next/server";
+import prisma from "@/lib/prisma";
 import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
 import { notifyCustomerStatusChange } from "@/lib/notifications";
 
-const prisma = new PrismaClient();
-
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    // Attempt full relational include
-    const orders = await prisma.order.findMany({
-      include: {
-        zone: true,
-        driver: true,
-        merchant: true,
-        creator: true,
-        history: { include: { user: true }, orderBy: { createdAt: "asc" } },
+    const { searchParams } = new URL(request.url);
+
+    // Pagination defaults
+    const skip = Math.max(0, parseInt(searchParams.get("skip") || "0", 10));
+    const take = Math.min(
+      5000,
+      Math.max(1, parseInt(searchParams.get("take") || "500", 10)),
+    );
+
+    // Optional server-side filters
+    const location = searchParams.get("location");
+    const search = searchParams.get("search");
+    const dateFrom = searchParams.get("dateFrom");
+    const dateTo = searchParams.get("dateTo");
+    const zoneId = searchParams.get("zoneId");
+
+    // Build where clause from filters
+    const where: Record<string, unknown> = {};
+    if (location) where.location = location;
+    if (zoneId) where.zoneId = zoneId;
+    if (dateFrom || dateTo) {
+      const createdAt: Record<string, Date> = {};
+      if (dateFrom) createdAt.gte = new Date(dateFrom);
+      if (dateTo) createdAt.lte = new Date(dateTo);
+      where.createdAt = createdAt;
+    }
+    if (search) {
+      where.OR = [
+        { orderId: { contains: search, mode: "insensitive" } },
+        { customerName: { contains: search, mode: "insensitive" } },
+        { customerPhone: { contains: search, mode: "insensitive" } },
+      ];
+    }
+
+    // Run count + data in parallel
+    const [total, orders] = await Promise.all([
+      prisma.order.count({ where }),
+      prisma.order.findMany({
+        where,
+        skip,
+        take,
+        select: {
+          id: true,
+          orderId: true,
+          customerName: true,
+          customerPhone: true,
+          customerAddress: true,
+          zoneId: true,
+          hasExchange: true,
+          location: true,
+          financialStatus: true,
+          amountUsd: true,
+          amountLbp: true,
+          collectedUsd: true,
+          collectedLbp: true,
+          notes: true,
+          merchantId: true,
+          driverId: true,
+          waybillUrl: true,
+          isArchived: true,
+          packages: true,
+          extraShipping: true,
+          createdAt: true,
+          updatedAt: true,
+          dispatchedAt: true,
+          deliveredAt: true,
+          zone: {
+            select: { id: true, name: true },
+          },
+          driver: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              driverId: true,
+              userId: true,
+            },
+          },
+          merchant: {
+            select: {
+              id: true,
+              merchantName: true,
+              contactName: true,
+            },
+          },
+          creator: {
+            select: { id: true, username: true },
+          },
+          history: {
+            select: {
+              id: true,
+              action: true,
+              location: true,
+              driverId: true,
+              user: { select: { id: true, username: true } },
+              createdAt: true,
+            },
+            orderBy: { createdAt: "asc" },
+            take: 10,
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+    return NextResponse.json(
+      {
+        data: orders,
+        meta: {
+          total,
+          skip,
+          take,
+          hasMore: skip + take < total,
+        },
       },
-      orderBy: { createdAt: "desc" },
-    });
-    return NextResponse.json(orders, { status: 200 });
+      { status: 200 },
+    );
   } catch (error: any) {
-    console.error("[GET /api/orders] Full include failed:", error.message);
+    console.error("[GET /api/orders] Query failed:", error.message);
 
     // Fallback: Fetch basic order records if a relation field name changed in schema.prisma
     try {
       const basicOrders = await prisma.order.findMany({
         orderBy: { createdAt: "desc" },
+        take: 200,
       });
       return NextResponse.json(basicOrders, { status: 200 });
     } catch (fallbackError: any) {
@@ -149,10 +253,26 @@ export async function PATCH(request: Request) {
     if (!existing)
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
 
-    // ── Resolve authenticated userId & driverId from session cookie ──────
+    // ── Block driver reassignment on delivered / paid-out orders ─────────
+    if (
+      updateData.driverId !== undefined &&
+      existing.driverId !== updateData.driverId &&
+      existing.financialStatus &&
+      ["WD", "WO"].includes(existing.financialStatus)
+    ) {
+      return NextResponse.json(
+        {
+          error: `Cannot reassign driver on orders with status "${existing.financialStatus}". Use the payout or returns section to change status first.`,
+        },
+        { status: 400 },
+      );
+    }
+
+    // ── Resolve authenticated userId, role & driverId from session cookie ─
     const adminUser = await prisma.user.findFirst({ where: { role: "ADMIN" } });
     let actionUserId = currentUserActionId || adminUser?.id;
     let actionDriverId: string | null | undefined = undefined;
+    let sessionRole: string | null = null;
 
     try {
       const cookieStore = await cookies();
@@ -161,6 +281,7 @@ export async function PATCH(request: Request) {
         const secret = new TextEncoder().encode(process.env.JWT_SECRET);
         const { payload } = await jwtVerify(token, secret);
         const sessionUserId = payload.id as string;
+        sessionRole = (payload.role as string) || null;
         if (sessionUserId) {
           if (!currentUserActionId) actionUserId = sessionUserId;
           const driverProfile = await prisma.driverProfile.findUnique({
@@ -172,6 +293,21 @@ export async function PATCH(request: Request) {
       }
     } catch {
       // Session lookup is best-effort; fall back to body-supplied ids
+    }
+
+    // ── Admin-only guard: WO status change (cleared payout rollback) ──────
+    // Only admins can modify orders that are in a cleared payout (WO).
+    // Any non-admin attempt to update a WO order is rejected.
+    if (existing.financialStatus === "WO") {
+      const isAdmin = sessionRole === "ADMIN" || adminUser?.id === actionUserId;
+      if (!isAdmin) {
+        return NextResponse.json(
+          {
+            error: `Only administrators can modify orders with status "WO" (cleared payout). Contact an admin to roll back this order.`,
+          },
+          { status: 403 },
+        );
+      }
     }
 
     if (price !== undefined) updateData.amountUsd = parseFloat(price);
@@ -196,6 +332,20 @@ export async function PATCH(request: Request) {
         if (!updateData.deliveredAt) {
           updateData.deliveredAt = new Date();
         }
+      } else if (
+        updateData.location === "ASSIGNED" ||
+        updateData.location === "WITH_DRIVER"
+      ) {
+        // Order returned to driver (e.g., rolled back from payout).
+        // Enforce UD — order is assigned to driver but not delivered.
+        // WD is only for delivered orders in pending payout.
+        // WO is for orders cleared from payout.
+        updateData.financialStatus = "UD";
+        changes.push("Returned to Driver");
+        // Clear delivered timestamp since the order is no longer delivered
+        if (existing.deliveredAt) {
+          updateData.deliveredAt = null;
+        }
       } else if (updateData.location === "RETURN") {
         changes.push("Marked as Return");
         // Always enforce correct financialStatus based on driverId presence:
@@ -206,6 +356,110 @@ export async function PATCH(request: Request) {
         changes.push("Returned to Warehouse");
       } else {
         changes.push(`Location changed to ${updateData.location}`);
+      }
+    }
+
+    // ── Payout cleanup: Unlink + recalc when order removed from pending payout ─
+    // If the order was in a pending payout and is being moved back (not DELIVERED),
+    // unlink it from the payout and recalculate totals.
+    if (
+      existing.driverPayoutId &&
+      updateData.location &&
+      updateData.location !== existing.location &&
+      updateData.location !== "DELIVERED"
+    ) {
+      updateData.driverPayoutId = null;
+      changes.push("Removed from Payout");
+
+      // Fetch the payout to verify it's PENDING before recalculating
+      const currentPayout = await prisma.driverPayout.findUnique({
+        where: { id: existing.driverPayoutId },
+        select: { id: true, status: true, driverId: true },
+      });
+
+      if (currentPayout && currentPayout.status === "PENDING") {
+        const remainingOrders = await prisma.order.findMany({
+          where: {
+            driverPayoutId: currentPayout.id,
+            id: { not: existing.id }, // exclude the order being removed
+          },
+          select: {
+            id: true,
+            amountUsd: true,
+            amountLbp: true,
+            zoneId: true,
+            merchantId: true,
+          },
+        });
+
+        if (remainingOrders.length === 0) {
+          // No orders left — delete the empty payout
+          await prisma.driverPayout.delete({
+            where: { id: currentPayout.id },
+          });
+          changes.push("Payout deleted (no remaining orders)");
+        } else {
+          // Recalculate totals from remaining orders
+          const newTotalUsd = remainingOrders.reduce(
+            (sum, o) => sum + (o.amountUsd ?? 0),
+            0,
+          );
+          const newTotalLbp = remainingOrders.reduce(
+            (sum, o) => sum + (o.amountLbp ?? 0),
+            0,
+          );
+
+          // Recalculate commission using 3-tier logic
+          const zoneRates = await prisma.driverZoneRate.findMany({
+            where: { driverId: currentPayout.driverId || undefined },
+          });
+          const zoneRateMap = new Map(
+            zoneRates.map((zr) => [zr.zoneId, zr.rate]),
+          );
+
+          const driverProfile = await prisma.driverProfile.findUnique({
+            where: { id: currentPayout.driverId || undefined },
+            select: { userId: true },
+          });
+
+          const sellerRates = driverProfile?.userId
+            ? await prisma.driverSellerRate.findMany({
+                where: { driverId: currentPayout.driverId || undefined },
+              })
+            : [];
+
+          const sellerExceptionMap = new Map<string, number>();
+          for (const sr of sellerRates) {
+            if (sr.rateUsd > 0)
+              sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+          }
+
+          const newCommissionUsd = remainingOrders.reduce((sum, o) => {
+            const merchantId = String(o.merchantId ?? "");
+            const exceptionRate = merchantId
+              ? sellerExceptionMap.get(merchantId)
+              : undefined;
+            const commission =
+              exceptionRate !== undefined
+                ? exceptionRate
+                : (zoneRateMap.get(o.zoneId) ?? 0);
+            return sum + commission;
+          }, 0);
+
+          const newNetUsd = newTotalUsd - newCommissionUsd;
+
+          await prisma.driverPayout.update({
+            where: { id: currentPayout.id },
+            data: {
+              totalUsd: newTotalUsd,
+              totalLbp: newTotalLbp,
+              commissionUsd: newCommissionUsd,
+              netUsd: newNetUsd,
+              totalCollected: newTotalUsd,
+            },
+          });
+          changes.push("Payout totals recalculated");
+        }
       }
     }
 

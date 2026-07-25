@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect, useCallback, Fragment } from "react";
 import { useRouter } from "next/navigation";
 import SettingsModal from "@/components/SettingsModal";
 import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
+import OrderHistoryModal from "@/components/OrderHistoryModal";
 import * as XLSX from "xlsx";
 
 type Order = {
@@ -43,8 +44,32 @@ type Driver = {
   driverSellerRates: SellerRate[];
 };
 
+type WarehouseOrder = {
+  id: string;
+  orderId: string;
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  amountUsd: number;
+  amountLbp: number;
+  location: string;
+  financialStatus?: string;
+  notes?: string | null;
+  zoneId: string;
+  zone: { id: string; name: string } | null;
+  merchant?: { id: string; merchantName: string } | null;
+  merchantId?: string | null;
+};
+
+type AssignedZone = {
+  id: string;
+  name: string;
+};
+
 type Props = {
   driver: Driver;
+  warehouseOrders?: WarehouseOrder[];
+  assignedZones?: AssignedZone[];
 };
 
 // ── Payout History Types ────────────────────────────────────────────────
@@ -127,13 +152,33 @@ const NOTE_OPTIONS = [
   "Wrong number",
 ] as const;
 
-export default function DriverClient({ driver }: Props) {
+export default function DriverClient({
+  driver,
+  warehouseOrders: initialWarehouseOrders = [],
+  assignedZones: initialAssignedZones = [],
+}: Props) {
   const router = useRouter();
   const [deliveries, setDeliveries] = useState<Order[]>(driver.deliveries);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [collectedUsd, setCollectedUsd] = useState("");
   const [collectedLbp, setCollectedLbp] = useState("");
   const [submitting, setSubmitting] = useState<string | null>(null);
+  const [historyModalOrder, setHistoryModalOrder] = useState<{
+    id: string;
+    history: any[];
+  } | null>(null);
+
+  // ── Bulk Selection State ─────────────────────────────────────────────
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [bulkMode, setBulkMode] = useState<"quick" | "custom">("quick");
+  const [bulkCollectedUsd, setBulkCollectedUsd] = useState<
+    Record<string, string>
+  >({});
+  const [bulkCollectedLbp, setBulkCollectedLbp] = useState<
+    Record<string, string>
+  >({});
 
   // ── Logout Handler ──────────────────────────────────────────────────
   const handleLogout = async () => {
@@ -156,9 +201,20 @@ export default function DriverClient({ driver }: Props) {
   const [customNote, setCustomNote] = useState("");
   const [showCustomInput, setShowCustomInput] = useState(false);
 
+  // ── Warehouse State ──────────────────────────────────────────────────
+  const [warehouseOrders, setWarehouseOrders] = useState<WarehouseOrder[]>(
+    initialWarehouseOrders,
+  );
+  const [activeWarehouseZone, setActiveWarehouseZone] = useState<string>(
+    initialAssignedZones.length > 0 ? initialAssignedZones[0].id : "",
+  );
+  const [warehousePickupSubmitting, setWarehousePickupSubmitting] = useState<
+    string | null
+  >(null);
+
   // ── Tab State ────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<
-    "ACTIVE" | "DELIVERED" | "PAYOUTS"
+    "ACTIVE" | "DELIVERED" | "PAYOUTS" | "WAREHOUSE"
   >("ACTIVE");
 
   // ── Settings Modal State ─────────────────────────────────────────────
@@ -546,6 +602,45 @@ export default function DriverClient({ driver }: Props) {
     }
   };
 
+  // ── Pick Up Warehouse Order (assign to self) ──────────────────────────
+  const handlePickupOrder = async (orderId: string) => {
+    const confirmed = window.confirm(
+      "Assign this order to yourself and move it to your active deliveries?",
+    );
+    if (!confirmed) return;
+
+    setWarehousePickupSubmitting(orderId);
+    try {
+      const res = await fetch("/api/orders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: orderId,
+          driverId: driver.id,
+          location: "ASSIGNED",
+          financialStatus: "UD",
+          collectedUsd: 0,
+          collectedLbp: 0,
+          driverActionLog: "PICKED_UP_FROM_WAREHOUSE",
+        }),
+      });
+
+      if (res.ok) {
+        // Remove from warehouse list
+        setWarehouseOrders((prev) => prev.filter((o) => o.id !== orderId));
+        // Refresh the page to update the active deliveries count
+        router.refresh();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to pick up order. Please try again.");
+      }
+    } catch {
+      alert("Network error. Please try again.");
+    } finally {
+      setWarehousePickupSubmitting(null);
+    }
+  };
+
   // ── Open Payout Modal ─────────────────────────────────────────────────
   const handleOpenPayoutModal = () => {
     if (deliveredOrders.length === 0) return;
@@ -677,6 +772,130 @@ export default function DriverClient({ driver }: Props) {
   };
 
   // ── Toggle expanded form for a card ───────────────────────────────────
+  // Bulk selection handlers
+  const toggleOrderSelection = (orderId: string) => {
+    setSelectedOrderIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(orderId)) {
+        next.delete(orderId);
+      } else {
+        next.add(orderId);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedOrderIds((prev) => {
+      if (prev.size === activeOrders.length) {
+        return new Set();
+      }
+      return new Set(activeOrders.map((o) => o.id));
+    });
+  };
+
+  const clearSelection = () => {
+    setSelectedOrderIds(new Set());
+    setBulkCollectedUsd({});
+    setBulkCollectedLbp({});
+  };
+
+  const handleBulkQuickDeliver = async () => {
+    if (selectedOrderIds.size === 0) return;
+    setSubmitting("bulk");
+    try {
+      const items = Array.from(selectedOrderIds).map((id) => {
+        const order = deliveries.find((o) => o.id === id);
+        return {
+          id,
+          location: "DELIVERED",
+          financialStatus: "WD",
+          collectedUsd: order?.amountUsd || 0,
+          collectedLbp: order?.amountLbp || 0,
+          driverActionLog: "BULK_QUICK_DELIVER",
+        };
+      });
+
+      const res = await fetch("/api/orders/bulk", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+
+      if (!res.ok) throw new Error("Bulk delivery failed");
+
+      const data = await res.json();
+      const updatedIds = new Set(
+        (data.results || [])
+          .filter((r: any) => r.success)
+          .map((r: any) => r.id),
+      );
+
+      setDeliveries((prev) =>
+        prev.map((o) =>
+          updatedIds.has(o.id)
+            ? { ...o, location: "DELIVERED", financialStatus: "WD" }
+            : o,
+        ),
+      );
+      clearSelection();
+    } catch (err) {
+      console.error("Bulk delivery error:", err);
+      alert("Bulk delivery failed. Check console for details.");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+
+  const handleBulkCustomDeliver = async () => {
+    if (selectedOrderIds.size === 0) return;
+    setSubmitting("bulk");
+    try {
+      const items = Array.from(selectedOrderIds).map((id) => {
+        const order = deliveries.find((o) => o.id === id);
+        const usd = parseFloat(bulkCollectedUsd[id] || "0") || 0;
+        const lbp = parseFloat(bulkCollectedLbp[id] || "0") || 0;
+        return {
+          id,
+          location: "DELIVERED",
+          financialStatus: usd > 0 || lbp > 0 ? "WD" : "UD",
+          collectedUsd: usd,
+          collectedLbp: lbp,
+          driverActionLog: "BULK_CUSTOM_DELIVER",
+        };
+      });
+
+      const res = await fetch("/api/orders/bulk", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+
+      if (!res.ok) throw new Error("Bulk delivery failed");
+
+      const data = await res.json();
+      const updatedIds = new Set(
+        (data.results || [])
+          .filter((r: any) => r.success)
+          .map((r: any) => r.id),
+      );
+
+      setDeliveries((prev) =>
+        prev.map((o) =>
+          updatedIds.has(o.id)
+            ? { ...o, location: "DELIVERED", financialStatus: "WD" }
+            : o,
+        ),
+      );
+      clearSelection();
+    } catch (err) {
+      console.error("Bulk delivery error:", err);
+      alert("Bulk delivery failed. Check console for details.");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+
   const toggleExpand = (orderId: string) => {
     if (expandedOrderId === orderId) {
       setExpandedOrderId(null);
@@ -765,6 +984,16 @@ export default function DriverClient({ driver }: Props) {
             Delivered ({deliveredOrders.length})
           </button>
           <button
+            onClick={() => setActiveTab("WAREHOUSE")}
+            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+              activeTab === "WAREHOUSE"
+                ? "bg-amber-500/20 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.3)]"
+                : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+            }`}
+          >
+            Warehouse ({warehouseOrders.length})
+          </button>
+          <button
             onClick={() => setActiveTab("PAYOUTS")}
             className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
               activeTab === "PAYOUTS"
@@ -776,6 +1005,132 @@ export default function DriverClient({ driver }: Props) {
           </button>
         </div>
       </div>
+
+      {/* ── Bulk Action Bar (shown when orders are selected) ─────────────── */}
+      {selectedOrderIds.size > 0 && activeTab === "ACTIVE" && (
+        <div className="sticky z-20 bg-cyan-500/10 backdrop-blur border-y border-cyan-500/30 px-4">
+          <div className="max-w-7xl mx-auto w-full flex flex-col gap-3 py-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={toggleSelectAll}
+                  className="text-xs text-cyan-400 hover:text-cyan-300 font-semibold"
+                >
+                  {selectedOrderIds.size === activeOrders.length
+                    ? "Deselect All"
+                    : "Select All"}
+                </button>
+                <span className="text-sm font-bold text-white">
+                  {selectedOrderIds.size} order
+                  {selectedOrderIds.size > 1 ? "s" : ""} selected
+                </span>
+              </div>
+              <button
+                onClick={clearSelection}
+                className="text-xs text-gray-400 hover:text-white"
+              >
+                Clear
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setBulkMode("quick")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  bulkMode === "quick"
+                    ? "bg-cyan-500/30 text-cyan-300 border border-cyan-500/40"
+                    : "bg-white/5 text-gray-400 border border-white/10 hover:text-gray-300"
+                }`}
+              >
+                Quick Deliver (Full)
+              </button>
+              <button
+                onClick={() => setBulkMode("custom")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  bulkMode === "custom"
+                    ? "bg-cyan-500/30 text-cyan-300 border border-cyan-500/40"
+                    : "bg-white/5 text-gray-400 border border-white/10 hover:text-gray-300"
+                }`}
+              >
+                Custom Amount
+              </button>
+              <div className="flex-1" />
+              <button
+                onClick={handleBulkQuickDeliver}
+                disabled={submitting !== null}
+                className="px-4 py-2 rounded-lg text-xs font-bold bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 disabled:opacity-50"
+              >
+                {submitting === "bulk"
+                  ? "Processing..."
+                  : `Deliver ${selectedOrderIds.size} Order${selectedOrderIds.size > 1 ? "s" : ""}`}
+              </button>
+            </div>
+
+            {bulkMode === "custom" && (
+              <div className="bg-white/5 rounded-lg p-3 border border-white/10">
+                <p className="text-[10px] text-gray-500 mb-2 uppercase tracking-wider">
+                  Per-order collected amounts (leave 0 for unpaid)
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-40 overflow-y-auto">
+                  {Array.from(selectedOrderIds).map((id) => {
+                    const order = deliveries.find((o) => o.id === id);
+                    if (!order) return null;
+                    return (
+                      <div
+                        key={id}
+                        className="flex items-center gap-2 bg-white/5 rounded p-2"
+                      >
+                        <span className="text-[10px] text-cyan-400 font-mono flex-shrink-0 w-16 truncate">
+                          {order.orderId}
+                        </span>
+                        <div className="flex items-center gap-1 flex-1">
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder="USD"
+                            value={bulkCollectedUsd[id] || ""}
+                            onChange={(e) =>
+                              setBulkCollectedUsd((prev) => ({
+                                ...prev,
+                                [id]: e.target.value,
+                              }))
+                            }
+                            className="w-full px-2 py-1 rounded bg-gray-900/50 border border-white/10 text-green-400 text-xs font-mono"
+                          />
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            placeholder="LBP"
+                            value={bulkCollectedLbp[id] || ""}
+                            onChange={(e) =>
+                              setBulkCollectedLbp((prev) => ({
+                                ...prev,
+                                [id]: e.target.value,
+                              }))
+                            }
+                            className="w-full px-2 py-1 rounded bg-gray-900/50 border border-white/10 text-yellow-400 text-xs font-mono"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button
+                  onClick={handleBulkCustomDeliver}
+                  disabled={submitting !== null}
+                  className="mt-3 w-full px-4 py-2 rounded-lg text-xs font-bold bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 disabled:opacity-50"
+                >
+                  {submitting === "bulk"
+                    ? "Processing..."
+                    : `Deliver with Custom Amounts`}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Main Content ───────────────────────────────────────────────── */}
       <main className="px-4 py-6 pb-24 max-w-7xl mx-auto w-full">
@@ -817,15 +1172,58 @@ export default function DriverClient({ driver }: Props) {
                   return (
                     <div
                       key={order.id}
-                      className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden flex flex-col"
+                      className={`bg-white/[0.03] border rounded-xl overflow-hidden flex flex-col transition-colors ${
+                        selectedOrderIds.has(order.id)
+                          ? "border-cyan-500/50 bg-cyan-500/5"
+                          : "border-white/10"
+                      }`}
                     >
+                      {/* ── Card Header with Checkbox ──────────────────────── */}
+                      <div className="flex items-center justify-between px-4 pt-3 pb-1">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedOrderIds.has(order.id)}
+                            onChange={() => toggleOrderSelection(order.id)}
+                            className="w-4 h-4 rounded border-white/20 bg-white/5 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                          />
+                          <span className="text-[10px] text-gray-500 uppercase tracking-wider">
+                            Select
+                          </span>
+                        </label>
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                            order.location === "DELIVERED"
+                              ? "bg-green-500/20 text-green-400"
+                              : order.location === "WITH_DRIVER"
+                                ? "bg-yellow-500/20 text-yellow-400"
+                                : "bg-blue-500/20 text-blue-400"
+                          }`}
+                        >
+                          {order.location}
+                        </span>
+                      </div>
                       {/* ── Card Body ──────────────────────────────────────── */}
-                      <div className="p-4 flex-1">
+                      <div className="p-4 pt-1 flex-1">
                         {/* Tracking ID + Phone */}
                         <div className="flex items-center justify-between mb-3">
-                          <span className="font-mono text-cyan-400 text-sm font-semibold">
-                            {order.orderId}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() =>
+                                setHistoryModalOrder({
+                                  id: order.id,
+                                  history: [],
+                                })
+                              }
+                              title="Order History"
+                              className="text-[10px] px-1 py-0.5 rounded border transition-all bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
+                            >
+                              &#9776;
+                            </button>
+                            <span className="font-mono text-cyan-400 text-sm font-semibold">
+                              {order.orderId}
+                            </span>
+                          </div>
                           <a
                             href={`tel:${order.customerPhone}`}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/10 text-green-400 text-xs font-semibold border border-green-500/20 hover:bg-green-500/20 transition-colors"
@@ -847,10 +1245,13 @@ export default function DriverClient({ driver }: Props) {
                           </a>
                         </div>
 
-                        {/* Customer Name */}
+                        {/* Customer Name & Phone */}
                         <h2 className="text-white font-semibold text-base mb-1">
                           {order.customerName}
                         </h2>
+                        <p className="text-gray-500 text-xs font-mono mb-1">
+                          📞 {order.customerPhone}
+                        </p>
 
                         {/* Address */}
                         <p className="text-gray-400 text-sm mb-3 leading-relaxed">
@@ -997,16 +1398,31 @@ export default function DriverClient({ driver }: Props) {
                         {/* ── Card Body ──────────────────────────────────── */}
                         <div className="p-4 flex-1">
                           {/* Tracking ID */}
-                          <div className="mb-3">
+                          <div className="flex items-center gap-2 mb-3">
+                            <button
+                              onClick={() =>
+                                setHistoryModalOrder({
+                                  id: order.id,
+                                  history: [],
+                                })
+                              }
+                              title="Order History"
+                              className="text-[10px] px-1 py-0.5 rounded border transition-all bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
+                            >
+                              &#9776;
+                            </button>
                             <span className="font-mono text-green-400 text-sm font-semibold">
                               #{order.orderId}
                             </span>
                           </div>
 
-                          {/* Customer Name */}
+                          {/* Customer Name & Phone */}
                           <h2 className="text-white font-semibold text-base mb-1">
                             {order.customerName}
                           </h2>
+                          <p className="text-gray-500 text-xs font-mono mb-1">
+                            📞 {order.customerPhone}
+                          </p>
 
                           {/* Address */}
                           <p className="text-gray-400 text-sm mb-3 leading-relaxed">
@@ -1076,6 +1492,167 @@ export default function DriverClient({ driver }: Props) {
                     </button>
                   </div>
                 </div>
+              </>
+            )}
+          </>
+        )}
+
+        {/* ═══════════════════════════════════════════════════════════════
+            WAREHOUSE TAB
+            ════════════════════════════════════════════════════════════ */}
+        {activeTab === "WAREHOUSE" && (
+          <>
+            {initialAssignedZones.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mb-4">
+                  <svg
+                    className="w-8 h-8 text-gray-600"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={1.5}
+                      d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-1.414 1.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-1.414-1.414A1 1 0 006.586 13H4"
+                    />
+                  </svg>
+                </div>
+                <p className="text-gray-400 font-medium">No zones assigned</p>
+                <p className="text-gray-600 text-sm mt-1">
+                  You don't have any warehouse zones assigned yet. Contact your
+                  admin.
+                </p>
+              </div>
+            ) : warehouseOrders.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mb-4">
+                  <svg
+                    className="w-8 h-8 text-gray-600"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={1.5}
+                      d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                </div>
+                <p className="text-gray-400 font-medium">No orders available</p>
+                <p className="text-gray-600 text-sm mt-1">
+                  All orders from your assigned zones have been picked up.
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* Zone sub-tabs */}
+                <div className="flex gap-1 mb-6 p-1 rounded-xl backdrop-blur-xl bg-white/5 border border-white/10 overflow-x-auto">
+                  {initialAssignedZones.map((zone) => {
+                    const count = warehouseOrders.filter(
+                      (o) => o.zoneId === zone.id,
+                    ).length;
+                    return (
+                      <button
+                        key={zone.id}
+                        onClick={() => setActiveWarehouseZone(zone.id)}
+                        className={`whitespace-nowrap px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+                          activeWarehouseZone === zone.id
+                            ? "bg-amber-500/20 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.3)]"
+                            : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                        }`}
+                      >
+                        {zone.name} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Orders for selected zone */}
+                {(() => {
+                  const zoneOrders = warehouseOrders.filter(
+                    (o) => o.zoneId === activeWarehouseZone,
+                  );
+                  if (zoneOrders.length === 0) {
+                    return (
+                      <div className="text-center py-16">
+                        <p className="text-gray-500 text-sm">
+                          No orders in this zone.
+                        </p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                      {zoneOrders.map((order) => (
+                        <div
+                          key={order.id}
+                          className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden flex flex-col"
+                        >
+                          {/* Card Body */}
+                          <div className="p-4 flex-1">
+                            {/* Tracking ID */}
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="font-mono text-amber-400 text-sm font-semibold">
+                                #{order.orderId}
+                              </span>
+                              <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-yellow-500/20 text-yellow-400">
+                                WAREHOUSE
+                              </span>
+                            </div>
+
+                            {/* Customer Details */}
+                            <h2 className="text-white font-semibold text-base mb-1">
+                              {order.customerName}
+                            </h2>
+                            <p className="text-gray-500 text-xs font-mono mb-1">
+                              📞 {order.customerPhone}
+                            </p>
+                            <p className="text-gray-400 text-sm mb-3 leading-relaxed">
+                              {order.customerAddress}
+                            </p>
+
+                            {/* Seller & Zone Info */}
+                            <div className="flex items-center gap-2 mb-3">
+                              <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/5 text-gray-400 border border-white/10">
+                                📦 {order.merchant?.merchantName || "—"}
+                              </span>
+                              <span className="text-[10px] px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                🏭 {order.zone?.name || "—"}
+                              </span>
+                            </div>
+
+                            {/* Amounts */}
+                            <div className="flex items-center gap-4 text-sm border-t border-white/5 pt-3 mt-3">
+                              <span className="text-green-400 font-mono font-semibold">
+                                ${(order.amountUsd ?? 0).toFixed(2)}
+                              </span>
+                              <span className="text-yellow-400 font-mono font-semibold">
+                                {(order.amountLbp ?? 0).toLocaleString()} LL
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Pick Up Button */}
+                          <div className="px-4 pb-4">
+                            <button
+                              onClick={() => handlePickupOrder(order.id)}
+                              disabled={warehousePickupSubmitting === order.id}
+                              className="w-full px-4 py-3 rounded-lg text-xs font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 transition-colors disabled:opacity-50"
+                            >
+                              {warehousePickupSubmitting === order.id
+                                ? "Picking up..."
+                                : "📦 Pick Up & Assign to Me"}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </>
             )}
           </>
@@ -1323,6 +1900,9 @@ export default function DriverClient({ driver }: Props) {
                                               Customer
                                             </th>
                                             <th className="px-4 py-2 font-semibold">
+                                              Phone
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold">
                                               Zone
                                             </th>
                                             <th className="px-4 py-2 font-semibold">
@@ -1356,6 +1936,9 @@ export default function DriverClient({ driver }: Props) {
                                               </td>
                                               <td className="px-4 py-2 text-gray-300">
                                                 {order.customerName}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-400 font-mono text-xs">
+                                                {order.customerPhone || "—"}
                                               </td>
                                               <td className="px-4 py-2 text-gray-400">
                                                 {order.zone?.name || "—"}
@@ -1588,6 +2171,15 @@ export default function DriverClient({ driver }: Props) {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
       />
+
+      {/* ── Order History Modal ──────────────────────────────────────────── */}
+      {historyModalOrder && (
+        <OrderHistoryModal
+          orderId={historyModalOrder.id}
+          orderHistory={historyModalOrder.history}
+          onClose={() => setHistoryModalOrder(null)}
+        />
+      )}
     </div>
   );
 }

@@ -35,7 +35,11 @@ export async function GET(
         status: "PENDING",
       },
       include: {
-        orders: true,
+        orders: {
+          include: {
+            merchant: true,
+          },
+        },
       },
       orderBy: { createdAt: "desc" },
     });

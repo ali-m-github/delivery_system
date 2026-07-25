@@ -422,6 +422,10 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
             )}
           </h2>
 
+          <div className="mb-3 text-xs text-gray-500">
+            Showing {allOrders.length} of {totalOrders} order(s)
+          </div>
+
           {allOrders.length === 0 ? (
             <div className="bg-[#121824] border border-white/5 rounded-xl p-8 text-center text-gray-600 text-sm">
               No orders in this batch.

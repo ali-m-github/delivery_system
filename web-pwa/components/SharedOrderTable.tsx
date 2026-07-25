@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import OrderHistoryModal from "@/components/OrderHistoryModal";
 
 const LOCATION_LABELS: Record<string, string> = {
   WAREHOUSE: "Warehouse",
@@ -47,9 +48,10 @@ export default function SharedOrderTable({
   currentUser,
   onCopyLink,
 }: SharedOrderTableProps) {
-  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(
-    null,
-  );
+  const [historyModalOrder, setHistoryModalOrder] = useState<{
+    id: string;
+    history: any[];
+  } | null>(null);
 
   const hasPermission = (perm: string) =>
     currentUser?.role === "ADMIN" ||
@@ -105,21 +107,18 @@ export default function SharedOrderTable({
           />
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">ID:</span>
           <div className="flex items-center gap-1.5">
             <button
               onClick={() =>
-                setExpandedHistoryId(
-                  expandedHistoryId === order.id ? null : order.id,
-                )
+                setHistoryModalOrder({
+                  id: order.id,
+                  history: order.history || [],
+                })
               }
               title="Order History"
-              className={`text-[10px] px-1 py-0.5 rounded border transition-all ${
-                expandedHistoryId === order.id
-                  ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/50"
-                  : "bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
-              }`}
+              className="text-[10px] px-1 py-0.5 rounded border transition-all bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
             >
               &#9776;
             </button>
@@ -127,43 +126,43 @@ export default function SharedOrderTable({
           </div>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Date:</span>
           <span className="text-gray-400">
             {formatDDMMYYYY(order.createdAt)}
           </span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Seller:</span>
           <span className="text-gray-300">{sellerName}</span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Customer:</span>
           <span className="text-white">{order.customerName}</span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Tel:</span>
           <span className="text-gray-400">{order.customerPhone}</span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Address:</span>
-          <span className="text-gray-400 truncate">
+          <span className="text-gray-400 max-w-[200px] truncate">
             {order.customerAddress}
           </span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Zone:</span>
           <span className="text-gray-300">
             {order.zone?.name || order.zoneId || "—"}
           </span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Driver:</span>
           {order.driverId && order.driver ? (
             <span className="text-cyan-300 font-medium">
@@ -212,40 +211,40 @@ export default function SharedOrderTable({
           )}
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Location:</span>
           <span className={locationBadge}>
             {LOCATION_LABELS[order.location] || order.location}
           </span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Fin:</span>
           <span className={finStatusBadge}>{order.financialStatus}</span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Amt $:</span>
           <span className="text-gray-300 text-right">
             ${(order.amountUsd ?? 0).toFixed(2)}
           </span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Amt LL:</span>
           <span className="text-gray-300 text-right">
             {(order.amountLbp ?? 0).toLocaleString()}
           </span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">$ Coll:</span>
           <span className="text-gray-300 text-right">
             ${actualCollectedUsd.toFixed(2)}
           </span>
         </td>
 
-        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 truncate whitespace-nowrap">
+        <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">LL Coll:</span>
           <span className="text-gray-300 text-right">
             {actualCollectedLbp.toLocaleString()}
@@ -317,11 +316,7 @@ export default function SharedOrderTable({
           <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
             <span className="lg:hidden font-bold text-gray-400">Link:</span>
             <button
-              onClick={() =>
-                navigator.clipboard.writeText(
-                  window.location.origin + "/track/" + order.orderId,
-                )
-              }
+              onClick={() => onCopyLink(order.orderId)}
               className="p-1 text-gray-400 hover:text-white transition-colors flex items-center justify-center"
               title="Copy Link"
             >
@@ -345,73 +340,7 @@ export default function SharedOrderTable({
       </tr>
     );
 
-    const historyRow = expandedHistoryId === order.id && (
-      <tr key={`${order.id}-history`} className="border-b border-white/5">
-        <td
-          colSpan={onCopyLink ? 18 : 17}
-          className="px-4 py-3 bg-white/[0.02]"
-        >
-          <div className="text-xs font-semibold text-cyan-400 mb-2 uppercase tracking-wider">
-            ORDER HISTORY
-          </div>
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-gray-500 border-b border-white/10">
-                <th className="text-left py-1 pr-3 font-medium whitespace-nowrap">
-                  Stamp
-                </th>
-                <th className="text-left py-1 pr-3 font-medium whitespace-nowrap">
-                  Location
-                </th>
-                <th className="text-left py-1 pr-3 font-medium whitespace-nowrap">
-                  Driver
-                </th>
-                <th className="text-left py-1 pr-3 font-medium whitespace-nowrap">
-                  Note
-                </th>
-                <th className="text-left py-1 font-medium whitespace-nowrap">
-                  Entered By
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {order.history && order.history.length > 0 ? (
-                order.history.map((h: any) => (
-                  <tr
-                    key={h.id}
-                    className="border-b border-white/5 text-gray-400"
-                  >
-                    <td className="py-1 pr-3 whitespace-nowrap">
-                      {new Date(h.createdAt).toLocaleString("en-US", {
-                        timeZone: "Asia/Beirut",
-                      })}
-                    </td>
-                    <td className="py-1 pr-3 whitespace-nowrap">
-                      {h.location || "—"}
-                    </td>
-                    <td className="py-1 pr-3 whitespace-nowrap">
-                      {h.driverId || "—"}
-                    </td>
-                    <td className="py-1 pr-3">{h.action}</td>
-                    <td className="py-1 whitespace-nowrap">
-                      {h.user?.username || "—"}
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={5} className="py-2 text-gray-500 text-center">
-                    No history records.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </td>
-      </tr>
-    );
-
-    return [mainRow, historyRow].filter(Boolean);
+    return mainRow;
   };
 
   if (orders.length === 0) {
@@ -423,34 +352,46 @@ export default function SharedOrderTable({
   }
 
   return (
-    <div className="w-full max-w-full rounded-xl border border-white/10 bg-[#121824] overflow-x-auto">
-      <table className="w-full table-fixed text-[10px] md:text-xs min-w-[1000px] lg:min-w-full">
-        <thead className="hidden lg:table-header-group text-[10px] leading-tight">
-          <tr className="border-b border-gray-700 text-left">
-            <th className="w-[3%] px-0.5 py-2">SEL</th>
-            <th className="w-[5%] px-0.5 py-2">ID</th>
-            <th className="w-[6%] px-0.5 py-2">DATE</th>
-            <th className="w-[8%] px-0.5 py-2">SELLER</th>
-            <th className="w-[9%] px-0.5 py-2">CUSTOMER</th>
-            <th className="w-[7%] px-0.5 py-2">TEL NUMBER</th>
-            <th className="w-[12%] px-0.5 py-2">ADDRESS</th>
-            <th className="w-[4%] px-0.5 py-2">ZONE</th>
-            <th className="w-[8%] px-0.5 py-2">DRIVER</th>
-            <th className="w-[6%] px-0.5 py-2">LOCATION</th>
-            <th className="w-[4%] px-0.5 py-2">FIN</th>
-            <th className="w-[5%] px-0.5 py-2">AMT $</th>
-            <th className="w-[5%] px-0.5 py-2">AMT LL</th>
-            <th className="w-[5%] px-0.5 py-2">$ COLL</th>
-            <th className="w-[5%] px-0.5 py-2">LL COLL</th>
-            <th className="w-[3%] px-0.5 py-2">WA</th>
-            <th className="w-[2%] px-0.5 py-2">DOC</th>
-            {onCopyLink && <th className="w-[3%] px-0.5 py-2">LINK</th>}
-          </tr>
-        </thead>
-        <tbody className="block lg:table-row-group">
-          {orders.flatMap(renderTableRow)}
-        </tbody>
-      </table>
-    </div>
+    <>
+      <div className="w-full max-w-full rounded-xl border border-white/10 bg-[#121824] overflow-x-auto">
+        <table className="w-full table-auto text-[10px] md:text-xs min-w-[1200px]">
+          <thead className="hidden lg:table-header-group text-[10px] leading-tight">
+            <tr className="border-b border-gray-700 text-left">
+              <th className="px-0.5 py-2 whitespace-nowrap">SEL</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">ID</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">DATE</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">SELLER</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">CUSTOMER</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">TEL NUMBER</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">ADDRESS</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">ZONE</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">DRIVER</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">LOCATION</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">FIN</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">AMT $</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">AMT LL</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">$ COLL</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">LL COLL</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">WA</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">DOC</th>
+              {onCopyLink && (
+                <th className="px-0.5 py-2 whitespace-nowrap">LINK</th>
+              )}
+            </tr>
+          </thead>
+          <tbody className="block lg:table-row-group">
+            {orders.flatMap(renderTableRow)}
+          </tbody>
+        </table>
+      </div>
+
+      {historyModalOrder && (
+        <OrderHistoryModal
+          orderId={historyModalOrder.id}
+          orderHistory={historyModalOrder.history}
+          onClose={() => setHistoryModalOrder(null)}
+        />
+      )}
+    </>
   );
 }

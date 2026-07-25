@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import SettingsModal from "./SettingsModal";
 
@@ -161,9 +161,12 @@ export default function Sidebar() {
   const [authLoading, setAuthLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const authFetchedRef = useRef(false);
 
-  // ── Fetch auth state (re-fetch on route change to keep sidebar in sync) ──
+  // ── Fetch auth state once on mount ──
   useEffect(() => {
+    if (authFetchedRef.current) return;
+    authFetchedRef.current = true;
     fetch("/api/auth/me")
       .then(async (res) => {
         if (!res.ok) {
@@ -179,7 +182,7 @@ export default function Sidebar() {
         setUser(null);
         setAuthLoading(false);
       });
-  }, [pathname]);
+  }, []);
 
   // ── Keyboard shortcut: Ctrl+B to toggle collapse ──
   useEffect(() => {

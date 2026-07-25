@@ -228,7 +228,11 @@ export async function POST(
       // 1. Fetch the Merchant to retrieve default rates
       const merchant = await tx.merchant.findUnique({
         where: { id: merchantId },
-        select: { defaultSellerRate: true, defaultCompanyRate: true },
+        select: {
+          merchantId: true,
+          defaultSellerRate: true,
+          defaultCompanyRate: true,
+        },
       });
 
       if (!merchant) {
@@ -324,8 +328,21 @@ export async function POST(
       // 5. Calculate net paid (grossAdvance - deductedReturns + adjustments)
       const netPaid = grossAdvance - deductedReturns + totalAdjustments;
 
-      // 6. Generate unique batch reference
-      const batchReference = `CPB-${Date.now()}`;
+      // 6. Generate meaningful batch reference: {merchantId}-{DDMMYYYY}
+      // Add sequence suffix if multiple payouts on same day (unique constraint)
+      const now = new Date();
+      const day = String(now.getDate()).padStart(2, "0");
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const year = now.getFullYear();
+      const dateKey = `${merchant.merchantId}-${day}${month}${year}`;
+      const existingToday = await tx.cashPayoutBatch.count({
+        where: {
+          merchantId,
+          batchReference: { startsWith: dateKey },
+        },
+      });
+      const batchReference =
+        existingToday === 0 ? dateKey : `${dateKey}-${existingToday + 1}`;
 
       // 7. Create the CashPayoutBatch record
       const cashPayoutBatch = await tx.cashPayoutBatch.create({

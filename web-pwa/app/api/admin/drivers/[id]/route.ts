@@ -35,7 +35,16 @@ export async function GET(
           },
         },
         zoneRates: { include: { zone: true } },
-        deliveries: { include: { zone: true, merchant: true } },
+        deliveries: {
+          include: {
+            zone: true,
+            merchant: true,
+            history: {
+              include: { user: { select: { id: true, username: true } } },
+              orderBy: { createdAt: "asc" },
+            },
+          },
+        },
         driverSellerRates: {
           include: {
             merchant: {
@@ -73,16 +82,50 @@ export async function PUT(
     const resolvedParams = await params;
     const id = resolvedParams.id;
 
-    const formData = await request.formData();
+    const contentType = request.headers.get("content-type") || "";
+    const isJson = contentType.includes("application/json");
 
-    const driverId = formData.get("driverId") as string | null;
-    const username = formData.get("username") as string | null;
-    const password = formData.get("password") as string | null;
-    const firstName = formData.get("firstName") as string | null;
-    const lastName = formData.get("lastName") as string | null;
-    const vehicles = formData.get("vehicles") as string | null;
-    const zoneRates = formData.get("zoneRates") as string | null;
-    const photo = formData.get("photo") as File | null;
+    // --- JSON payload path (supports sellerRates) ---
+    let jsonPayload: { sellerRates?: unknown } | null = null;
+    if (isJson) {
+      try {
+        jsonPayload = await request.json();
+      } catch {
+        return NextResponse.json(
+          { error: "Invalid JSON payload" },
+          { status: 400 },
+        );
+      }
+    }
+
+    // --- FormData path (existing behavior) ---
+    const formData = !isJson ? await request.formData() : null;
+
+    const driverId = formData
+      ? (formData.get("driverId") as string | null)
+      : null;
+    const username = formData
+      ? (formData.get("username") as string | null)
+      : null;
+    const firstName = formData
+      ? (formData.get("firstName") as string | null)
+      : null;
+    const lastName = formData
+      ? (formData.get("lastName") as string | null)
+      : null;
+    const password = formData
+      ? (formData.get("password") as string | null)
+      : null;
+    const vehicles = formData
+      ? (formData.get("vehicles") as string | null)
+      : null;
+    const zoneRates = formData
+      ? (formData.get("zoneRates") as string | null)
+      : null;
+    const sellerExceptions = formData
+      ? (formData.get("sellerExceptions") as string | null)
+      : null;
+    const photo = formData ? (formData.get("photo") as File | null) : null;
 
     if (!driverId || !username || !firstName || !lastName) {
       return NextResponse.json(
@@ -125,6 +168,48 @@ export async function PUT(
       if (!Array.isArray(parsedZoneRates) || parsedZoneRates.length === 0) {
         return NextResponse.json(
           { error: "zoneRates must be a non-empty array" },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Parse sellerRates from JSON payload if provided
+    let parsedSellerRates:
+      | { merchantId: string; rateUsd: number }[]
+      | undefined;
+    if (jsonPayload && Array.isArray(jsonPayload.sellerRates)) {
+      parsedSellerRates = jsonPayload.sellerRates.map((rate: any) => {
+        const merchantId = rate.sellerId;
+        if (!merchantId || typeof merchantId !== "string") {
+          throw new Error("Each sellerRate must have a valid sellerId string");
+        }
+        return {
+          merchantId,
+          rateUsd: Number(rate.rateUsd ?? rate.rate ?? 0),
+        };
+      });
+    }
+
+    // Parse sellerExceptions from FormData if provided (fallback when no JSON sellerRates)
+    let parsedSellerExceptions:
+      | { merchantId: string; rate: number }[]
+      | undefined;
+    if (!parsedSellerRates && sellerExceptions) {
+      try {
+        parsedSellerExceptions = JSON.parse(sellerExceptions) as {
+          merchantId: string;
+          rate: number;
+        }[];
+      } catch {
+        return NextResponse.json(
+          { error: "sellerExceptions must be a valid JSON array" },
+          { status: 400 },
+        );
+      }
+
+      if (!Array.isArray(parsedSellerExceptions)) {
+        return NextResponse.json(
+          { error: "sellerExceptions must be an array" },
           { status: 400 },
         );
       }
@@ -191,13 +276,55 @@ export async function PUT(
           where: { driverId: id },
         });
 
-        await tx.driverZoneRate.createMany({
-          data: parsedZoneRates.map((zr) => ({
-            driverId: profile.id,
-            zoneId: zr.zoneId,
-            rate: zr.rate,
-          })),
+        // Validate zoneIds exist before inserting to avoid FK violations
+        const validZoneIds = await tx.zone.findMany({
+          select: { id: true },
         });
+        const validZoneIdSet = new Set(validZoneIds.map((z) => z.id));
+
+        const validRates = parsedZoneRates.filter((zr) =>
+          validZoneIdSet.has(zr.zoneId),
+        );
+        const invalidRates = parsedZoneRates.filter(
+          (zr) => !validZoneIdSet.has(zr.zoneId),
+        );
+
+        if (invalidRates.length > 0) {
+          console.warn(
+            "Skipping zone rates with deleted zones:",
+            invalidRates.map((zr) => zr.zoneId),
+          );
+        }
+
+        if (validRates.length > 0) {
+          await tx.driverZoneRate.createMany({
+            data: validRates.map((zr) => ({
+              driverId: profile.id,
+              zoneId: zr.zoneId,
+              rate: zr.rate,
+            })),
+          });
+        }
+      }
+
+      // Step 5: Replace seller rates/exceptions if provided
+      // Prioritize parsedSellerRates (JSON) over parsedSellerExceptions (FormData)
+      const ratesToInsert = parsedSellerRates ?? parsedSellerExceptions;
+      if (ratesToInsert !== undefined) {
+        await tx.driverSellerRate.deleteMany({
+          where: { driverId: id },
+        });
+
+        if (ratesToInsert.length > 0) {
+          await tx.driverSellerRate.createMany({
+            data: ratesToInsert.map((rate) => ({
+              driverId: profile.id,
+              merchantId: rate.merchantId,
+              rateUsd: "rateUsd" in rate ? rate.rateUsd : rate.rate,
+              rateLbp: 0,
+            })),
+          });
+        }
       }
 
       // Return the fully updated driver with relations
@@ -213,6 +340,17 @@ export async function PUT(
                 select: { id: true, name: true },
               },
             },
+          },
+          driverSellerRates: {
+            include: {
+              merchant: {
+                select: { id: true, merchantName: true, merchantId: true },
+              },
+            },
+          },
+          payouts: {
+            orderBy: { createdAt: "desc" },
+            include: { orders: true },
           },
         },
       });

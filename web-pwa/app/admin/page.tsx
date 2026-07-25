@@ -7,6 +7,15 @@ import Link from "next/link";
 interface Zone {
   id: string;
   name: string;
+  driverAssignments?: {
+    id: string;
+    driver: {
+      id: string;
+      firstName: string;
+      lastName: string;
+      user: { username: string };
+    };
+  }[];
 }
 
 interface User {
@@ -92,9 +101,9 @@ export default function AdminPage() {
           <EmployeesTab />
         ) : activeTab === "zones" ? (
           <ZonesTab />
-        ) : (
+        ) : activeTab === "drivers" ? (
           <DriversTab />
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -105,9 +114,21 @@ export default function AdminPage() {
 // ══════════════════════════════════════════════════════════════════════════════
 function ZonesTab() {
   const [zones, setZones] = useState<Zone[]>([]);
+  const [drivers, setDrivers] = useState<
+    {
+      id: string;
+      firstName: string;
+      lastName: string;
+      user: { username: string };
+    }[]
+  >([]);
   const [zoneName, setZoneName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [assigningZone, setAssigningZone] = useState<string | null>(null);
+  const [selectedDrivers, setSelectedDrivers] = useState<
+    Record<string, string[]>
+  >({});
 
   const fetchZones = async () => {
     try {
@@ -121,8 +142,21 @@ function ZonesTab() {
     }
   };
 
+  const fetchDrivers = async () => {
+    try {
+      const res = await fetch("/api/admin/drivers");
+      if (res.ok) {
+        const data = await res.json();
+        setDrivers(data);
+      }
+    } catch {
+      // silently fail
+    }
+  };
+
   useEffect(() => {
     fetchZones();
+    fetchDrivers();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -151,6 +185,88 @@ function ZonesTab() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const openAssignModal = (zone: Zone) => {
+    const assignedDriverIds =
+      zone.driverAssignments?.map((da) => da.driver.id) || [];
+    setSelectedDrivers((prev) => ({
+      ...prev,
+      [zone.id]: assignedDriverIds,
+    }));
+    setAssigningZone(zone.id);
+  };
+
+  const toggleDriverForZone = (zoneId: string, driverId: string) => {
+    setSelectedDrivers((prev) => {
+      const current = prev[zoneId] || [];
+      return {
+        ...prev,
+        [zoneId]: current.includes(driverId)
+          ? current.filter((id) => id !== driverId)
+          : [...current, driverId],
+      };
+    });
+  };
+
+  const saveZoneDrivers = async (zoneId: string) => {
+    const driverIds = selectedDrivers[zoneId] || [];
+    // For each driver, we need to update their zone assignments.
+    // But the API /api/admin/drivers/[id]/zones sets ALL zones for a driver.
+    // So we take a different approach: update each driver's zone list individually.
+    // We'll read current assignments from the zone data and compute deltas.
+
+    // Build a map of driver -> zones they should have after this change
+    const driverZoneMap: Record<string, Set<string>> = {};
+
+    // Start with current state: for each zone, figure out which drivers are assigned
+    zones.forEach((z) => {
+      const assignedIds = z.driverAssignments?.map((da) => da.driver.id) || [];
+      assignedIds.forEach((did) => {
+        if (!driverZoneMap[did]) driverZoneMap[did] = new Set();
+        driverZoneMap[did].add(z.id);
+      });
+    });
+
+    // Apply the change for this zone
+    driverIds.forEach((did) => {
+      if (!driverZoneMap[did]) driverZoneMap[did] = new Set();
+      driverZoneMap[did].add(zoneId);
+    });
+
+    // Now for each affected driver, call the API to set their zones
+    const affectedDrivers = new Set<string>();
+    // Drivers being added to this zone
+    driverIds.forEach((did) => affectedDrivers.add(did));
+    // Drivers being removed from this zone
+    const prevAssigned =
+      zones
+        .find((z) => z.id === zoneId)
+        ?.driverAssignments?.map((da) => da.driver.id) || [];
+    prevAssigned.forEach((did) => affectedDrivers.add(did));
+
+    const promises = Array.from(affectedDrivers).map(async (did) => {
+      const finalZones = Array.from(driverZoneMap[did] || []);
+      // Remove zoneId if this driver is NOT in the new selection
+      if (!driverIds.includes(did)) {
+        const filtered = finalZones.filter((zid) => zid !== zoneId);
+        await fetch(`/api/admin/drivers/${did}/zones`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ zoneIds: filtered }),
+        });
+      } else {
+        await fetch(`/api/admin/drivers/${did}/zones`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ zoneIds: finalZones }),
+        });
+      }
+    });
+
+    await Promise.all(promises);
+    setAssigningZone(null);
+    await fetchZones();
   };
 
   return (
@@ -201,20 +317,176 @@ function ZonesTab() {
         {zones.length === 0 ? (
           <p className="text-sm text-gray-500">No zones created yet.</p>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {zones.map((zone) => (
               <div
                 key={zone.id}
-                className="px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-300
+                className="rounded-xl bg-white/5 border border-white/10 overflow-hidden
                            hover:border-cyan-500/30 hover:shadow-[0_0_10px_rgba(6,182,212,0.2)]
                            transition-all duration-200"
               >
-                {zone.name}
+                {/* Zone Header */}
+                <div className="px-4 py-3 border-b border-white/5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-gray-200">
+                      {zone.name}
+                    </h3>
+                    <span className="text-[11px] text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">
+                      {zone.driverAssignments?.length || 0} driver
+                      {zone.driverAssignments?.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Assigned Drivers */}
+                <div className="px-4 py-3">
+                  {zone.driverAssignments &&
+                  zone.driverAssignments.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {zone.driverAssignments.map((da) => (
+                        <div
+                          key={da.id}
+                          className="flex items-center gap-2 text-xs text-gray-400"
+                        >
+                          <div className="w-5 h-5 rounded-full bg-cyan-500/20 flex items-center justify-center flex-shrink-0">
+                            <span className="text-[10px] text-cyan-400 font-medium">
+                              {da.driver.firstName?.[0]}
+                              {da.driver.lastName?.[0]}
+                            </span>
+                          </div>
+                          <span className="truncate">
+                            {da.driver.firstName} {da.driver.lastName}
+                            <span className="text-gray-600 ml-1">
+                              ({da.driver.user.username})
+                            </span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-600 italic">
+                      No drivers assigned
+                    </p>
+                  )}
+                </div>
+
+                {/* Assign Button */}
+                <div className="px-4 py-2.5 border-t border-white/5 bg-white/[0.02]">
+                  <button
+                    onClick={() => openAssignModal(zone)}
+                    className="w-full px-3 py-1.5 rounded-lg text-xs font-medium text-cyan-400
+                               border border-cyan-500/20 bg-cyan-500/5
+                               hover:bg-cyan-500/10 hover:border-cyan-500/40
+                               transition-all duration-200"
+                  >
+                    Manage Drivers
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {/* ── Assign Drivers Modal ── */}
+      {assigningZone && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setAssigningZone(null)}
+          />
+          <div className="relative z-10 w-full max-w-md bg-gray-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl p-6">
+            <h3 className="text-base font-semibold text-gray-200 mb-1">
+              Assign Drivers
+            </h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Zone:{" "}
+              <span className="text-cyan-400">
+                {zones.find((z) => z.id === assigningZone)?.name}
+              </span>
+            </p>
+
+            {drivers.length === 0 ? (
+              <p className="text-sm text-gray-500 text-center py-4">
+                No drivers available.
+              </p>
+            ) : (
+              <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+                {drivers.map((driver) => {
+                  const isSelected = (
+                    selectedDrivers[assigningZone] || []
+                  ).includes(driver.id);
+                  return (
+                    <label
+                      key={driver.id}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-150
+                                 ${isSelected ? "bg-cyan-500/10 border border-cyan-500/30" : "bg-white/5 border border-transparent hover:bg-white/10"}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() =>
+                          toggleDriverForZone(assigningZone, driver.id)
+                        }
+                        className="sr-only"
+                      />
+                      <div
+                        className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all
+                                   ${isSelected ? "bg-cyan-500 border-cyan-500" : "border-gray-600 bg-white/5"}`}
+                      >
+                        {isSelected && (
+                          <svg
+                            className="w-3 h-3 text-white"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={3}
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M5 13l4 4L19 7"
+                            />
+                          </svg>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-gray-200 truncate">
+                          {driver.firstName} {driver.lastName}
+                        </div>
+                        <div className="text-[11px] text-gray-500 truncate">
+                          @{driver.user.username}
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 mt-5 pt-4 border-t border-white/10">
+              <button
+                onClick={() => setAssigningZone(null)}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-gray-400
+                           border border-white/10 bg-white/5 hover:bg-white/10
+                           transition-all duration-200"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => saveZoneDrivers(assigningZone)}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-semibold text-white
+                           bg-gradient-to-r from-cyan-500 to-cyan-600
+                           hover:from-cyan-400 hover:to-cyan-500
+                           shadow-[0_0_12px_rgba(6,182,212,0.3)] hover:shadow-[0_0_20px_rgba(6,182,212,0.5)]
+                           transition-all duration-200"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -222,6 +494,17 @@ function ZonesTab() {
 // ══════════════════════════════════════════════════════════════════════════════
 //  Drivers Tab
 // ══════════════════════════════════════════════════════════════════════════════
+interface Merchant {
+  id: string;
+  merchantName: string;
+}
+
+interface SellerException {
+  merchantId: string;
+  rate: number;
+  merchantName: string;
+}
+
 interface Driver {
   id: string;
   driverId: string;
@@ -232,6 +515,21 @@ interface Driver {
   zoneRates: {
     id: string;
     rate: number;
+    zone: { id: string; name: string };
+  }[];
+  driverSellerRates?: {
+    id: number;
+    merchantId: string;
+    rateUsd: number;
+    merchant: {
+      id: string;
+      merchantName: string;
+      merchantId: string;
+    };
+  }[];
+  assignedZones?: {
+    id: string;
+    zoneId: string;
     zone: { id: string; name: string };
   }[];
 }
@@ -259,12 +557,21 @@ function DriversTab() {
     string | null
   >(null);
 
-  // ── Fetch zones & drivers on mount ──
+  // ── Seller Rate Exceptions state ──
+  const [merchants, setMerchants] = useState<Merchant[]>([]);
+  const [sellerExceptions, setSellerExceptions] = useState<SellerException[]>(
+    [],
+  );
+  const [selectedMerchant, setSelectedMerchant] = useState("");
+  const [exceptionRate, setExceptionRate] = useState("");
+
+  // ── Fetch zones, drivers, merchants on mount ──
   const fetchData = async () => {
     try {
-      const [zRes, dRes] = await Promise.all([
+      const [zRes, dRes, mRes] = await Promise.all([
         fetch("/api/admin/zones"),
         fetch("/api/admin/drivers"),
+        fetch("/api/admin/merchants"),
       ]);
       if (zRes.ok) {
         const zData = await zRes.json();
@@ -274,6 +581,10 @@ function DriversTab() {
         const dData = await dRes.json();
         setDrivers(dData);
       }
+      if (mRes.ok) {
+        const mData = await mRes.json();
+        setMerchants(mData || []);
+      }
     } catch {
       // silently fail
     }
@@ -282,6 +593,30 @@ function DriversTab() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // ── Assign zones to driver ──
+  const handleAssignZones = async (driverId: string, zoneIds: string[]) => {
+    try {
+      const res = await fetch(`/api/admin/drivers/${driverId}/zones`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ zoneIds }),
+      });
+      if (res.ok) {
+        // Refresh drivers list
+        const dRes = await fetch("/api/admin/drivers");
+        if (dRes.ok) {
+          const dData = await dRes.json();
+          setDrivers(dData);
+        }
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to assign zones");
+      }
+    } catch {
+      alert("Network error");
+    }
+  };
 
   // ── Vehicle toggle ──
   const toggleVehicle = (v: string) => {
@@ -302,6 +637,9 @@ function DriversTab() {
     setBulkRate("");
     setSelectedZones([]);
     setAssignedRates({});
+    setSellerExceptions([]);
+    setSelectedMerchant("");
+    setExceptionRate("");
     setEditingDriverProfileId(null);
   };
 
@@ -333,6 +671,17 @@ function DriversTab() {
         ([zoneId, rate]) => ({ zoneId, rate: Number(rate) }),
       );
       formData.append("zoneRates", JSON.stringify(ratesArray));
+      if (sellerExceptions.length > 0) {
+        formData.append(
+          "sellerExceptions",
+          JSON.stringify(
+            sellerExceptions.map((ex) => ({
+              merchantId: ex.merchantId,
+              rate: ex.rate,
+            })),
+          ),
+        );
+      }
 
       const url = editingDriverProfileId
         ? `/api/admin/drivers/${editingDriverProfileId}`
@@ -672,6 +1021,148 @@ function DriversTab() {
             )}
           </div>
 
+          {/* Seller Rate Exceptions */}
+          <div>
+            <span className="block text-xs font-medium text-gray-400 mb-3">
+              Seller Rate Exceptions
+            </span>
+            {merchants.length === 0 ? (
+              <p className="text-sm text-gray-500">
+                No merchants available. Create a seller first.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {/* Add Exception Mini-Form */}
+                <div className="flex items-end gap-3 flex-wrap">
+                  <div className="flex-1 min-w-[180px] max-w-xs">
+                    <label
+                      htmlFor="exceptionMerchant"
+                      className="block text-xs font-medium text-gray-400 mb-1.5"
+                    >
+                      Seller
+                    </label>
+                    <select
+                      id="exceptionMerchant"
+                      value={selectedMerchant}
+                      onChange={(e) => setSelectedMerchant(e.target.value)}
+                      className="w-full px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-gray-100
+                                 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500/50
+                                 transition-all duration-200 text-sm"
+                    >
+                      <option
+                        value=""
+                        disabled
+                        style={{ background: "#1a1a2e", color: "#e2e8f0" }}
+                      >
+                        Select seller...
+                      </option>
+                      {merchants.map((m) => (
+                        <option
+                          key={m.id}
+                          value={m.id}
+                          style={{ background: "#1a1a2e", color: "#e2e8f0" }}
+                        >
+                          {m.merchantName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex-1 min-w-[120px] max-w-[160px]">
+                    <label
+                      htmlFor="exceptionRateInput"
+                      className="block text-xs font-medium text-gray-400 mb-1.5"
+                    >
+                      Rate ($)
+                    </label>
+                    <input
+                      id="exceptionRateInput"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={exceptionRate}
+                      onChange={(e) => setExceptionRate(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-gray-100 placeholder-gray-600
+                                 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500/50
+                                 transition-all duration-200 text-sm"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const rate = parseFloat(exceptionRate);
+                      if (!selectedMerchant || isNaN(rate) || rate <= 0) return;
+                      const alreadyAdded = sellerExceptions.some(
+                        (ex) => ex.merchantId === selectedMerchant,
+                      );
+                      if (alreadyAdded) {
+                        setError("This seller already has an exception rate.");
+                        return;
+                      }
+                      const merchant = merchants.find(
+                        (m) => m.id === selectedMerchant,
+                      );
+                      setSellerExceptions((prev) => [
+                        ...prev,
+                        {
+                          merchantId: selectedMerchant,
+                          rate,
+                          merchantName:
+                            merchant?.merchantName ?? selectedMerchant,
+                        },
+                      ]);
+                      setSelectedMerchant("");
+                      setExceptionRate("");
+                      setError("");
+                    }}
+                    disabled={!selectedMerchant || !exceptionRate.trim()}
+                    className="px-5 py-2.5 rounded-lg text-sm font-semibold text-white bg-gradient-to-r from-purple-500 to-purple-600
+                               hover:from-purple-400 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed
+                               shadow-[0_0_12px_rgba(168,85,247,0.3)] hover:shadow-[0_0_20px_rgba(168,85,247,0.5)]
+                               transition-all duration-200"
+                  >
+                    Add Exception
+                  </button>
+                </div>
+
+                {/* Exceptions List */}
+                {sellerExceptions.length > 0 && (
+                  <div className="pt-2">
+                    <span className="block text-xs font-medium text-gray-400 mb-2">
+                      Current Exceptions ({sellerExceptions.length})
+                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {sellerExceptions.map((ex) => (
+                        <div
+                          key={ex.merchantId}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20"
+                        >
+                          <span className="text-xs text-purple-300 font-medium">
+                            {ex.merchantName}: ${ex.rate.toFixed(2)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSellerExceptions((prev) =>
+                                prev.filter(
+                                  (e) => e.merchantId !== ex.merchantId,
+                                ),
+                              );
+                            }}
+                            className="text-red-400 hover:text-red-300 transition-colors text-sm leading-none"
+                            title="Remove exception"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Submit + Cancel */}
           <div className="flex items-center gap-3">
             <button
@@ -731,6 +1222,8 @@ function DriversTab() {
                   <th className="py-3 px-4 font-medium">Username</th>
                   <th className="py-3 px-4 font-medium">Vehicles</th>
                   <th className="py-3 px-4 font-medium">Zone Rates</th>
+                  <th className="py-3 px-4 font-medium">Seller Rates</th>
+                  <th className="py-3 px-4 font-medium">Zones</th>
                   <th className="py-3 px-4 font-medium">Actions</th>
                 </tr>
               </thead>
@@ -781,6 +1274,108 @@ function DriversTab() {
                       )}
                     </td>
                     <td className="py-3 px-4">
+                      {!driver.driverSellerRates ||
+                      driver.driverSellerRates.length === 0 ? (
+                        <span className="text-xs text-gray-600">None</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5">
+                          {driver.driverSellerRates.map((sr) => (
+                            <span
+                              key={sr.merchantId}
+                              className="inline-block px-2 py-0.5 rounded text-[10px] font-medium
+                                         bg-purple-500/10 text-purple-300 border border-purple-500/20"
+                            >
+                              {sr.merchant.merchantName}: $
+                              {sr.rateUsd.toFixed(2)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    {/* Zones column */}
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap gap-1.5">
+                          {driver.assignedZones?.length === 0 ||
+                          !driver.assignedZones ? (
+                            <span className="text-xs text-gray-600">None</span>
+                          ) : (
+                            driver.assignedZones.map((az) => (
+                              <span
+                                key={az.id}
+                                className="inline-block px-2 py-0.5 rounded text-[10px] font-medium
+                                           bg-green-500/10 text-green-300 border border-green-500/20"
+                              >
+                                {az.zone.name}
+                              </span>
+                            ))
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const currentZoneIds =
+                              driver.assignedZones?.map((az) => az.zoneId) ??
+                              [];
+                            const modal = document.createElement("div");
+                            modal.style.cssText =
+                              "position:fixed;inset:0;z-50;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);";
+                            modal.innerHTML = `
+                              <div class="bg-gray-900 border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+                                <h3 class="text-lg font-semibold text-gray-200 mb-4">Assign Zones</h3>
+                                <p class="text-sm text-gray-400 mb-4">Select zones (warehouses) for ${driver.firstName} ${driver.lastName}</p>
+                                <div id="zone-list" class="space-y-2 mb-4"></div>
+                                <div class="flex gap-3 justify-end">
+                                  <button id="zone-cancel" class="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white border border-white/10">Cancel</button>
+                                  <button id="zone-save" class="px-4 py-2 rounded-lg text-sm bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/30">Save</button>
+                                </div>
+                              </div>
+                            `;
+                            document.body.appendChild(modal);
+                            const zoneList = modal.querySelector(
+                              "#zone-list",
+                            ) as HTMLDivElement;
+                            if (!zoneList) return;
+                            zones.forEach((z) => {
+                              const isChecked = currentZoneIds.includes(z.id);
+                              const label = document.createElement("label");
+                              label.className =
+                                "flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 border border-white/10 cursor-pointer hover:bg-white/10";
+                              label.innerHTML = `
+                                <input type="checkbox" value="${z.id}" ${isChecked ? "checked" : ""} class="w-4 h-4 rounded border-gray-600 text-cyan-500 focus:ring-cyan-500 bg-gray-800">
+                                <span class="text-sm text-gray-300">${z.name}</span>
+                              `;
+                              zoneList.appendChild(label);
+                            });
+                            (
+                              modal.querySelector(
+                                "#zone-cancel",
+                              ) as HTMLButtonElement
+                            ).onclick = () => document.body.removeChild(modal);
+                            (
+                              modal.querySelector(
+                                "#zone-save",
+                              ) as HTMLButtonElement
+                            ).onclick = async () => {
+                              const checkboxes = zoneList.querySelectorAll(
+                                "input[type=checkbox]:checked",
+                              );
+                              const selectedIds = Array.from(checkboxes).map(
+                                (cb: Element) => (cb as HTMLInputElement).value,
+                              );
+                              document.body.removeChild(modal);
+                              await handleAssignZones(driver.id, selectedIds);
+                            };
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium
+                                     bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10 hover:text-gray-200"
+                        >
+                          ✏️
+                        </button>
+                      </div>
+                    </td>
+                    {/* Actions column */}
+                    <td className="py-3 px-4">
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -798,6 +1393,16 @@ function DriversTab() {
                               ratesMap[zr.zone.id] = zr.rate;
                             });
                             setAssignedRates(ratesMap);
+                            // Populate seller exceptions from existing data
+                            const existingExceptions: SellerException[] =
+                              driver.driverSellerRates?.map((sr) => ({
+                                merchantId: sr.merchantId,
+                                rate: sr.rateUsd,
+                                merchantName: sr.merchant.merchantName,
+                              })) ?? [];
+                            setSellerExceptions(existingExceptions);
+                            setSelectedMerchant("");
+                            setExceptionRate("");
                             // Scroll to form
                             window.scrollTo({ top: 0, behavior: "smooth" });
                           }}

@@ -148,7 +148,7 @@ export default function DriverConsignmentsPage() {
           totalLbp: p.totalLbp,
           commissionUsd: p.commissionUsd,
           netUsd: p.netUsd,
-          totalCollected: 0,
+          totalCollected: p.totalCollected ?? 0,
           previousDebtUsd: p.previousDebtUsd,
           previousDebtLbp: p.previousDebtLbp,
           amountPaidUsd: p.amountPaidUsd,
@@ -191,14 +191,14 @@ export default function DriverConsignmentsPage() {
           totalLbp: p.totalLbp,
           commissionUsd: p.commissionUsd,
           netUsd: p.netUsd,
-          totalCollected: 0,
+          totalCollected: p.totalCollected ?? 0,
           previousDebtUsd: p.previousDebtUsd,
           previousDebtLbp: p.previousDebtLbp,
           amountPaidUsd: p.amountPaidUsd,
           amountPaidLbp: p.amountPaidLbp,
           remainingUsd: p.remainingUsd,
           remainingLbp: p.remainingLbp,
-          createdAt: "",
+          createdAt: p.createdAt || "",
           clearedAt: p.clearedAt,
           driver: {
             id: p.driverId,
@@ -211,15 +211,17 @@ export default function DriverConsignmentsPage() {
           orders: (p.orders || []).map((o: any) => ({
             id: o.id,
             orderId: o.orderId,
-            customerName: "",
+            customerName: o.customerName || "",
             amountUsd: o.amountUsd,
             amountLbp: o.amountLbp,
             collectedUsd: o.collectedUsd,
             collectedLbp: o.collectedLbp,
-            financialStatus: "",
+            financialStatus: o.financialStatus || "",
             location: "",
-            createdAt: "",
-            zone: { name: "" },
+            createdAt: o.createdAt || "",
+            zone: o.zone || { name: "" },
+            merchant: o.merchant || null,
+            driverCommissionUsd: o.driverCommissionUsd,
           })),
         }));
 
@@ -1123,6 +1125,9 @@ export default function DriverConsignmentsPage() {
                     <th className="px-4 py-3 font-semibold">Driver</th>
                     <th className="px-4 py-3 font-semibold">Created</th>
                     <th className="px-4 py-3 font-semibold text-right">
+                      Total Collected
+                    </th>
+                    <th className="px-4 py-3 font-semibold text-right">
                       Net Payout
                     </th>
                     <th className="px-4 py-3 font-semibold text-right">
@@ -1141,7 +1146,7 @@ export default function DriverConsignmentsPage() {
                   {pendingLoading ? (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={9}
                         className="text-center py-12 text-gray-500"
                       >
                         Loading pending payouts...
@@ -1150,7 +1155,7 @@ export default function DriverConsignmentsPage() {
                   ) : pendingPayouts.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={9}
                         className="text-center py-12 text-gray-500 italic"
                       >
                         No pending payouts — all settlements are up to date.
@@ -1174,8 +1179,14 @@ export default function DriverConsignmentsPage() {
                                 ({payout.driver.driverId})
                               </span>
                             </td>
-                            <td className="px-4 py-3 text-gray-300 text-xs">
+                            <td
+                              className="px-4 py-3 text-gray-300 text-xs"
+                              title={beirutDateTime(payout.createdAt)}
+                            >
                               {beirutDate(payout.createdAt)}
+                            </td>
+                            <td className="px-4 py-3 text-blue-400 text-sm text-right font-mono font-bold">
+                              ${payout.totalCollected.toFixed(2)}
                             </td>
                             <td className="px-4 py-3 text-green-400 text-sm text-right font-mono font-bold">
                               ${payout.netUsd.toFixed(2)}
@@ -1216,7 +1227,7 @@ export default function DriverConsignmentsPage() {
                           {isExpanded && (
                             <tr>
                               <td
-                                colSpan={8}
+                                colSpan={9}
                                 className="bg-[#0a0f1a] border-b border-white/10 px-6 py-5"
                               >
                                 <div className="flex justify-between items-center mb-3">
@@ -1242,6 +1253,15 @@ export default function DriverConsignmentsPage() {
                                           <th className="px-4 py-2 font-semibold">
                                             Order ID
                                           </th>
+                                          <th className="px-4 py-2 font-semibold">
+                                            Seller
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold">
+                                            Customer
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold">
+                                            Date Received
+                                          </th>
                                           <th className="px-4 py-2 font-semibold text-right">
                                             Amount USD
                                           </th>
@@ -1254,6 +1274,9 @@ export default function DriverConsignmentsPage() {
                                           <th className="px-4 py-2 font-semibold text-right">
                                             Collected LBP
                                           </th>
+                                          <th className="px-4 py-2 font-semibold text-right">
+                                            Driver Commission
+                                          </th>
                                         </tr>
                                       </thead>
                                       <tbody>
@@ -1264,6 +1287,16 @@ export default function DriverConsignmentsPage() {
                                           >
                                             <td className="px-4 py-2 font-mono text-cyan-400 text-xs">
                                               {order.orderId}
+                                            </td>
+                                            <td className="px-4 py-2 text-gray-400 text-xs">
+                                              {order.merchant?.merchantName ||
+                                                "—"}
+                                            </td>
+                                            <td className="px-4 py-2 text-gray-300 text-sm">
+                                              {order.customerName || "—"}
+                                            </td>
+                                            <td className="px-4 py-2 text-gray-500 text-xs">
+                                              {beirutDate(order.createdAt)}
                                             </td>
                                             <td className="px-4 py-2 text-green-400 text-xs text-right font-mono">
                                               $
@@ -1286,6 +1319,12 @@ export default function DriverConsignmentsPage() {
                                               {(
                                                 order.collectedLbp ?? 0
                                               ).toLocaleString()}
+                                            </td>
+                                            <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
+                                              $
+                                              {(
+                                                order.driverCommissionUsd ?? 0
+                                              ).toFixed(2)}
                                             </td>
                                           </tr>
                                         ))}
@@ -1443,7 +1482,6 @@ export default function DriverConsignmentsPage() {
                       <th className="px-4 py-2 font-semibold text-right">
                         Driver Commission
                       </th>
-                      <th className="px-4 py-2 font-semibold">Fin Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1475,11 +1513,6 @@ export default function DriverConsignmentsPage() {
                         </td>
                         <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
                           ${(order.driverCommissionUsd ?? 0).toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2">
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded border bg-green-500/10 text-green-400 border-green-500/30">
-                            {order.financialStatus}
-                          </span>
                         </td>
                       </tr>
                     ))}
