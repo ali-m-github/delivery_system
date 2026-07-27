@@ -51,6 +51,7 @@ export default function SharedOrderTable({
   const [historyModalOrder, setHistoryModalOrder] = useState<{
     id: string;
     history: any[];
+    payoutReference: string | null;
   } | null>(null);
 
   const hasPermission = (perm: string) =>
@@ -115,6 +116,7 @@ export default function SharedOrderTable({
                 setHistoryModalOrder({
                   id: order.id,
                   history: order.history || [],
+                  payoutReference: order.driverPayout?.payoutReference ?? null,
                 })
               }
               title="Order History"
@@ -389,6 +391,7 @@ export default function SharedOrderTable({
         <OrderHistoryModal
           orderId={historyModalOrder.id}
           orderHistory={historyModalOrder.history}
+          payoutReference={historyModalOrder.payoutReference}
           onClose={() => setHistoryModalOrder(null)}
         />
       )}

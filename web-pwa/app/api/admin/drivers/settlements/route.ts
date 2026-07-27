@@ -57,6 +57,8 @@ async function enrichOrdersWithCommission(payouts: any[]) {
           collectedUsd,
           collectedLbp,
           driverCommissionUsd,
+          payoutId: payout.id,
+          payoutReference: payout.payoutReference || null,
         };
       });
 

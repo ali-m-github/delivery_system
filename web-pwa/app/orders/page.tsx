@@ -59,6 +59,9 @@ interface Order {
     user: { id: string; username: string };
     createdAt: string;
   }>;
+  driverPayout: {
+    payoutReference: string | null;
+  } | null;
 }
 
 type Tab = "all" | "warehouse" | "reports" | "order-entry" | "returns" | "rwd";
@@ -157,6 +160,7 @@ function OrdersPageInner() {
 
   // ── Filters ──
   const [searchTerm, setSearchTerm] = useState("");
+  const [missingTokens, setMissingTokens] = useState<string[]>([]);
   const [locationFilter, setLocationFilter] = useState<string>("ALL");
   const [dateFilter, setDateFilter] = useState("");
 
@@ -356,6 +360,7 @@ function OrdersPageInner() {
   const [historyModalOrder, setHistoryModalOrder] = useState<{
     id: string;
     history: any[];
+    payoutReference: string | null;
   } | null>(null);
 
   // ── Modals ──
@@ -447,7 +452,10 @@ function OrdersPageInner() {
         skip: String((allPage - 1) * allItemsPerPage),
         take: String(allItemsPerPage),
       };
-      if (searchTerm.trim()) params.search = searchTerm.trim();
+      // Skip server-side search for comma-separated queries
+      if (searchTerm.trim() && !searchTerm.includes(",")) {
+        params.search = searchTerm.trim();
+      }
       if (locationFilter !== "ALL") params.location = locationFilter;
       if (dateFilter) params.dateFrom = dateFilter;
     }
@@ -539,16 +547,29 @@ function OrdersPageInner() {
   // ── Re-fetch when "All" tab pagination changes ──
   useEffect(() => {
     if (currentTab === "all") {
+      // For comma-separated (multi-order) searches, fetch ALL orders (up to API max)
+      // so the client-side filter can match orders across all pages.
+      const isCommaSearch = searchTerm.includes(",");
       const params: Record<string, string> = {
-        skip: String((allPage - 1) * allItemsPerPage),
-        take: String(allItemsPerPage),
+        skip: "0",
+        take: isCommaSearch ? "5000" : String(allItemsPerPage),
       };
-      if (searchTerm.trim()) params.search = searchTerm.trim();
+      if (searchTerm.trim() && !isCommaSearch) {
+        params.search = searchTerm.trim();
+      }
       if (locationFilter !== "ALL") params.location = locationFilter;
       if (dateFilter) params.dateFrom = dateFilter;
       fetchOrders(params);
+    } else if (currentTab === "rwd") {
+      // RWD tab: filter server-side to avoid missing orders beyond the fetch limit
+      fetchOrders({
+        skip: "0",
+        take: "5000",
+        location: "RETURN",
+        financialStatus: "RWD",
+      });
     } else {
-      // For non-"all" tabs (warehouse, returns, rwd, etc.), fetch orders
+      // For non-"all" tabs (warehouse, returns, etc.), fetch orders
       // with a reasonable limit to avoid overloading the database
       fetchOrders({ skip: "0", take: "500" });
     }
@@ -905,6 +926,18 @@ function OrdersPageInner() {
       list = list.filter((order) => {
         if (terms.length === 0) return true;
 
+        // Multi-order comma-separated search: safe type coercion
+        // NOTE: order.orderId first — order.id is a UUID (always truthy) and would short-circuit
+        if (searchTerm.includes(",")) {
+          const displayId = String(order.orderId || order.id || "");
+          // Return true if ANY token matches, false otherwise — do NOT fall through
+          return terms.some(
+            (token) =>
+              displayId.toLowerCase().endsWith(token) ||
+              displayId.toLowerCase() === token,
+          );
+        }
+
         // AND logic: Order must match ALL terms (great for parameter filtering)
         const matchesAnd = terms.every((term) => termMatchesOrder(term, order));
 
@@ -959,6 +992,48 @@ function OrdersPageInner() {
     }
     return notFound;
   }, [activeOrArchivedOrders, searchTerm]);
+
+  // ── Compute missing tokens from comma-separated search ──
+  useEffect(() => {
+    if (!searchTerm.trim()) {
+      setMissingTokens([]);
+      return;
+    }
+    const tokens = searchTerm
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (tokens.length === 0) {
+      setMissingTokens([]);
+      return;
+    }
+    // Multi-order comma-separated search: safe type coercion for missing tokens
+    // NOTE: order.orderId first — order.id is a UUID (always truthy) and would short-circuit
+    if (tokens.length > 0 && searchTerm.includes(",")) {
+      const notFound = tokens.filter((token) => {
+        return !activeOrArchivedOrders.some((order) => {
+          const displayId = String(order.orderId || order.id || "");
+          return (
+            displayId.toLowerCase().endsWith(token) ||
+            displayId.toLowerCase() === token
+          );
+        });
+      });
+      setMissingTokens(notFound);
+    } else {
+      const missing: string[] = [];
+      for (const token of tokens) {
+        const found = activeOrArchivedOrders.some((order) =>
+          termMatchesOrder(token, order),
+        );
+        if (!found) {
+          missing.push(token);
+        }
+      }
+      setMissingTokens(missing);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm, activeOrArchivedOrders]);
 
   // ── Warehouse filtered & grouped ──
   const warehouseOrders = useMemo(
@@ -1072,14 +1147,12 @@ function OrdersPageInner() {
 
   // ── Paginated values (for count displays) ──
   const paginatedAll = useMemo(() => {
-    // Server-side pagination handles the slice for "All" tab
-    if (currentTab === "all") return orders;
-    // Fallback client-side slice for other tabs (warehouse, returns, etc.)
+    // Use allFiltered for the "all" tab so client-side search filters apply
     return allFiltered.slice(
       (allPage - 1) * allItemsPerPage,
       allPage * allItemsPerPage,
     );
-  }, [allFiltered, allPage, allItemsPerPage, orders, currentTab]);
+  }, [allFiltered, allPage, allItemsPerPage, currentTab]);
 
   const zoneItems = useMemo(() => {
     if (!activeWarehouseZone) return [];
@@ -1802,10 +1875,10 @@ function OrdersPageInner() {
                 />
               </div>
 
-              {/* Not-found order numbers warning */}
-              {notFoundOrderNumbers.length > 0 && (
-                <div className="mt-1 text-xs text-red-400 font-medium">
-                  Not found: {notFoundOrderNumbers.join(", ")}
+              {/* Missing tokens warning — shown below search input */}
+              {missingTokens.length > 0 && (
+                <div className="text-red-500 text-sm mt-1 font-medium">
+                  Orders not found: {missingTokens.join(", ")}
                 </div>
               )}
 
@@ -2260,6 +2333,9 @@ function OrdersPageInner() {
                                           setHistoryModalOrder({
                                             id: order.id,
                                             history: order.history || [],
+                                            payoutReference:
+                                              order.driverPayout
+                                                ?.payoutReference ?? null,
                                           })
                                         }
                                         title="Order History"
@@ -3512,7 +3588,7 @@ function OrdersPageInner() {
                               />
                             </td>
                             <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
-                              {order.id.slice(0, 8)}
+                              {order.orderId}
                             </td>
                             <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
                               {shortDate(order.createdAt)}
@@ -5219,6 +5295,7 @@ function OrdersPageInner() {
           <OrderHistoryModal
             orderId={historyModalOrder.id}
             orderHistory={historyModalOrder.history}
+            payoutReference={historyModalOrder.payoutReference}
             onClose={() => setHistoryModalOrder(null)}
           />
         )}

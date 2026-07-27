@@ -21,6 +21,8 @@ interface PayoutOrder {
   zone: { name: string };
   merchant?: { merchantName: string } | null;
   driverCommissionUsd?: number;
+  payoutId?: string;
+  payoutReference?: string | null;
 }
 
 interface DriverPayout {
@@ -757,6 +759,9 @@ export default function DriverConsignmentsPage() {
                             Fin Status
                           </th>
                           <th className="px-4 py-2 font-semibold">Location</th>
+                          <th className="px-4 py-2 font-semibold">
+                            Payout Ref
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
@@ -805,6 +810,9 @@ export default function DriverConsignmentsPage() {
                             </td>
                             <td className="px-4 py-2 text-gray-500 text-xs">
                               {order.location}
+                            </td>
+                            <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
+                              {order.payoutReference || order.payoutId || "—"}
                             </td>
                           </tr>
                         ))}
@@ -1277,6 +1285,9 @@ export default function DriverConsignmentsPage() {
                                           <th className="px-4 py-2 font-semibold text-right">
                                             Driver Commission
                                           </th>
+                                          <th className="px-4 py-2 font-semibold">
+                                            Payout Ref
+                                          </th>
                                         </tr>
                                       </thead>
                                       <tbody>
@@ -1325,6 +1336,11 @@ export default function DriverConsignmentsPage() {
                                               {(
                                                 order.driverCommissionUsd ?? 0
                                               ).toFixed(2)}
+                                            </td>
+                                            <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
+                                              {order.payoutReference ||
+                                                order.payoutId ||
+                                                "—"}
                                             </td>
                                           </tr>
                                         ))}
@@ -1482,6 +1498,7 @@ export default function DriverConsignmentsPage() {
                       <th className="px-4 py-2 font-semibold text-right">
                         Driver Commission
                       </th>
+                      <th className="px-4 py-2 font-semibold">Payout Ref</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1513,6 +1530,9 @@ export default function DriverConsignmentsPage() {
                         </td>
                         <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
                           ${(order.driverCommissionUsd ?? 0).toFixed(2)}
+                        </td>
+                        <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
+                          {order.payoutReference || order.payoutId || "—"}
                         </td>
                       </tr>
                     ))}

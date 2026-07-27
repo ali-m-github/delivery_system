@@ -22,10 +22,12 @@ export async function GET(request: NextRequest) {
     const dateFrom = searchParams.get("dateFrom");
     const dateTo = searchParams.get("dateTo");
     const zoneId = searchParams.get("zoneId");
+    const financialStatus = searchParams.get("financialStatus");
 
     // Build where clause from filters
     const where: Record<string, unknown> = {};
     if (location) where.location = location;
+    if (financialStatus) where.financialStatus = financialStatus;
     if (zoneId) where.zoneId = zoneId;
     if (dateFrom || dateTo) {
       const createdAt: Record<string, Date> = {};
@@ -106,6 +108,11 @@ export async function GET(request: NextRequest) {
             },
             orderBy: { createdAt: "asc" },
             take: 10,
+          },
+          driverPayout: {
+            select: {
+              payoutReference: true,
+            },
           },
         },
         orderBy: { createdAt: "desc" },

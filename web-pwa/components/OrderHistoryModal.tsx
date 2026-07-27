@@ -14,6 +14,7 @@ interface HistoryEntry {
 interface OrderHistoryModalProps {
   orderId: string;
   orderHistory: HistoryEntry[];
+  payoutReference?: string | null;
   onClose: () => void;
 }
 
@@ -40,6 +41,7 @@ const LOCATION_COLORS: Record<string, string> = {
 export default function OrderHistoryModal({
   orderId,
   orderHistory,
+  payoutReference,
   onClose,
 }: OrderHistoryModalProps) {
   const [history, setHistory] = useState<HistoryEntry[] | null>(null);
@@ -119,6 +121,11 @@ export default function OrderHistoryModal({
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
           <div>
             <h2 className="text-lg font-bold text-white">Order History</h2>
+            {payoutReference && (
+              <p className="text-xs text-cyan-400 mt-0.5 font-mono">
+                Payout: {payoutReference}
+              </p>
+            )}
             <p className="text-xs text-gray-500 mt-0.5">
               Complete action log for this order
             </p>
