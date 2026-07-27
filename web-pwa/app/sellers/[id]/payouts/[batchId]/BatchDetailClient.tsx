@@ -218,6 +218,17 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
           </div>
           <div className="flex gap-2">
             <button
+              onClick={() =>
+                window.open(
+                  `/print/sellers/${batch.merchant.id}/payouts/${batch.id}`,
+                  "_blank",
+                )
+              }
+              className="px-4 py-2 text-sm font-bold bg-amber-500 hover:bg-amber-400 text-[#0B0F17] rounded-lg transition-all shadow-[0_0_15px_rgba(245,158,11,0.3)]"
+            >
+              📄 Invoice
+            </button>
+            <button
               onClick={handleExportCSV}
               disabled={selectedOrderIds.length === 0}
               className="px-4 py-2 text-sm font-bold bg-green-600 hover:bg-green-500 text-white rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"

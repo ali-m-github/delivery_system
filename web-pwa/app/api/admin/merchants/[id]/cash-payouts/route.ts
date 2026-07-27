@@ -54,37 +54,27 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
-    // Resolve per-order effective seller rate (check both DriverSellerRate and DriverCashSellerRate)
+    // Resolve per-order effective seller rate (check DriverCashSellerRate, fall back to merchant default)
     const unpaidOrders = await Promise.all(
       rawOrders.map(async (order) => {
         let sellerRate = defaultRate;
         if (order.driverId) {
-          // Check DriverSellerRate first (references DriverProfile.id)
-          const exception = await prisma.driverSellerRate.findUnique({
-            where: {
-              driverId_merchantId: { driverId: order.driverId, merchantId },
-            },
+          // Check DriverCashSellerRate (references User.id via DriverProfile)
+          const profile = await prisma.driverProfile.findUnique({
+            where: { id: order.driverId },
+            select: { userId: true },
           });
-          if (exception && exception.rateUsd > 0) {
-            sellerRate = exception.rateUsd;
-          } else {
-            // Check DriverCashSellerRate (references User.id)
-            const profile = await prisma.driverProfile.findUnique({
-              where: { id: order.driverId },
-              select: { userId: true },
-            });
-            if (profile) {
-              const cashRate = await prisma.driverCashSellerRate.findUnique({
-                where: {
-                  driverId_merchantId: {
-                    driverId: profile.userId,
-                    merchantId,
-                  },
+          if (profile) {
+            const cashRate = await prisma.driverCashSellerRate.findUnique({
+              where: {
+                driverId_merchantId: {
+                  driverId: profile.userId,
+                  merchantId,
                 },
-              });
-              if (cashRate && cashRate.rateUsd > 0) {
-                sellerRate = cashRate.rateUsd;
-              }
+              },
+            });
+            if (cashRate && cashRate.rateUsd > 0) {
+              sellerRate = cashRate.rateUsd;
             }
           }
         }
@@ -116,30 +106,21 @@ export async function GET(
       rawReturns.map(async (order) => {
         let sellerRate = defaultRate;
         if (order.driverId) {
-          const exception = await prisma.driverSellerRate.findUnique({
-            where: {
-              driverId_merchantId: { driverId: order.driverId, merchantId },
-            },
+          const profile = await prisma.driverProfile.findUnique({
+            where: { id: order.driverId },
+            select: { userId: true },
           });
-          if (exception && exception.rateUsd > 0) {
-            sellerRate = exception.rateUsd;
-          } else {
-            const profile = await prisma.driverProfile.findUnique({
-              where: { id: order.driverId },
-              select: { userId: true },
-            });
-            if (profile) {
-              const cashRate = await prisma.driverCashSellerRate.findUnique({
-                where: {
-                  driverId_merchantId: {
-                    driverId: profile.userId,
-                    merchantId,
-                  },
+          if (profile) {
+            const cashRate = await prisma.driverCashSellerRate.findUnique({
+              where: {
+                driverId_merchantId: {
+                  driverId: profile.userId,
+                  merchantId,
                 },
-              });
-              if (cashRate && cashRate.rateUsd > 0) {
-                sellerRate = cashRate.rateUsd;
-              }
+              },
+            });
+            if (cashRate && cashRate.rateUsd > 0) {
+              sellerRate = cashRate.rateUsd;
             }
           }
         }
@@ -245,22 +226,12 @@ export async function POST(
       const companyRate = merchant.defaultCompanyRate ?? 3.0;
 
       // Helper: resolve the effective seller rate for a given driver.
-      // Checks DriverSellerRate (driver↔merchant exception) and
-      // DriverCashSellerRate (cash seller rate) before falling back.
+      // Checks DriverCashSellerRate (cash-specific rate) before falling
+      // back to the merchant defaultSellerRate.
       const resolveSellerRate = async (
         driverProfileId: string | null,
       ): Promise<number> => {
         if (driverProfileId) {
-          // Check DriverSellerRate exception first
-          const exception = await tx.driverSellerRate.findUnique({
-            where: {
-              driverId_merchantId: { driverId: driverProfileId, merchantId },
-            },
-          });
-          if (exception && exception.rateUsd > 0) {
-            return exception.rateUsd;
-          }
-
           // Check DriverCashSellerRate (references User.id, so fetch userId from DriverProfile)
           const profile = await tx.driverProfile.findUnique({
             where: { id: driverProfileId },

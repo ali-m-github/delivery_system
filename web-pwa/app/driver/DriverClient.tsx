@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import SettingsModal from "@/components/SettingsModal";
 import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
+import BarcodeScannerModal from "@/components/BarcodeScannerModal";
 import * as XLSX from "xlsx";
 
 type Order = {
@@ -222,6 +223,12 @@ export default function DriverClient({
 
   // ── Payout Modal State ───────────────────────────────────────────────
   const [payoutModalOpen, setPayoutModalOpen] = useState(false);
+
+  // ── Scan Package State ───────────────────────────────────────────────
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannedOrder, setScannedOrder] = useState<any | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanSubmitting, setScanSubmitting] = useState(false);
 
   // ── Payout History State ─────────────────────────────────────────────
   const [payoutHistory, setPayoutHistory] = useState<DriverPayoutItem[]>([]);
@@ -925,6 +932,119 @@ export default function DriverClient({
     setSelectedNote("");
     setCustomNote("");
     setShowCustomInput(false);
+  };
+
+  // ── Scan Package Handler ──────────────────────────────────────────────
+  const handleScanPackage = async (decodedText: string) => {
+    setScannerOpen(false);
+    setScanError(null);
+    setScanSubmitting(true);
+    try {
+      const res = await fetch("/api/orders/bulk/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds: [decodedText.trim()] }),
+      });
+      const { found, notFound } = await res.json();
+      if (!found || found.length === 0) {
+        setScanError(`Package "${decodedText.trim()}" not found.`);
+        return;
+      }
+      setScannedOrder(found[0]);
+    } catch {
+      setScanError("Failed to look up order. Please try again.");
+    } finally {
+      setScanSubmitting(false);
+    }
+  };
+
+  // ── Scan Action: Quick Deliver ────────────────────────────────────────
+  const handleScanDeliver = async () => {
+    if (!scannedOrder) return;
+    setScanSubmitting(true);
+    try {
+      await fetch("/api/orders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: scannedOrder.id,
+          location: "DELIVERED",
+          financialStatus: "WD",
+          collectedUsd: scannedOrder.amountUsd ?? 0,
+          collectedLbp: scannedOrder.amountLbp ?? 0,
+          driverActionLog: "DELIVERED via Scanner",
+        }),
+      });
+      setScannedOrder(null);
+      router.refresh();
+    } catch {
+      alert("Failed to mark as delivered.");
+    } finally {
+      setScanSubmitting(false);
+    }
+  };
+
+  // ── Scan Action: Mark Return ──────────────────────────────────────────
+  const handleScanReturn = async () => {
+    if (!scannedOrder) return;
+    setScanSubmitting(true);
+    try {
+      await fetch("/api/orders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: scannedOrder.id,
+          location: "RETURN",
+          financialStatus: "Re",
+          status: "Re",
+          driverActionLog: "RETURNED via Scanner",
+        }),
+      });
+      setScannedOrder(null);
+      router.refresh();
+    } catch {
+      alert("Failed to mark as returned.");
+    } finally {
+      setScanSubmitting(false);
+    }
+  };
+
+  // ── Scan Action: Pick Up from Warehouse ───────────────────────────────
+  const handleScanPickup = async () => {
+    if (!scannedOrder) return;
+    setScanSubmitting(true);
+    try {
+      await fetch("/api/orders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: scannedOrder.id,
+          driverId: driver.id,
+          location: "ASSIGNED",
+          financialStatus: "UD",
+          collectedUsd: 0,
+          collectedLbp: 0,
+          driverActionLog: "PICKED_UP via Scanner",
+        }),
+      });
+      setScannedOrder(null);
+      router.refresh();
+    } catch {
+      alert("Failed to pick up order.");
+    } finally {
+      setScanSubmitting(false);
+    }
+  };
+
+  // ── Scan Action: Open Postpone (reuses existing postpone modal) ────────
+  const handleScanPostpone = () => {
+    if (!scannedOrder) return;
+    const orderId = scannedOrder.id;
+    setScannedOrder(null);
+    // Open the existing postpone modal with this order
+    setPostponeModal(orderId);
+    setPostponeDate("");
+    setPostponeComment("");
   };
 
   return (
@@ -2180,6 +2300,162 @@ export default function DriverClient({
           onClose={() => setHistoryModalOrder(null)}
         />
       )}
+
+      {/* ════════════════════════════════════════ */}
+      {/* SCAN-TO-ACTION QUICK MODAL              */}
+      {/* ════════════════════════════════════════ */}
+      {scannedOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setScannedOrder(null)}
+          />
+          <div className="relative z-10 w-full max-w-sm bg-gray-900 border border-white/10 rounded-2xl shadow-2xl p-6">
+            <h2 className="text-lg font-bold text-white mb-1">
+              Scanned Package
+            </h2>
+            <p className="text-xs text-gray-500 mb-4">
+              Choose an action for this order
+            </p>
+
+            {/* Order summary */}
+            <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 mb-5 space-y-1.5">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-400">Order ID</span>
+                <span className="text-cyan-400 font-mono font-semibold">
+                  {scannedOrder.orderId}
+                </span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-400">Status</span>
+                <span className="text-gray-300">
+                  {scannedOrder.location || "—"} /{" "}
+                  {scannedOrder.financialStatus || "—"}
+                </span>
+              </div>
+              {scannedOrder.driver && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Driver</span>
+                  <span className="text-yellow-400">
+                    {scannedOrder.driver.firstName}{" "}
+                    {scannedOrder.driver.lastName}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Action buttons — 2x2 grid */}
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <button
+                onClick={handleScanDeliver}
+                disabled={scanSubmitting}
+                className="px-4 py-3 rounded-xl text-sm font-bold
+                           bg-green-500/20 text-green-400 border border-green-500/30
+                           hover:bg-green-500/30 transition-colors disabled:opacity-50"
+              >
+                ✓ Mark Delivered
+              </button>
+              <button
+                onClick={handleScanReturn}
+                disabled={scanSubmitting}
+                className="px-4 py-3 rounded-xl text-sm font-bold
+                           bg-red-500/20 text-red-400 border border-red-500/30
+                           hover:bg-red-500/30 transition-colors disabled:opacity-50"
+              >
+                ↺ Mark Return
+              </button>
+              <button
+                onClick={handleScanPostpone}
+                disabled={scanSubmitting}
+                className="px-4 py-3 rounded-xl text-sm font-bold
+                           bg-amber-500/20 text-amber-400 border border-amber-500/30
+                           hover:bg-amber-500/30 transition-colors disabled:opacity-50"
+              >
+                ⏳ Postpone
+              </button>
+              {String(scannedOrder.location).toUpperCase() === "WAREHOUSE" && (
+                <button
+                  onClick={handleScanPickup}
+                  disabled={scanSubmitting}
+                  className="px-4 py-3 rounded-xl text-sm font-bold
+                             bg-amber-500/20 text-amber-400 border border-amber-500/30
+                             hover:bg-amber-500/30 transition-colors disabled:opacity-50"
+                >
+                  📦 Pick Up
+                </button>
+              )}
+            </div>
+
+            {/* Dismiss / Scan Next */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setScannedOrder(null);
+                  // Re-open scanner for next package
+                  setTimeout(() => setScannerOpen(true), 200);
+                }}
+                className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold
+                           bg-cyan-500/20 text-cyan-300 border border-cyan-500/30
+                           hover:bg-cyan-500/30 transition-colors"
+              >
+                📷 Scan Next
+              </button>
+              <button
+                onClick={() => setScannedOrder(null)}
+                className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold
+                           bg-white/5 text-gray-400 border border-white/10
+                           hover:bg-white/10 hover:text-white transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════ */}
+      {/* SCAN ERROR TOAST                       */}
+      {/* ════════════════════════════════════════ */}
+      {scanError && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-5 py-3 bg-red-500/90 backdrop-blur border border-red-400/30 rounded-xl text-white text-sm font-medium shadow-lg max-w-sm text-center">
+          {scanError}
+          <button
+            onClick={() => setScanError(null)}
+            className="ml-3 text-red-200 hover:text-white underline text-xs"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════ */}
+      {/* FLOATING ACTION BUTTON — SCAN PACKAGE   */}
+      {/* ════════════════════════════════════════ */}
+      {(activeTab === "ACTIVE" || activeTab === "WAREHOUSE") && (
+        <button
+          onClick={() => setScannerOpen(true)}
+          className="fixed bottom-6 right-6 z-30 flex flex-col items-center gap-1
+                     w-16 h-16 rounded-full
+                     bg-gradient-to-br from-cyan-500 to-purple-600
+                     text-white shadow-[0_0_20px_rgba(6,182,212,0.4)]
+                     hover:shadow-[0_0_32px_rgba(6,182,212,0.6)]
+                     hover:scale-105 active:scale-95
+                     transition-all duration-200"
+          title="Scan a package barcode/QR code"
+        >
+          <span className="text-2xl mt-2.5">📷</span>
+        </button>
+      )}
+
+      {/* ════════════════════════════════════════ */}
+      {/* BARCODE SCANNER MODAL                   */}
+      {/* ════════════════════════════════════════ */}
+      <BarcodeScannerModal
+        isOpen={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onScanSuccess={handleScanPackage}
+        heading="Scan Package Barcode / QR"
+      />
     </div>
   );
 }

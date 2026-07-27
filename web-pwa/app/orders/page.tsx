@@ -7,6 +7,7 @@ import SharedOrderTable, {
 } from "@/components/SharedOrderTable";
 import GlobalSheetImportModal from "@/components/orders/GlobalSheetImportModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
+import BarcodeScannerModal from "@/components/BarcodeScannerModal";
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Zone {
   id: string;
@@ -443,6 +444,13 @@ function OrdersPageInner() {
   const [quickAssignModalOpen, setQuickAssignModalOpen] = useState(false);
   const [quickAssignOrderIdsText, setQuickAssignOrderIdsText] = useState("");
   const [quickAssignDriverId, setQuickAssignDriverId] = useState("");
+
+  // ── Scan-to-Assign State ──
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannedOrder, setScannedOrder] = useState<any | null>(null);
+  const [scannedAssignDriverId, setScannedAssignDriverId] = useState("");
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanLoading, setScanLoading] = useState(false);
 
   // ── Fetch all tab data ──
   // When called without params on the "All" tab, reuses current pagination state
@@ -881,6 +889,54 @@ function OrdersPageInner() {
       console.error("Failed to quick-assign orders", error);
       alert("An error occurred during assignment.");
     }
+  };
+
+  // ── Scan Order Handler (from barcode/QR scanner) ──
+  const handleScanOrder = async (decodedText: string) => {
+    setScannerOpen(false);
+    setScanError(null);
+    setScanLoading(true);
+    try {
+      const res = await fetch("/api/orders/bulk/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds: [decodedText.trim()] }),
+      });
+      const { found, notFound } = await res.json();
+      if (!found || found.length === 0) {
+        setScanError(`Order "${decodedText.trim()}" not found in the system.`);
+        return;
+      }
+      setScannedOrder(found[0]);
+      setScannedAssignDriverId("");
+    } catch (err) {
+      setScanError("Failed to look up order. Please try again.");
+    } finally {
+      setScanLoading(false);
+    }
+  };
+
+  // ── Confirm Scan-to-Assign ──
+  const handleScanAssign = async () => {
+    if (!scannedOrder || !scannedAssignDriverId) {
+      alert("Please select a driver.");
+      return;
+    }
+    if (["WD", "WO"].includes(scannedOrder.financialStatus)) {
+      alert(
+        `Cannot reassign order "${scannedOrder.orderId}" — it is already delivered or paid out (status: ${scannedOrder.financialStatus}).`,
+      );
+      return;
+    }
+    await patchOrder(scannedOrder.id, {
+      driverId: scannedAssignDriverId,
+      location: "ASSIGNED",
+      financialStatus: "UD",
+      collectedUsd: 0,
+      collectedLbp: 0,
+    });
+    setScannedOrder(null);
+    setScannedAssignDriverId("");
   };
 
   // ── Archived filter ──
@@ -1656,6 +1712,17 @@ function OrdersPageInner() {
                                transition-all duration-200"
                   >
                     Assign
+                  </button>
+                  {/* ── Scan Order to Assign (single-order scanner) ── */}
+                  <button
+                    onClick={() => setScannerOpen(true)}
+                    className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
+                               bg-cyan-500/20 text-cyan-300 border border-cyan-500/30
+                               hover:bg-cyan-500/30 hover:shadow-[0_0_12px_rgba(6,182,212,0.3)]
+                               transition-all duration-200"
+                    title="Scan a barcode/QR code to find and assign an order to a driver"
+                  >
+                    📷 Scan to Assign
                   </button>
                   <button
                     onClick={() =>
@@ -5299,6 +5366,134 @@ function OrdersPageInner() {
             onClose={() => setHistoryModalOrder(null)}
           />
         )}
+
+        {/* ════════════════════════════════════════ */}
+        {/* SCAN-TO-ASSIGN SLIDE-OVER                */}
+        {/* ════════════════════════════════════════ */}
+        {scannedOrder && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => {
+                setScannedOrder(null);
+                setScannedAssignDriverId("");
+              }}
+            />
+            <div className="relative z-10 w-full max-w-md bg-gray-900 border border-white/10 rounded-2xl shadow-2xl p-6">
+              <h2 className="text-lg font-bold text-white mb-1">
+                Assign Order to Driver
+              </h2>
+              <p className="text-xs text-gray-500 mb-4">
+                Scanned via barcode scanner
+              </p>
+
+              {/* Order summary */}
+              <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 mb-4 space-y-1.5">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Order ID</span>
+                  <span className="text-cyan-400 font-mono font-semibold">
+                    {scannedOrder.orderId}
+                  </span>
+                </div>
+                {scannedOrder.driver && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Current Driver</span>
+                    <span className="text-yellow-400">
+                      {scannedOrder.driver.firstName}{" "}
+                      {scannedOrder.driver.lastName}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Status</span>
+                  <span className="text-gray-300">
+                    {scannedOrder.location} / {scannedOrder.financialStatus}
+                  </span>
+                </div>
+              </div>
+
+              {/* Warning for WD/WO orders */}
+              {["WD", "WO"].includes(scannedOrder.financialStatus) && (
+                <div className="mb-4 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-xs">
+                  This order is already delivered or paid out and cannot be
+                  reassigned.
+                </div>
+              )}
+
+              {/* Driver dropdown */}
+              {!["WD", "WO"].includes(scannedOrder.financialStatus) && (
+                <>
+                  <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
+                    Select Driver
+                  </label>
+                  <select
+                    value={scannedAssignDriverId}
+                    onChange={(e) => setScannedAssignDriverId(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-500/50 transition-colors mb-4"
+                  >
+                    <option value="">— Choose a driver —</option>
+                    {availableDrivers.map((d: any) => (
+                      <option key={d.id} value={d.id}>
+                        {d.firstName} {d.lastName} ({d.driverId})
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setScannedOrder(null);
+                    setScannedAssignDriverId("");
+                  }}
+                  className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold
+                             bg-white/5 text-gray-400 border border-white/10
+                             hover:bg-white/10 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+                {!["WD", "WO"].includes(scannedOrder.financialStatus) && (
+                  <button
+                    onClick={handleScanAssign}
+                    className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold
+                               bg-cyan-500/20 text-cyan-300 border border-cyan-500/30
+                               hover:bg-cyan-500/30 hover:shadow-[0_0_12px_rgba(6,182,212,0.3)]
+                               transition-all duration-200"
+                  >
+                    Assign Driver
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ════════════════════════════════════════ */}
+        {/* SCAN ERROR TOAST                       */}
+        {/* ════════════════════════════════════════ */}
+        {scanError && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 bg-red-500/90 backdrop-blur border border-red-400/30 rounded-xl text-white text-sm font-medium shadow-lg max-w-sm text-center">
+            {scanError}
+            <button
+              onClick={() => setScanError(null)}
+              className="ml-3 text-red-200 hover:text-white underline text-xs"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* ════════════════════════════════════════ */}
+        {/* BARCODE SCANNER MODAL                  */}
+        {/* ════════════════════════════════════════ */}
+        <BarcodeScannerModal
+          isOpen={scannerOpen}
+          onClose={() => setScannerOpen(false)}
+          onScanSuccess={handleScanOrder}
+          heading="Scan Order Barcode / QR"
+        />
       </div>
     </div>
   );
