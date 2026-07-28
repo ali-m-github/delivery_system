@@ -576,9 +576,17 @@ function OrdersPageInner() {
         location: "RETURN",
         financialStatus: "RWD",
       });
+    } else if (currentTab === "returns") {
+      // Returns tab: filter server-side by location to avoid missing
+      // older return orders beyond the default fetch limit
+      fetchOrders({
+        skip: "0",
+        take: "5000",
+        location: "RETURN",
+      });
     } else {
-      // For non-"all" tabs (warehouse, returns, etc.), fetch orders
-      // with a reasonable limit to avoid overloading the database
+      // For non-"all" tabs (warehouse, reports, order-entry, etc.),
+      // fetch orders with a reasonable limit
       fetchOrders({ skip: "0", take: "500" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
