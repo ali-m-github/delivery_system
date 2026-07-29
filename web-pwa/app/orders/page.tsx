@@ -2,12 +2,98 @@
 
 import { useState, useEffect, useMemo, useRef, Suspense } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
+import * as XLSX from "xlsx";
 import SharedOrderTable, {
   formatDDMMYYYY,
 } from "@/components/SharedOrderTable";
 import GlobalSheetImportModal from "@/components/orders/GlobalSheetImportModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import BarcodeScannerModal from "@/components/BarcodeScannerModal";
+
+// ─── Header Alias Mapping for Bulk Upload ─────────────────────────────────────
+const HEADER_ALIASES: Record<string, string> = {
+  // orderId aliases
+  "order id": "orderId",
+  order_id: "orderId",
+  orderid: "orderId",
+  tracking: "orderId",
+  barcode: "orderId",
+  id: "orderId",
+  // seller aliases
+  "seller id": "seller",
+  seller_id: "seller",
+  seller: "seller",
+  merchant: "seller",
+  "merchant id": "seller",
+  store: "seller",
+  // customer aliases
+  customer: "customer",
+  "customer name": "customer",
+  client: "customer",
+  "client name": "customer",
+  recipient: "customer",
+  name: "customer",
+  // phone aliases
+  "tel number": "phone",
+  tel: "phone",
+  telephone: "phone",
+  "mobile number": "phone",
+  mobile: "phone",
+  "phone number": "phone",
+  phone: "phone",
+  contact: "phone",
+  phone_number: "phone",
+  // address aliases
+  address: "address",
+  "delivery address": "address",
+  location: "address",
+  destination: "address",
+  // zone aliases
+  zone: "zone",
+  area: "zone",
+  region: "zone",
+  // usd aliases
+  amount$: "usd",
+  amount: "usd",
+  "amount usd": "usd",
+  usd: "usd",
+  "usd amount": "usd",
+  price: "usd",
+  total: "usd",
+  // lbp aliases
+  "amount lbp": "lbp",
+  lbp: "lbp",
+  "lbp amount": "lbp",
+  "price lbp": "lbp",
+  // date received aliases
+  "date rcvd": "dateReceived",
+  "date received": "dateReceived",
+  "received date": "dateReceived",
+  received: "dateReceived",
+  date: "dateReceived",
+};
+
+function normalizeHeader(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[$#@!&*()%~`^{}[\]|;:,<>?/+=\\]/g, "")
+    .replace(/[\s_]+/g, " ")
+    .trim();
+}
+
+function mapHeaders(headers: string[]): Record<string, number> {
+  const mapping: Record<string, number> = {};
+  headers.forEach((raw, index) => {
+    const normalized = normalizeHeader(raw);
+    const fieldName = HEADER_ALIASES[normalized];
+    if (fieldName) {
+      mapping[fieldName] = index;
+    }
+  });
+  return mapping;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Zone {
   id: string;
@@ -213,82 +299,229 @@ function OrdersPageInner() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!window.confirm("Process this CSV file and generate bulk orders?")) {
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    let rows: string[][];
+
+    setCsvUploading(true);
+
+    try {
+      if (ext === "xlsx" || ext === "xls") {
+        const buffer = await file.arrayBuffer();
+        const workbook = XLSX.read(buffer, { type: "array" });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const allRows = XLSX.utils.sheet_to_json<string[]>(sheet, {
+          header: 1,
+        });
+        rows = allRows.filter((r) => r.some((c) => String(c).trim()));
+      } else {
+        const text = await file.text();
+        rows = text
+          .split("\n")
+          .map((line) => line.split(","))
+          .filter((r) => r.some((c) => c.trim()));
+      }
+    } catch {
+      alert(
+        "Failed to parse file. Please ensure it is a valid CSV or Excel file.",
+      );
+      setCsvUploading(false);
       e.target.value = "";
       return;
     }
 
-    setCsvUploading(true);
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const text = event.target?.result as string;
-        const lines = text
-          .split("\n")
-          .map((l) => l.trim())
-          .filter((l) => l.length > 0);
-        if (lines.length < 2)
-          throw new Error("CSV is empty or missing headers.");
+    if (rows.length < 2) {
+      alert("File must have a header row and at least one data row.");
+      setCsvUploading(false);
+      e.target.value = "";
+      return;
+    }
 
-        let successCount = 0;
+    const headers = rows[0];
+    const mapping = mapHeaders(headers);
 
-        for (let i = 1; i < lines.length; i++) {
-          const row = lines[i].split(",");
-          if (row.length < 8) continue; // Skip incomplete rows
+    // Validate that essential headers were found
+    const hasCustomer = mapping.customer !== undefined;
+    const hasPhone = mapping.phone !== undefined;
+    const hasAddress = mapping.address !== undefined;
+    const hasUsd = mapping.usd !== undefined;
+    const hasLbp = mapping.lbp !== undefined;
 
-          const [orderId, seller, customer, phone, address, zone, usd, lbp] =
-            row.map((v) => v.trim());
+    if (!hasCustomer || !hasPhone || !hasAddress) {
+      alert(
+        "Missing required headers. Expected headers for: customer, phone, address.",
+      );
+      setCsvUploading(false);
+      e.target.value = "";
+      return;
+    }
 
-          // Automatically Resolve Seller ID using the same logic as the forms
-          let finalSellerId = seller;
-          const matchedSeller = sellersList.find(
-            (s: any) =>
-              s.numericId?.toString() === seller ||
-              s.name?.toLowerCase() === seller.toLowerCase() ||
-              `${s.numericId} - ${s.name}` === seller,
-          );
-          if (matchedSeller) finalSellerId = matchedSeller.id;
+    if (!hasUsd && !hasLbp) {
+      alert("Missing pricing headers. Expected at least one of: usd, lbp.");
+      setCsvUploading(false);
+      e.target.value = "";
+      return;
+    }
 
-          // Automatically Resolve Zone ID
-          let finalZoneId = zone;
-          const matchedZone = zones.find(
-            (z: any) => z.name.toLowerCase() === zone.toLowerCase(),
-          );
-          if (matchedZone) finalZoneId = matchedZone.id;
+    const dataRows = rows.slice(1);
+    let successCount = 0;
+    let failCount = 0;
+    const errors: string[] = [];
 
-          // Post Order
-          const res = await fetch("/api/orders", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              orderId,
-              merchantId: finalSellerId,
-              customerName: customer,
-              customerPhone: phone,
-              customerAddress: address,
-              zoneId: finalZoneId,
-              price: usd,
-              amountLbp: lbp || "0",
-              hasExchange: false,
-              extraShipping: "0",
-              packages: "1",
-              notes: "Imported via CSV bulk tool",
-            }),
-          });
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i];
 
-          if (res.ok) successCount++;
+      const customer =
+        mapping.customer !== undefined
+          ? String(row[mapping.customer] ?? "").trim()
+          : "";
+      const phone =
+        mapping.phone !== undefined
+          ? String(row[mapping.phone] ?? "").trim()
+          : "";
+      const address =
+        mapping.address !== undefined
+          ? String(row[mapping.address] ?? "").trim()
+          : "";
+      const orderId =
+        mapping.orderId !== undefined
+          ? String(row[mapping.orderId] ?? "").trim()
+          : "";
+      const seller =
+        mapping.seller !== undefined
+          ? String(row[mapping.seller] ?? "").trim()
+          : "";
+      const zone =
+        mapping.zone !== undefined
+          ? String(row[mapping.zone] ?? "").trim()
+          : "";
+      const usdRaw =
+        mapping.usd !== undefined ? String(row[mapping.usd] ?? "").trim() : "";
+      const lbpRaw =
+        mapping.lbp !== undefined ? String(row[mapping.lbp] ?? "").trim() : "";
+      const dateReceivedRaw =
+        mapping.dateReceived !== undefined
+          ? String(row[mapping.dateReceived] ?? "").trim()
+          : "";
+
+      // Parse date if provided
+      let parsedDate: string | undefined;
+      if (dateReceivedRaw) {
+        // Try parsing as ISO date string first
+        const isoMatch = dateReceivedRaw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+        const usMatch = dateReceivedRaw.match(
+          /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/,
+        );
+        const euMatch = dateReceivedRaw.match(
+          /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/,
+        );
+        if (isoMatch) {
+          parsedDate = `${isoMatch[1]}-${isoMatch[2].padStart(2, "0")}-${isoMatch[3].padStart(2, "0")}`;
+        } else if (usMatch) {
+          parsedDate = `${usMatch[3]}-${usMatch[1].padStart(2, "0")}-${usMatch[2].padStart(2, "0")}`;
+        } else if (euMatch) {
+          const year = euMatch[3].length === 2 ? `20${euMatch[3]}` : euMatch[3];
+          parsedDate = `${year}-${euMatch[2].padStart(2, "0")}-${euMatch[1].padStart(2, "0")}`;
+        } else {
+          // Try parsing as Excel serial date (days since 1900-01-01)
+          const serial = parseFloat(dateReceivedRaw);
+          if (!isNaN(serial) && serial > 3000 && serial < 60000) {
+            const excelDate = new Date((serial - 25569) * 86400 * 1000);
+            parsedDate = excelDate.toISOString().split("T")[0];
+          }
         }
-
-        alert(`Success: Automatically generated ${successCount} orders.`);
-        await fetchOrders();
-      } catch (error: any) {
-        alert("CSV Processing error: " + error.message);
-      } finally {
-        setCsvUploading(false);
-        e.target.value = "";
       }
-    };
-    reader.readAsText(file);
+
+      // Validate required fields
+      if (!customer || !phone || !address) {
+        failCount++;
+        errors.push(`Row ${i + 2}: Missing customer, phone, or address.`);
+        if (errors.length > 10) errors.push("... (truncated)");
+        continue;
+      }
+
+      // Strip leading $ and any non-numeric characters (except . and -) from price fields
+      const cleanNumeric = (val: string) =>
+        val.replace(/[^0-9.\-]/g, "").trim();
+      const usd = usdRaw ? parseFloat(cleanNumeric(usdRaw)) : null;
+      const lbp = lbpRaw ? parseFloat(cleanNumeric(lbpRaw)) : null;
+
+      if ((usd === null || isNaN(usd)) && (lbp === null || isNaN(lbp))) {
+        failCount++;
+        errors.push(`Row ${i + 2}: Invalid pricing (usd/lbp).`);
+        if (errors.length > 10) errors.push("... (truncated)");
+        continue;
+      }
+
+      // Resolve Seller ID
+      let finalSellerId = seller;
+      const matchedSeller = sellersList.find(
+        (s: any) =>
+          s.numericId?.toString() === seller ||
+          s.name?.toLowerCase() === seller.toLowerCase() ||
+          `${s.numericId} - ${s.name}` === seller,
+      );
+      if (matchedSeller) finalSellerId = matchedSeller.id;
+
+      // Resolve Zone ID - default to zone "99" if not provided or not found
+      let zoneId: string | null = null;
+      if (zone) {
+        const matchedZone = zones.find(
+          (z: any) => z.name.toLowerCase() === zone.toLowerCase(),
+        );
+        if (matchedZone) zoneId = matchedZone.id;
+      }
+      // Fallback: try to find zone named "99", then first available zone
+      const zone99 = zones.find((z: any) => z.name === "99");
+      const finalZoneId = zoneId ?? zone99?.id ?? zones[0]?.id ?? null;
+
+      try {
+        const res = await fetch("/api/orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            orderId: orderId || undefined,
+            merchantId: finalSellerId,
+            customerName: customer,
+            customerPhone: phone,
+            customerAddress: address,
+            zoneId: finalZoneId,
+            price: usd !== null && !isNaN(usd) ? String(usd) : "0",
+            amountLbp: lbp !== null && !isNaN(lbp) ? String(lbp) : "0",
+            hasExchange: false,
+            extraShipping: "0",
+            packages: "1",
+            notes: "Imported via Bulk Excel/CSV tool",
+            dateReceived: parsedDate,
+          }),
+        });
+
+        if (res.ok) {
+          successCount++;
+        } else {
+          failCount++;
+          const errData = await res.json().catch(() => ({}));
+          errors.push(
+            `Row ${i + 2}: API error - ${errData.error || res.statusText}`,
+          );
+          if (errors.length > 10) errors.push("... (truncated)");
+        }
+      } catch {
+        failCount++;
+        errors.push(`Row ${i + 2}: Network error.`);
+        if (errors.length > 10) errors.push("... (truncated)");
+      }
+    }
+
+    const message = `Import complete: ${successCount} succeeded, ${failCount} failed.`;
+    if (errors.length > 0) {
+      alert(`${message}\n\nFirst errors:\n${errors.join("\n")}`);
+    } else {
+      alert(message);
+    }
+
+    await fetchOrders();
+    setCsvUploading(false);
+    e.target.value = "";
   };
 
   // ── Waybill Upload State & Handler ──
@@ -2361,6 +2594,9 @@ function OrdersPageInner() {
                                   Order ID
                                 </th>
                                 <th className="px-2 py-2 text-left font-medium">
+                                  Seller
+                                </th>
+                                <th className="px-2 py-2 text-left font-medium">
                                   Customer
                                 </th>
                                 <th className="px-2 py-2 text-left font-medium">
@@ -2420,6 +2656,12 @@ function OrdersPageInner() {
                                       </button>
                                       <span>#{order.orderId}</span>
                                     </div>
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs text-cyan-300 whitespace-nowrap">
+                                    {order.merchant
+                                      ? order.merchant.ownerFirstName ||
+                                        order.merchant.merchantName
+                                      : "—"}
                                   </td>
                                   <td className="px-2 py-1.5 text-xs text-white whitespace-nowrap">
                                     {order.customerName}
@@ -3055,25 +3297,27 @@ function OrdersPageInner() {
 
             {/* Import Options */}
             <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* CSV Upload */}
+              {/* Excel / CSV Upload */}
               <div className="bg-[#121824] border border-white/5 rounded-xl p-4">
                 <h3 className="text-xs font-bold text-white mb-2 flex items-center gap-2">
                   <span className="bg-cyan-500/20 text-cyan-400 px-1.5 py-0.5 rounded text-[10px]">
                     BULK
                   </span>
-                  CSV Upload
+                  Excel / CSV Upload
                 </h3>
                 <p className="text-[10px] text-gray-500 mb-3">
-                  Upload a CSV with columns: orderId, seller, customer, phone,
-                  address, zone, usd, lbp
+                  Upload an Excel (.xlsx, .xls) or CSV file with headers:
+                  orderId, seller, customer, phone, address, zone, usd, lbp
                 </p>
                 <label className="flex flex-col items-center justify-center w-full h-20 border-2 border-gray-700 border-dashed rounded-lg cursor-pointer hover:bg-slate-900/50 hover:border-cyan-500/50 transition-all">
                   <span className="text-xs text-cyan-400 font-bold">
-                    {csvUploading ? "Processing..." : "Click to Upload CSV"}
+                    {csvUploading
+                      ? "Processing..."
+                      : "Click to Upload Excel / CSV"}
                   </span>
                   <input
                     type="file"
-                    accept=".csv"
+                    accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                     className="hidden"
                     onChange={handleCsvUpload}
                     disabled={csvUploading}

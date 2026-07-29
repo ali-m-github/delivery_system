@@ -58,12 +58,14 @@ export default async function DriverPage() {
     name: az.zone.name,
   }));
 
-  // Build delivery filter: only orders from assigned zones
-  // If no zones assigned, show all orders (backward compat)
+  // Build delivery filter for orders already assigned to this driver.
+  // NOTE: We do NOT filter by assignedZones here because a driver must be able
+  // to see ALL orders assigned to them, even if the order's zone isn't in
+  // their assigned zones. The zone restriction only applies to warehouse
+  // orders (what they can pick up), not to their own deliveries.
   const deliveryWhere = {
     location: { in: ["WITH_DRIVER", "ASSIGNED", "DELIVERED"] },
     financialStatus: { notIn: ["PS", "WO", "Arc"] },
-    ...(assignedZoneIds.length > 0 ? { zoneId: { in: assignedZoneIds } } : {}),
   };
 
   // ── Fetch warehouse orders from assigned zones ─────────────────────────

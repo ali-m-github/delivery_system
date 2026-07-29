@@ -190,6 +190,15 @@ export async function POST(request: Request) {
     const parsedPackages = parseInt(body.packages);
     const packages = isNaN(parsedPackages) ? 1 : parsedPackages;
 
+    // Parse optional dateReceived for backdating imported orders
+    let createdAt: Date | undefined;
+    if (body.dateReceived && typeof body.dateReceived === "string") {
+      const parsed = new Date(body.dateReceived + "T00:00:00Z");
+      if (!isNaN(parsed.getTime())) {
+        createdAt = parsed;
+      }
+    }
+
     const newOrder = await prisma.order.create({
       data: {
         orderId: uniqueOrderId,
@@ -205,6 +214,7 @@ export async function POST(request: Request) {
         notes: body.notes || null,
         merchantId: body.merchantId || null,
         driverId: body.driverId || null,
+        ...(createdAt && { createdAt }),
         history: {
           create: {
             action: "Order Created",
