@@ -291,6 +291,17 @@ model Zone {
   driverAssignments DriverZoneAssignment[]
 }
 
+model ZoneMapping {
+  id                String   @id @default(cuid())
+  rawAddress        String
+  normalizedAddress String   @unique
+  zoneId            String
+  occurrenceCount   Int      @default(1)
+  isVerified        Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
 model DriverZoneRate {
   id       String @id @default(cuid())
   driverId String

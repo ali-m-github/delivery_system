@@ -726,7 +726,13 @@ function OrdersPageInner() {
       }
       if (zonesRes.ok) {
         const data = await zonesRes.json();
-        setZones(data);
+        const sorted = data.sort((a: Zone, b: Zone) => {
+          const numA = parseInt(a.name, 10);
+          const numB = parseInt(b.name, 10);
+          if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+          return a.name.localeCompare(b.name);
+        });
+        setZones(sorted);
       }
       if (driversRes.ok) {
         const data = await driversRes.json();

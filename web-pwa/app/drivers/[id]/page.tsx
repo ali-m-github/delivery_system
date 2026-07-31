@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { DEFAULT_DRIVER_USD } from "@/lib/commission";
 import SellerRateForm from "@/components/drivers/SellerRateForm";
 import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
@@ -352,10 +353,12 @@ export default function DriverProfilePage() {
       }
       // Tier 2: Zone Rate
       const zoneRate = zoneRateMap.get(orderZoneId);
+      // Tier 3: System default fallback
+      const rate = zoneRate !== undefined ? zoneRate : DEFAULT_DRIVER_USD;
       console.log(
-        `[Payout Pipeline] Order ${o.orderId} → Zone: ${orderZoneId}, Using ZONE rate: $${zoneRate ?? 0}`,
+        `[Payout Pipeline] Order ${o.orderId} → Zone: ${orderZoneId}, Using ${zoneRate !== undefined ? "ZONE" : "DEFAULT"} rate: $${rate}`,
       );
-      return sum + Number(zoneRate || 0);
+      return sum + rate;
     }, 0);
   }, [deliveredOrders, zoneRateMap, sellerExceptionMap]);
 
@@ -394,9 +397,11 @@ export default function DriverProfilePage() {
       const exceptionRate = orderMerchantId
         ? sellerExceptionMap.get(orderMerchantId)
         : undefined;
-      const rate = exceptionRate ?? zoneRateMap.get(orderZoneId) ?? 0;
+      const zoneRate = zoneRateMap.get(orderZoneId);
+      // Tier 3: System default fallback
+      const rate = exceptionRate ?? zoneRate ?? DEFAULT_DRIVER_USD;
       console.log(
-        `[Settlement Pipeline] Order ${o.orderId} → Merch: ${orderMerchantId}, Zone: ${orderZoneId}, Rate: $${rate}${exceptionRate !== undefined ? " (EXCEPTION)" : " (ZONE)"}`,
+        `[Settlement Pipeline] Order ${o.orderId} → Merch: ${orderMerchantId}, Zone: ${orderZoneId}, Rate: $${rate}${exceptionRate !== undefined ? " (EXCEPTION)" : zoneRate !== undefined ? " (ZONE)" : " (DEFAULT)"}`,
       );
       return sum + rate;
     }, 0);

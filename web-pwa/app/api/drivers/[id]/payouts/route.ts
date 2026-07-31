@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { DEFAULT_DRIVER_USD } from "@/lib/commission";
 
 const prisma = new PrismaClient();
 
@@ -143,14 +144,17 @@ export async function POST(
         (rate) => String(rate.merchantId) === orderMerchantId,
       );
 
-      if (exception) {
+      if (exception && (exception.rateUsd > 0 || exception.rateLbp > 0)) {
         finalCommission += Number(exception.rateUsd || 0);
       } else {
         // Tier 2: Zone Rate
         const zoneRate = driver.zoneRates.find(
           (rate) => String(rate.zoneId) === orderZoneId,
         );
-        finalCommission += Number(zoneRate?.rate || 0);
+        // Tier 3: System default fallback
+        finalCommission += zoneRate
+          ? Number(zoneRate.rate || 0)
+          : DEFAULT_DRIVER_USD;
       }
     });
 
