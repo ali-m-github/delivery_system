@@ -2,12 +2,32 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { hasPermission } from "@/lib/permissions";
 
 interface User {
   id: string;
   username: string;
   role: string;
-  permissions: string;
+  permissions: string[];
+  permissionGroup?: { id: string; name: string; permissions: string[] } | null;
+  customPermissions?: string[];
+}
+
+// ─── Route → Required Permission Map ──────────────────────────────────────────
+// Prefix-based page-level RBAC. The most specific (longest) matching prefix wins,
+// e.g. "/admin/drivers/..." resolves to MANAGE_DRIVERS, not MANAGE_USERS.
+const ROUTE_PERMISSIONS: { prefix: string; permission: string }[] = [
+  { prefix: "/admin/drivers", permission: "MANAGE_DRIVERS" },
+  { prefix: "/admin", permission: "MANAGE_USERS" },
+];
+
+function requiredPermissionForPath(pathname: string): string | null {
+  const matches = ROUTE_PERMISSIONS.filter((r) =>
+    pathname.startsWith(r.prefix),
+  );
+  if (matches.length === 0) return null;
+  matches.sort((a, b) => b.prefix.length - a.prefix.length);
+  return matches[0].permission;
 }
 
 export default function RouteGuard({
@@ -71,6 +91,20 @@ export default function RouteGuard({
           if (user?.role === "ADMIN" && pathname.startsWith("/login")) {
             setStatus("redirecting");
             router.replace("/orders");
+            return;
+          }
+
+          // ── Granular RBAC: page-level permission enforcement ──
+          // ADMINS bypass the permission map; everyone else must hold the
+          // required permission (via PermissionGroup or custom overrides).
+          const required = requiredPermissionForPath(pathname);
+          if (
+            required &&
+            user?.role !== "ADMIN" &&
+            !hasPermission(user, required)
+          ) {
+            setStatus("redirecting");
+            router.replace("/403");
             return;
           }
 

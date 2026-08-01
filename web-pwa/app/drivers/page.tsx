@@ -29,8 +29,12 @@ interface DriverPayout {
     id: string;
     orderId: string;
     customerName: string;
+    customerAddress?: string;
     amountUsd: number;
     amountLbp: number;
+    collectedUsd?: number;
+    collectedLbp?: number;
+    createdAt?: string;
     zone: { name: string };
     driverCommissionUsd?: number;
   }>;
@@ -55,6 +59,16 @@ function beirutDateTime(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+  });
+}
+
+function beirutDate(iso: string): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-US", {
+    timeZone: "Asia/Beirut",
+    month: "2-digit",
+    day: "2-digit",
+    year: "2-digit",
   });
 }
 
@@ -812,9 +826,18 @@ export default function DriversDirectoryPage() {
                                           const mappedOrders =
                                             payout.orders.map((o) => ({
                                               "Tracking ID": o.orderId,
+                                              "Date Received": o.createdAt
+                                                ? new Date(
+                                                    o.createdAt,
+                                                  ).toLocaleDateString("en-US")
+                                                : "",
                                               Customer: o.customerName,
                                               Zone: o.zone.name,
                                               "Amount USD": o.amountUsd,
+                                              "Collected USD":
+                                                o.collectedUsd ?? o.amountUsd,
+                                              "Collected LBP":
+                                                o.collectedLbp ?? o.amountLbp,
                                               "Driver Commission USD":
                                                 o.driverCommissionUsd ?? 0,
                                             }));
@@ -848,10 +871,16 @@ export default function DriversDirectoryPage() {
                                       <thead>
                                         <tr className="bg-white/[0.02] text-gray-500 text-[11px] uppercase tracking-wider">
                                           <th className="px-4 py-2 font-semibold">
+                                            Date Received
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold">
                                             Tracking ID
                                           </th>
                                           <th className="px-4 py-2 font-semibold">
                                             Customer
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold">
+                                            Address
                                           </th>
                                           <th className="px-4 py-2 font-semibold">
                                             Zone
@@ -862,31 +891,77 @@ export default function DriversDirectoryPage() {
                                           <th className="px-4 py-2 font-semibold text-right">
                                             Amount LBP
                                           </th>
+                                          <th className="px-4 py-2 font-semibold text-right">
+                                            Collected USD
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold text-right">
+                                            Collected LBP
+                                          </th>
                                         </tr>
                                       </thead>
                                       <tbody>
-                                        {payout.orders.map((order) => (
-                                          <tr
-                                            key={order.id}
-                                            className="border-b border-white/[0.03] hover:bg-white/[0.01] transition-colors"
-                                          >
-                                            <td className="px-4 py-2 font-mono text-cyan-400 text-xs">
-                                              {order.orderId}
-                                            </td>
-                                            <td className="px-4 py-2 text-gray-300 text-sm">
-                                              {order.customerName}
-                                            </td>
-                                            <td className="px-4 py-2 text-gray-500 text-xs">
-                                              {order.zone.name}
-                                            </td>
-                                            <td className="px-4 py-2 text-green-400 text-xs text-right font-mono">
-                                              ${order.amountUsd.toFixed(2)}
-                                            </td>
-                                            <td className="px-4 py-2 text-gray-400 text-xs text-right">
-                                              {order.amountLbp.toLocaleString()}
-                                            </td>
-                                          </tr>
-                                        ))}
+                                        {payout.orders.map((order) => {
+                                          const actualCollectedUsd =
+                                            (order.collectedUsd ?? 0) === 0
+                                              ? (order.amountUsd ?? 0)
+                                              : (order.collectedUsd ?? 0);
+                                          const actualCollectedLbp =
+                                            (order.collectedLbp ?? 0) === 0
+                                              ? (order.amountLbp ?? 0)
+                                              : (order.collectedLbp ?? 0);
+                                          const isMismatched =
+                                            (order.amountUsd ?? 0) !==
+                                              actualCollectedUsd ||
+                                            (order.amountLbp ?? 0) !==
+                                              actualCollectedLbp;
+                                          return (
+                                            <tr
+                                              key={order.id}
+                                              className={`border-b border-white/[0.03] transition-colors ${
+                                                isMismatched
+                                                  ? "bg-yellow-500/20"
+                                                  : "hover:bg-white/[0.01]"
+                                              }`}
+                                            >
+                                              <td className="px-4 py-2 text-gray-500 text-xs whitespace-nowrap">
+                                                {beirutDate(
+                                                  order.createdAt || "",
+                                                )}
+                                              </td>
+                                              <td className="px-4 py-2 font-mono text-cyan-400 text-xs">
+                                                {order.orderId}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-300 text-sm">
+                                                {order.customerName}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-500 text-xs max-w-[160px] truncate">
+                                                {order.customerAddress || "—"}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-500 text-xs">
+                                                {order.zone?.name || "—"}
+                                              </td>
+                                              <td className="px-4 py-2 text-green-400 text-xs text-right font-mono">
+                                                $
+                                                {(order.amountUsd ?? 0).toFixed(
+                                                  2,
+                                                )}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-400 text-xs text-right">
+                                                {(
+                                                  order.amountLbp ?? 0
+                                                ).toLocaleString()}
+                                              </td>
+                                              <td className="px-4 py-2 text-green-300 text-xs text-right font-mono">
+                                                ${actualCollectedUsd.toFixed(2)}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-400 text-xs text-right">
+                                                {(
+                                                  order.collectedLbp ?? 0
+                                                ).toLocaleString()}
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
                                       </tbody>
                                     </table>
                                   </div>

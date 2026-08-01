@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import SettingsModal from "./SettingsModal";
+import { hasPermission } from "@/lib/permissions";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface NavItem {
@@ -10,6 +11,9 @@ interface NavItem {
   href: string;
   icon: React.ReactNode;
   adminOnly?: boolean;
+  /** Granular RBAC: if set, the link only renders when the user holds this
+   *  permission (via their PermissionGroup or custom overrides). */
+  permission?: string;
 }
 
 // ─── SVG Icon Components ──────────────────────────────────────────────────────
@@ -98,6 +102,22 @@ const SettlementsIcon = () => (
   </svg>
 );
 
+const ClearedPayoutsIcon = () => (
+  <svg
+    className="w-5 h-5 shrink-0"
+    fill="none"
+    viewBox="0 0 24 24"
+    stroke="currentColor"
+    strokeWidth={1.5}
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+    />
+  </svg>
+);
+
 const AdminIcon = () => (
   <svg
     className="w-5 h-5 shrink-0"
@@ -130,12 +150,18 @@ const NAV_ITEMS: NavItem[] = [
     href: "/settlements",
     icon: <SettlementsIcon />,
   },
+  {
+    label: "Cleared Payouts",
+    href: "/cleared-payouts",
+    icon: <ClearedPayoutsIcon />,
+  },
   { label: "Statements", href: "/statements", icon: <OrdersIcon /> },
   {
     label: "Treasury",
     href: "/admin/treasury",
     icon: <SettlementsIcon />,
     adminOnly: true,
+    permission: "PAGE_ADMIN_TREASURY",
   },
   { label: "Zones", href: "/zones", icon: <AdminIcon />, adminOnly: true },
   {
@@ -157,11 +183,21 @@ export default function Sidebar() {
     username: string;
     role: string;
     permissions: string[];
+    permissionGroup?: {
+      id: string;
+      name: string;
+      permissions: string[];
+    } | null;
+    customPermissions?: string[];
   } | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const authFetchedRef = useRef(false);
+  const [payoutCounts, setPayoutCounts] = useState({
+    pendingSettlements: 0,
+    pendingClearance: 0,
+  });
 
   // ── Fetch auth state once on mount ──
   useEffect(() => {
@@ -183,6 +219,25 @@ export default function Sidebar() {
         setAuthLoading(false);
       });
   }, []);
+
+  // ── Fetch payout notification counts (badges) on mount + route change ──
+  // Route Handlers aren't cached, so navigating back after settling/clearing a
+  // payout always refreshes the badge numbers.
+  useEffect(() => {
+    fetch("/api/notifications/payouts")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          setPayoutCounts({
+            pendingSettlements: Number(data.pendingSettlements) || 0,
+            pendingClearance: Number(data.pendingClearance) || 0,
+          });
+        }
+      })
+      .catch(() => {
+        // Keep existing counts on network failure — badges simply stay as-is.
+      });
+  }, [pathname]);
 
   // ── Keyboard shortcut: Ctrl+B to toggle collapse ──
   useEffect(() => {
@@ -281,8 +336,12 @@ export default function Sidebar() {
         {NAV_ITEMS.filter((item) => {
           // Merchants see ONLY the Merchant Portal link
           if (user?.role === "MERCHANT") return item.href === "/merchant";
-          // Everyone else: show non-admin items, or admin items if user is ADMIN
-          return !item.adminOnly || user?.role === "ADMIN";
+          // ADMIN bypasses all permission checks
+          if (user?.role === "ADMIN") return true;
+          // Everyone else: links gated by a PAGE_ permission require it via the
+          // composite RBAC check; admin-only links stay hidden otherwise.
+          if (item.permission) return hasPermission(user, item.permission);
+          return !item.adminOnly;
         }).map((item) => {
           const active = isActive(item.href);
           return (
@@ -312,7 +371,26 @@ export default function Sidebar() {
                 {item.icon}
               </span>
               {!isCollapsed && (
-                <span className="whitespace-nowrap">{item.label}</span>
+                <span className="flex items-center justify-between flex-1 min-w-0 gap-2">
+                  <span className="whitespace-nowrap truncate">
+                    {item.label}
+                  </span>
+                  {item.href === "/settlements" &&
+                  payoutCounts.pendingSettlements > 0 ? (
+                    <span className="ml-auto shrink-0 bg-red-500 text-white text-[10px] font-bold h-5 w-5 flex items-center justify-center rounded-full">
+                      {payoutCounts.pendingSettlements > 99
+                        ? "99+"
+                        : payoutCounts.pendingSettlements}
+                    </span>
+                  ) : item.href === "/cleared-payouts" &&
+                    payoutCounts.pendingClearance > 0 ? (
+                    <span className="ml-auto shrink-0 bg-blue-500 text-white text-[10px] font-bold h-5 w-5 flex items-center justify-center rounded-full">
+                      {payoutCounts.pendingClearance > 99
+                        ? "99+"
+                        : payoutCounts.pendingClearance}
+                    </span>
+                  ) : null}
+                </span>
               )}
             </Link>
           );

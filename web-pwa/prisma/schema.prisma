@@ -47,6 +47,16 @@ enum FinancialStatus {
 // Models
 // ==========================================
 
+model PermissionGroup {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  permissions String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
+}
+
 model User {
   id            String         @id @default(cuid())
   email         String         @unique
@@ -57,6 +67,10 @@ model User {
   actionHistory OrderHistory[]
   driverProfile DriverProfile?
   merchant      Merchant?
+
+  permissionGroupId String?          @map("permission_group_id")
+  permissionGroup   PermissionGroup? @relation(fields: [permissionGroupId], references: [id])
+  customPermissions String[]         @default([])
 
   ordersCreated          Order[]                  @relation("EmployeeOrders")
   driverCashSellerRates  DriverCashSellerRate[]

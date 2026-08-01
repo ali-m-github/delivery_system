@@ -90,10 +90,6 @@ function beirutDate(iso: string): string {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function DriverConsignmentsPage() {
-  // ── Archive data state (CLEARED/PAID) ──
-  const [archivePayouts, setArchivePayouts] = useState<DriverPayout[]>([]);
-  const [archiveLoading, setArchiveLoading] = useState(true);
-
   // ── Pending data state (PENDING) ──
   const [pendingPayouts, setPendingPayouts] = useState<DriverPayout[]>([]);
   const [pendingLoading, setPendingLoading] = useState(true);
@@ -101,16 +97,8 @@ export default function DriverConsignmentsPage() {
   // ── Treasury boxes for settlement modal ──
   const [treasuryBoxes, setTreasuryBoxes] = useState<TreasuryBox[]>([]);
 
-  // ── Filter state for archive ──
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("CLEARED");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
-
-  // ── Expand / selection state ──
+  // ── Expand state ──
   const [expandedPayoutIds, setExpandedPayoutIds] = useState<string[]>([]);
-  const [selectedPayouts, setSelectedPayouts] = useState<string[]>([]);
 
   // ── Modal state for detailed order view ──
   const [modalPayout, setModalPayout] = useState<DriverPayout | null>(null);
@@ -131,57 +119,13 @@ export default function DriverConsignmentsPage() {
       .catch(() => setTreasuryBoxes([]));
   }, []);
 
-  // ── Fetch all data from settlements API ──
+  // ── Fetch all data from settlements API (PENDING only) ──
   const fetchAllData = useCallback(() => {
-    setArchiveLoading(true);
     setPendingLoading(true);
 
     fetch("/api/admin/drivers/settlements")
       .then((res) => res.json())
       .then((data) => {
-        // Map history (archive) data
-        const history = (data.history || []).map((p: any) => ({
-          id: p.payoutId,
-          driverId: p.driverId,
-          sequentialIndex: p.sequentialIndex,
-          payoutReference: p.payoutReference || `#${p.sequentialIndex}`,
-          status: p.status,
-          totalUsd: p.totalUsd,
-          totalLbp: p.totalLbp,
-          commissionUsd: p.commissionUsd,
-          netUsd: p.netUsd,
-          totalCollected: p.totalCollected ?? 0,
-          previousDebtUsd: p.previousDebtUsd,
-          previousDebtLbp: p.previousDebtLbp,
-          amountPaidUsd: p.amountPaidUsd,
-          amountPaidLbp: p.amountPaidLbp,
-          remainingUsd: p.remainingUsd,
-          remainingLbp: p.remainingLbp,
-          createdAt: "",
-          clearedAt: p.clearedAt,
-          driver: {
-            id: p.driverId,
-            driverId: p.driverInternalId,
-            firstName: p.driverName.split(" ")[0] || "",
-            lastName: p.driverName.split(" ").slice(1).join(" ") || "",
-            carriedDebtUsd: p.carriedDebtUsd,
-            carriedDebtLbp: p.carriedDebtLbp,
-          },
-          orders: (p.orders || []).map((o: any) => ({
-            id: o.id,
-            orderId: o.orderId,
-            customerName: "",
-            amountUsd: o.amountUsd,
-            amountLbp: o.amountLbp,
-            collectedUsd: o.collectedUsd,
-            collectedLbp: o.collectedLbp,
-            financialStatus: "",
-            location: "",
-            createdAt: "",
-            zone: { name: "" },
-          })),
-        }));
-
         // Map pending data
         const settlements = (data.settlements || []).map((p: any) => ({
           id: p.payoutId,
@@ -227,50 +171,19 @@ export default function DriverConsignmentsPage() {
           })),
         }));
 
-        setArchivePayouts(history);
         setPendingPayouts(settlements);
-        setArchiveLoading(false);
         setPendingLoading(false);
       })
       .catch(() => {
-        setArchivePayouts([]);
         setPendingPayouts([]);
-        setArchiveLoading(false);
         setPendingLoading(false);
       });
   }, []);
-
-  // ── Fetch archive payouts with filters (for detailed view) ──
-  const fetchArchivePayouts = useCallback(() => {
-    const params = new URLSearchParams();
-    if (search) params.set("search", search);
-    if (statusFilter !== "ALL") params.set("status", statusFilter);
-    if (startDate) params.set("startDate", startDate);
-    if (endDate) params.set("endDate", endDate);
-    params.set("sortBy", "clearedAt");
-    params.set("sortDir", sortOrder);
-
-    setArchiveLoading(true);
-    fetch(`/api/drivers/payouts?${params.toString()}`)
-      .then((res) => res.json())
-      .then((data) => {
-        setArchivePayouts(Array.isArray(data) ? data : []);
-        setArchiveLoading(false);
-      })
-      .catch(() => {
-        setArchivePayouts([]);
-        setArchiveLoading(false);
-      });
-  }, [search, statusFilter, startDate, endDate, sortOrder]);
 
   useEffect(() => {
     fetchAllData();
     fetchTreasuryBoxes();
   }, [fetchAllData, fetchTreasuryBoxes]);
-
-  useEffect(() => {
-    fetchArchivePayouts();
-  }, [fetchArchivePayouts]);
 
   // ── Toggle expanded row ──
   const toggleExpanded = (payoutId: string) => {
@@ -278,13 +191,6 @@ export default function DriverConsignmentsPage() {
       prev.includes(payoutId)
         ? prev.filter((id) => id !== payoutId)
         : [...prev, payoutId],
-    );
-  };
-
-  // ── Toggle payout selection ──
-  const togglePayoutSelection = (id: string) => {
-    setSelectedPayouts((prev) =>
-      prev.includes(id) ? prev.filter((pid) => pid !== id) : [...prev, id],
     );
   };
 
@@ -394,142 +300,6 @@ export default function DriverConsignmentsPage() {
     printWindow.focus();
   }, []);
 
-  // ── Export selected payouts summary to Excel ──
-  const exportSelectedToExcel = useCallback(() => {
-    const selected = archivePayouts.filter((p) =>
-      selectedPayouts.includes(p.id),
-    );
-    if (selected.length === 0) {
-      alert("Please select at least one payout to export.");
-      return;
-    }
-    const rows = selected.map((p) => ({
-      "Payout ID": p.payoutReference,
-      "Driver ID": p.driver.driverId,
-      Driver: `${p.driver.firstName} ${p.driver.lastName}`,
-      Status: p.status,
-      "Cleared Date": beirutDate(p.clearedAt || ""),
-      "Net Payout USD": p.netUsd.toFixed(2),
-      "Amount Paid USD": p.amountPaidUsd.toFixed(2),
-      "Carried Debt USD": p.remainingUsd.toFixed(2),
-      "Previous Debt USD": p.previousDebtUsd.toFixed(2),
-      "Commission USD": p.commissionUsd.toFixed(2),
-      "Total LBP": p.totalLbp.toLocaleString(),
-      "Order Count": p.orders.length,
-    }));
-    exportToExcel("Consignments_Archive_Export", rows);
-  }, [archivePayouts, selectedPayouts]);
-
-  // ── Export selected payouts orders to Excel ──
-  const exportSelectedOrdersToExcel = useCallback(() => {
-    const selected = archivePayouts.filter((p) =>
-      selectedPayouts.includes(p.id),
-    );
-    if (selected.length === 0) {
-      alert("Please select at least one payout to export.");
-      return;
-    }
-    const allOrders: any[] = [];
-    selected.forEach((p) => {
-      (p.orders || []).forEach((o) => {
-        allOrders.push({
-          "Payout ID": p.payoutReference,
-          "Driver ID": p.driver.driverId,
-          Driver: `${p.driver.firstName} ${p.driver.lastName}`,
-          "Order ID": o.orderId,
-          Customer: o.customerName,
-          Phone: o.customerPhone || "",
-          Address: o.customerAddress || "",
-          Zone: o.zone?.name || "",
-          "Amount USD": (o.amountUsd ?? 0).toFixed(2),
-          "Amount LBP": (o.amountLbp ?? 0).toLocaleString(),
-          "Collected USD": (o.collectedUsd ?? 0).toFixed(2),
-          "Collected LBP": (o.collectedLbp ?? 0).toLocaleString(),
-          "Driver Commission USD": (o.driverCommissionUsd ?? 0).toFixed(2),
-          "Fin Status": o.financialStatus,
-          Location: o.location,
-          Seller: o.merchant?.merchantName || "—",
-        });
-      });
-    });
-    exportToExcel("Consignments_Archive_Orders", allOrders);
-  }, [archivePayouts, selectedPayouts]);
-
-  // ── Print selected payouts as summary ──
-  const printSelectedSummaries = useCallback(() => {
-    const selected = archivePayouts.filter((p) =>
-      selectedPayouts.includes(p.id),
-    );
-    if (selected.length === 0) {
-      alert("Please select at least one payout to print.");
-      return;
-    }
-
-    let printContent = `
-      <html>
-        <head>
-          <title>Driver Consignments Summaries</title>
-          <style>
-            body { font-family: Arial, sans-serif; padding: 20px; color: black; }
-            h2 { border-bottom: 2px solid black; padding-bottom: 10px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-            th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-            th { background-color: #f2f2f2; font-weight: bold; }
-            .text-right { text-align: right; }
-          </style>
-        </head>
-        <body>
-          <h2>Driver Consignments — Selected Summaries</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Payout ID</th>
-                <th>Driver</th>
-                <th>Cleared</th>
-                <th class="text-right">Net Payout</th>
-                <th class="text-right">Amount Paid</th>
-                <th class="text-right">Carried Debt</th>
-                <th class="text-right">Prev Debt</th>
-                <th>Orders</th>
-              </tr>
-            </thead>
-            <tbody>`;
-
-    selected.forEach((p) => {
-      printContent += `
-        <tr>
-          <td>${p.payoutReference}</td>
-          <td>${p.driver.firstName} ${p.driver.lastName} (${p.driver.driverId})</td>
-          <td>${beirutDate(p.clearedAt || "")}</td>
-          <td class="text-right">$${p.netUsd.toFixed(2)}</td>
-          <td class="text-right">$${p.amountPaidUsd.toFixed(2)}</td>
-          <td class="text-right">$${p.remainingUsd.toFixed(2)}</td>
-          <td class="text-right">$${p.previousDebtUsd.toFixed(2)}</td>
-          <td>${p.orders.length}</td>
-        </tr>`;
-    });
-
-    printContent += `</tbody></table></body></html>`;
-
-    const printFrame = document.createElement("iframe");
-    printFrame.style.position = "absolute";
-    printFrame.style.top = "-9999px";
-    document.body.appendChild(printFrame);
-
-    const frameDoc = printFrame.contentWindow?.document;
-    if (frameDoc) {
-      frameDoc.open();
-      frameDoc.write(printContent);
-      frameDoc.close();
-    }
-
-    printFrame.contentWindow?.focus();
-    setTimeout(() => {
-      printFrame.contentWindow?.print();
-      document.body.removeChild(printFrame);
-    }, 250);
-  }, [archivePayouts, selectedPayouts]);
-
   // ── Open settlement modal ──
   const openSettlementModal = (payout: DriverPayout) => {
     setSettlementModal(payout);
@@ -569,321 +339,6 @@ export default function DriverConsignmentsPage() {
     }
   };
 
-  // ── Render archive table rows ──
-  const renderArchiveRows = (payouts: DriverPayout[]) => {
-    if (archiveLoading) {
-      return (
-        <tr>
-          <td colSpan={11} className="text-center py-12 text-gray-500">
-            Loading archive...
-          </td>
-        </tr>
-      );
-    }
-    if (payouts.length === 0) {
-      return (
-        <tr>
-          <td colSpan={11} className="text-center py-12 text-gray-500 italic">
-            No cleared payouts found matching the current filters.
-          </td>
-        </tr>
-      );
-    }
-    return payouts.map((payout) => {
-      const isExpanded = expandedPayoutIds.includes(payout.id);
-      const carriedDebtUsd = payout.remainingUsd ?? 0;
-      const hasShortPay = carriedDebtUsd > 0.01;
-
-      return (
-        <Fragment key={payout.id}>
-          {/* Main row */}
-          <tr
-            onClick={() => toggleExpanded(payout.id)}
-            className="border-b border-white/5 hover:bg-white/[0.03] transition-colors cursor-pointer group"
-          >
-            <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-              <input
-                type="checkbox"
-                checked={selectedPayouts.includes(payout.id)}
-                onChange={() => togglePayoutSelection(payout.id)}
-                className="w-4 h-4 rounded border-white/20 bg-[#0B0F17] text-cyan-600 focus:ring-cyan-500/50 focus:ring-offset-0 cursor-pointer accent-cyan-600"
-              />
-            </td>
-            <td className="px-4 py-3 font-mono text-cyan-400 text-sm">
-              {payout.payoutReference}
-            </td>
-            <td className="px-4 py-3 text-white text-sm font-medium">
-              {payout.driver.firstName} {payout.driver.lastName}
-              <span className="text-gray-600 text-xs ml-1">
-                ({payout.driver.driverId})
-              </span>
-            </td>
-            <td className="px-4 py-3 text-gray-300 text-xs">
-              {beirutDate(payout.clearedAt || payout.createdAt)}
-            </td>
-            <td className="px-4 py-3 text-green-400 text-sm text-right font-mono font-bold">
-              ${payout.netUsd.toFixed(2)}
-            </td>
-            <td className="px-4 py-3 text-emerald-400 text-sm text-right font-mono">
-              ${payout.amountPaidUsd.toFixed(2)}
-            </td>
-            <td
-              className={`px-4 py-3 text-sm text-right font-mono font-bold ${
-                hasShortPay ? "text-red-400" : "text-gray-500"
-              }`}
-            >
-              {hasShortPay ? `$${carriedDebtUsd.toFixed(2)}` : "$0.00"}
-            </td>
-            <td className="px-4 py-3 text-amber-400/70 text-sm text-right font-mono">
-              {payout.previousDebtUsd > 0
-                ? `$${payout.previousDebtUsd.toFixed(2)}`
-                : "$0.00"}
-            </td>
-            <td className="px-4 py-3 text-gray-300 text-sm text-right">
-              {payout.orders.length}
-            </td>
-            <td className="px-4 py-3">
-              <span
-                className={`px-2 py-0.5 text-[10px] font-bold rounded border ${
-                  payout.status === "CLEARED"
-                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                    : payout.status === "PAID"
-                      ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
-                      : "bg-amber-500/10 text-amber-400 border-amber-500/20"
-                }`}
-              >
-                {payout.status}
-              </span>
-            </td>
-            <td
-              className="px-4 py-3 text-center"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-center gap-1.5">
-                <button
-                  onClick={() => handleViewPrint(payout)}
-                  disabled={!payout.orders || payout.orders.length === 0}
-                  title="View / Print Orders"
-                  className="px-2.5 py-1 text-[10px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded hover:bg-cyan-500/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  🖨 View/Print
-                </button>
-                <button
-                  onClick={() => printPayoutInvoice(payout)}
-                  title="Export PDF"
-                  className="px-2 py-1 text-[10px] font-bold bg-red-500/10 text-red-400 border border-red-500/30 rounded hover:bg-red-500/20 transition-colors"
-                >
-                  📄 PDF
-                </button>
-                <button
-                  onClick={() => {
-                    const rows = (payout.orders || []).map((o) => ({
-                      "Order ID": o.orderId,
-                      Customer: o.customerName,
-                      Phone: o.customerPhone || "",
-                      Address: o.customerAddress || "",
-                      Zone: o.zone?.name || "",
-                      "Amount USD": (o.amountUsd ?? 0).toFixed(2),
-                      "Amount LBP": (o.amountLbp ?? 0).toLocaleString(),
-                      "Collected USD": (o.collectedUsd ?? 0).toFixed(2),
-                      "Collected LBP": (o.collectedLbp ?? 0).toLocaleString(),
-                      "Driver Commission USD": (
-                        o.driverCommissionUsd ?? 0
-                      ).toFixed(2),
-                      "Fin Status": o.financialStatus,
-                      Location: o.location,
-                      Seller: o.merchant?.merchantName || "—",
-                    }));
-                    exportToExcel(
-                      `Payout_${payout.payoutReference}_Orders`,
-                      rows,
-                    );
-                  }}
-                  title="Export to Excel"
-                  className="px-2 py-1 text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded hover:bg-emerald-500/20 transition-colors"
-                >
-                  📊 Excel
-                </button>
-              </div>
-            </td>
-          </tr>
-
-          {/* Expanded sub-row: Order details */}
-          {isExpanded && (
-            <tr>
-              <td
-                colSpan={11}
-                className="bg-[#0a0f1a] border-b border-white/10 px-6 py-5"
-              >
-                <div className="flex justify-between items-center mb-3">
-                  <h4 className="text-sm font-bold text-white uppercase tracking-wider">
-                    Itemized Orders — Payout {payout.payoutReference}
-                  </h4>
-                  <span className="text-xs text-gray-500">
-                    {payout.orders.length} order
-                    {payout.orders.length !== 1 ? "s" : ""}
-                  </span>
-                </div>
-
-                {payout.orders.length === 0 ? (
-                  <p className="text-gray-600 text-sm italic">
-                    No orders associated with this payout.
-                  </p>
-                ) : (
-                  <div className="overflow-x-auto rounded-lg border border-white/5">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-white/[0.02] text-gray-500 text-[11px] uppercase tracking-wider">
-                          <th className="px-4 py-2 font-semibold">
-                            Tracking ID
-                          </th>
-                          <th className="px-4 py-2 font-semibold">Customer</th>
-                          <th className="px-4 py-2 font-semibold">Zone</th>
-                          <th className="px-4 py-2 font-semibold">Seller</th>
-                          <th className="px-4 py-2 font-semibold text-right">
-                            Amount USD
-                          </th>
-                          <th className="px-4 py-2 font-semibold text-right">
-                            Amount LBP
-                          </th>
-                          <th className="px-4 py-2 font-semibold text-right">
-                            Collected USD
-                          </th>
-                          <th className="px-4 py-2 font-semibold text-right">
-                            Collected LBP
-                          </th>
-                          <th className="px-4 py-2 font-semibold text-right">
-                            Driver Commission
-                          </th>
-                          <th className="px-4 py-2 font-semibold">
-                            Fin Status
-                          </th>
-                          <th className="px-4 py-2 font-semibold">Location</th>
-                          <th className="px-4 py-2 font-semibold">
-                            Payout Ref
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {payout.orders.map((order) => (
-                          <tr
-                            key={order.id}
-                            className="border-b border-white/[0.03] hover:bg-white/[0.01] transition-colors"
-                          >
-                            <td className="px-4 py-2 font-mono text-cyan-400 text-xs">
-                              {order.orderId}
-                            </td>
-                            <td className="px-4 py-2 text-gray-300 text-sm">
-                              {order.customerName}
-                            </td>
-                            <td className="px-4 py-2 text-gray-500 text-xs">
-                              {order.zone?.name || "—"}
-                            </td>
-                            <td className="px-4 py-2 text-gray-400 text-xs">
-                              {order.merchant?.merchantName || "—"}
-                            </td>
-                            <td className="px-4 py-2 text-green-400 text-xs text-right font-mono">
-                              ${(order.amountUsd ?? 0).toFixed(2)}
-                            </td>
-                            <td className="px-4 py-2 text-gray-400 text-xs text-right">
-                              {(order.amountLbp ?? 0).toLocaleString()}
-                            </td>
-                            <td className="px-4 py-2 text-green-300 text-xs text-right font-mono">
-                              ${(order.collectedUsd ?? 0).toFixed(2)}
-                            </td>
-                            <td className="px-4 py-2 text-gray-400 text-xs text-right">
-                              {(order.collectedLbp ?? 0).toLocaleString()}
-                            </td>
-                            <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
-                              ${(order.driverCommissionUsd ?? 0).toFixed(2)}
-                            </td>
-                            <td className="px-4 py-2">
-                              <span
-                                className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border ${
-                                  order.financialStatus === "WO"
-                                    ? "bg-green-500/10 text-green-400 border-green-500/30"
-                                    : "bg-gray-500/10 text-gray-400 border-gray-500/30"
-                                }`}
-                              >
-                                {order.financialStatus}
-                              </span>
-                            </td>
-                            <td className="px-4 py-2 text-gray-500 text-xs">
-                              {order.location}
-                            </td>
-                            <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
-                              {order.payoutReference || order.payoutId || "—"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                {/* Summary row for expanded payout */}
-                {payout.orders.length > 0 && (
-                  <div className="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
-                    <div className="bg-[#121824] border border-white/5 rounded-lg p-3">
-                      <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold">
-                        Net Payout
-                      </p>
-                      <p className="text-green-400 font-mono text-lg font-bold">
-                        ${payout.netUsd.toFixed(2)}
-                      </p>
-                    </div>
-                    <div className="bg-[#121824] border border-white/5 rounded-lg p-3">
-                      <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold">
-                        Amount Paid
-                      </p>
-                      <p className="text-emerald-400 font-mono text-lg font-bold">
-                        ${payout.amountPaidUsd.toFixed(2)}
-                      </p>
-                    </div>
-                    <div
-                      className={`rounded-lg p-3 border ${
-                        hasShortPay
-                          ? "bg-red-500/5 border-red-500/20"
-                          : "bg-[#121824] border-white/5"
-                      }`}
-                    >
-                      <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold">
-                        Carried Debt
-                      </p>
-                      <p
-                        className={`font-mono text-lg font-bold ${
-                          hasShortPay ? "text-red-400" : "text-gray-500"
-                        }`}
-                      >
-                        ${carriedDebtUsd.toFixed(2)}
-                      </p>
-                    </div>
-                    <div className="bg-[#121824] border border-white/5 rounded-lg p-3">
-                      <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold">
-                        Previous Debt
-                      </p>
-                      <p className="text-amber-400/70 font-mono text-lg font-bold">
-                        ${payout.previousDebtUsd.toFixed(2)}
-                      </p>
-                    </div>
-                    <div className="bg-[#121824] border border-white/5 rounded-lg p-3">
-                      <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold">
-                        Driver Curr. Debt
-                      </p>
-                      <p className="text-orange-400 font-mono text-lg font-bold">
-                        ${(payout.driver.carriedDebtUsd ?? 0).toFixed(2)}
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </td>
-            </tr>
-          )}
-        </Fragment>
-      );
-    });
-  };
-
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -896,219 +351,11 @@ export default function DriverConsignmentsPage() {
               Driver Consignments
             </h1>
             <p className="text-gray-400 text-sm mt-1">
-              Manage driver payout settlements — archive cleared payouts and
-              process pending ones.
+              Settle pending driver payouts here — approve cleared payouts on
+              the Cleared Payouts page.
             </p>
           </div>
         </header>
-
-        {/* ═══════════════════════════════════════════════════════════════════ */}
-        {/* ── SECTION 1: ARCHIVE (Cleared/Paid Payouts) ──────────────────── */}
-        {/* ═══════════════════════════════════════════════════════════════════ */}
-        <section className="mb-10">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="h-1 w-1 rounded-full bg-emerald-400" />
-            <h2 className="text-lg font-bold text-white uppercase tracking-wider">
-              Cleared Payouts Archive
-            </h2>
-            <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-bold rounded">
-              READ-ONLY
-            </span>
-          </div>
-
-          {/* ── Filter Ribbon ── */}
-          <div className="bg-[#121824] border border-white/5 rounded-xl p-5 mb-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-            <div className="lg:col-span-2">
-              <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
-                Search
-              </label>
-              <input
-                type="text"
-                placeholder="Driver name, Driver ID, or Payout Batch #"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500/50 transition-colors"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
-                Status
-              </label>
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors appearance-none cursor-pointer"
-              >
-                <option value="CLEARED">Cleared</option>
-                <option value="PAID">Paid</option>
-                <option value="ALL">All Statuses</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
-                Start Date
-              </label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors [color-scheme:dark]"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
-                End Date
-              </label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500/50 transition-colors [color-scheme:dark]"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
-                Sort by Date
-              </label>
-              <button
-                onClick={() =>
-                  setSortOrder((prev) => (prev === "desc" ? "asc" : "desc"))
-                }
-                className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2 text-sm text-white hover:border-cyan-500/50 transition-colors text-left flex justify-between items-center"
-              >
-                <span>
-                  {sortOrder === "desc" ? "↓ Newest First" : "↑ Oldest First"}
-                </span>
-                <span className="text-gray-500 text-xs">↻</span>
-              </button>
-            </div>
-          </div>
-
-          {/* ── Bulk Action Toolbar ── */}
-          {selectedPayouts.length > 0 && (
-            <div className="bg-[#121824] border border-white/5 rounded-xl px-5 py-3 mb-4 flex flex-wrap items-center gap-3 shadow-2xl">
-              <span className="text-sm text-gray-400">
-                <span className="text-white font-bold">
-                  {selectedPayouts.length}
-                </span>{" "}
-                selected
-              </span>
-              <div className="h-5 w-px bg-white/10" />
-              <button
-                onClick={printSelectedSummaries}
-                className="bg-white/5 hover:bg-white/10 border border-white/10 text-white px-4 py-1.5 rounded text-xs font-semibold transition-colors flex items-center gap-1.5"
-              >
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"
-                  />
-                </svg>
-                Print / PDF Summaries
-              </button>
-              <button
-                onClick={exportSelectedToExcel}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded text-xs font-bold shadow transition-colors flex items-center gap-1.5"
-              >
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                  />
-                </svg>
-                Export Excel (Summaries)
-              </button>
-              <button
-                onClick={exportSelectedOrdersToExcel}
-                className="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-1.5 rounded text-xs font-bold shadow transition-colors flex items-center gap-1.5"
-              >
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                  />
-                </svg>
-                Export Excel (All Orders)
-              </button>
-            </div>
-          )}
-
-          {/* ── Archive Table ── */}
-          <div className="bg-[#121824] border border-white/5 rounded-xl overflow-hidden shadow-2xl">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-white/[0.03] border-b border-white/10 text-gray-400 text-xs uppercase tracking-wider">
-                    <th className="px-4 py-3 font-semibold w-10">
-                      <input
-                        type="checkbox"
-                        checked={
-                          archivePayouts.length > 0 &&
-                          selectedPayouts.length === archivePayouts.length
-                        }
-                        onChange={(e) =>
-                          e.target.checked
-                            ? setSelectedPayouts(
-                                archivePayouts.map((p) => p.id),
-                              )
-                            : setSelectedPayouts([])
-                        }
-                        className="cursor-pointer accent-cyan-600"
-                      />
-                    </th>
-                    <th className="px-4 py-3 font-semibold">Payout ID</th>
-                    <th className="px-4 py-3 font-semibold">Driver</th>
-                    <th className="px-4 py-3 font-semibold">Cleared Date</th>
-                    <th className="px-4 py-3 font-semibold text-right">
-                      Net Payout
-                    </th>
-                    <th className="px-4 py-3 font-semibold text-right">
-                      Amount Paid
-                    </th>
-                    <th className="px-4 py-3 font-semibold text-right">
-                      Carried Debt
-                    </th>
-                    <th className="px-4 py-3 font-semibold text-right">
-                      Prev Debt
-                    </th>
-                    <th className="px-4 py-3 font-semibold text-right">
-                      Orders
-                    </th>
-                    <th className="px-4 py-3 font-semibold">Status</th>
-                    <th className="px-4 py-3 font-semibold text-center">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>{renderArchiveRows(archivePayouts)}</tbody>
-              </table>
-            </div>
-          </div>
-        </section>
 
         {/* ═══════════════════════════════════════════════════════════════════ */}
         {/* ── SECTION 2: PENDING PAYOUTS ──────────────────────────────────── */}
@@ -1268,6 +515,9 @@ export default function DriverConsignmentsPage() {
                                             Customer
                                           </th>
                                           <th className="px-4 py-2 font-semibold">
+                                            Address
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold">
                                             Date Received
                                           </th>
                                           <th className="px-4 py-2 font-semibold text-right">
@@ -1291,59 +541,81 @@ export default function DriverConsignmentsPage() {
                                         </tr>
                                       </thead>
                                       <tbody>
-                                        {payout.orders.map((order) => (
-                                          <tr
-                                            key={order.id}
-                                            className="border-b border-white/[0.03] hover:bg-white/[0.01] transition-colors"
-                                          >
-                                            <td className="px-4 py-2 font-mono text-cyan-400 text-xs">
-                                              {order.orderId}
-                                            </td>
-                                            <td className="px-4 py-2 text-gray-400 text-xs">
-                                              {order.merchant?.merchantName ||
-                                                "—"}
-                                            </td>
-                                            <td className="px-4 py-2 text-gray-300 text-sm">
-                                              {order.customerName || "—"}
-                                            </td>
-                                            <td className="px-4 py-2 text-gray-500 text-xs">
-                                              {beirutDate(order.createdAt)}
-                                            </td>
-                                            <td className="px-4 py-2 text-green-400 text-xs text-right font-mono">
-                                              $
-                                              {(order.amountUsd ?? 0).toFixed(
-                                                2,
-                                              )}
-                                            </td>
-                                            <td className="px-4 py-2 text-gray-400 text-xs text-right">
-                                              {(
-                                                order.amountLbp ?? 0
-                                              ).toLocaleString()}
-                                            </td>
-                                            <td className="px-4 py-2 text-green-300 text-xs text-right font-mono">
-                                              $
-                                              {(
-                                                order.collectedUsd ?? 0
-                                              ).toFixed(2)}
-                                            </td>
-                                            <td className="px-4 py-2 text-gray-400 text-xs text-right">
-                                              {(
-                                                order.collectedLbp ?? 0
-                                              ).toLocaleString()}
-                                            </td>
-                                            <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
-                                              $
-                                              {(
-                                                order.driverCommissionUsd ?? 0
-                                              ).toFixed(2)}
-                                            </td>
-                                            <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
-                                              {order.payoutReference ||
-                                                order.payoutId ||
-                                                "—"}
-                                            </td>
-                                          </tr>
-                                        ))}
+                                        {payout.orders.map((order) => {
+                                          const actualCollectedUsd =
+                                            (order.collectedUsd ?? 0) === 0
+                                              ? (order.amountUsd ?? 0)
+                                              : (order.collectedUsd ?? 0);
+                                          const actualCollectedLbp =
+                                            (order.collectedLbp ?? 0) === 0
+                                              ? (order.amountLbp ?? 0)
+                                              : (order.collectedLbp ?? 0);
+                                          const isMismatched =
+                                            (order.amountUsd ?? 0) !==
+                                              actualCollectedUsd ||
+                                            (order.amountLbp ?? 0) !==
+                                              actualCollectedLbp;
+                                          return (
+                                            <tr
+                                              key={order.id}
+                                              className={`border-b border-white/[0.03] transition-colors ${
+                                                isMismatched
+                                                  ? "bg-yellow-500/20"
+                                                  : "hover:bg-white/[0.01]"
+                                              }`}
+                                            >
+                                              <td className="px-4 py-2 font-mono text-cyan-400 text-xs">
+                                                {order.orderId}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-400 text-xs">
+                                                {order.merchant?.merchantName ||
+                                                  "—"}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-300 text-sm">
+                                                {order.customerName || "—"}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-500 text-xs max-w-[160px] truncate">
+                                                {order.customerAddress || "—"}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-500 text-xs">
+                                                {beirutDate(order.createdAt)}
+                                              </td>
+                                              <td className="px-4 py-2 text-green-400 text-xs text-right font-mono">
+                                                $
+                                                {(order.amountUsd ?? 0).toFixed(
+                                                  2,
+                                                )}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-400 text-xs text-right">
+                                                {(
+                                                  order.amountLbp ?? 0
+                                                ).toLocaleString()}
+                                              </td>
+                                              <td className="px-4 py-2 text-green-300 text-xs text-right font-mono">
+                                                $
+                                                {(
+                                                  order.collectedUsd ?? 0
+                                                ).toFixed(2)}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-400 text-xs text-right">
+                                                {(
+                                                  order.collectedLbp ?? 0
+                                                ).toLocaleString()}
+                                              </td>
+                                              <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
+                                                $
+                                                {(
+                                                  order.driverCommissionUsd ?? 0
+                                                ).toFixed(2)}
+                                              </td>
+                                              <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
+                                                {order.payoutReference ||
+                                                  order.payoutId ||
+                                                  "—"}
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
                                       </tbody>
                                     </table>
                                   </div>
@@ -1483,7 +755,9 @@ export default function DriverConsignmentsPage() {
                   <thead>
                     <tr className="bg-white/[0.02] text-gray-500 text-[11px] uppercase tracking-wider">
                       <th className="px-4 py-2 font-semibold">Order ID</th>
+                      <th className="px-4 py-2 font-semibold">Date Received</th>
                       <th className="px-4 py-2 font-semibold">Customer</th>
+                      <th className="px-4 py-2 font-semibold">Address</th>
                       <th className="px-4 py-2 font-semibold">Zone</th>
                       <th className="px-4 py-2 font-semibold">Seller</th>
                       <th className="px-4 py-2 font-semibold text-right">
@@ -1496,46 +770,75 @@ export default function DriverConsignmentsPage() {
                         Collected USD
                       </th>
                       <th className="px-4 py-2 font-semibold text-right">
+                        Collected LBP
+                      </th>
+                      <th className="px-4 py-2 font-semibold text-right">
                         Driver Commission
                       </th>
                       <th className="px-4 py-2 font-semibold">Payout Ref</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(modalPayout.orders || []).map((order) => (
-                      <tr
-                        key={order.id}
-                        className="border-b border-white/[0.03] hover:bg-white/[0.01]"
-                      >
-                        <td className="px-4 py-2 font-mono text-cyan-400 text-xs">
-                          {order.orderId}
-                        </td>
-                        <td className="px-4 py-2 text-gray-300 text-sm">
-                          {order.customerName}
-                        </td>
-                        <td className="px-4 py-2 text-gray-500 text-xs">
-                          {order.zone?.name || "—"}
-                        </td>
-                        <td className="px-4 py-2 text-gray-400 text-xs">
-                          {order.merchant?.merchantName || "—"}
-                        </td>
-                        <td className="px-4 py-2 text-green-400 text-xs text-right font-mono">
-                          ${(order.amountUsd ?? 0).toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2 text-gray-400 text-xs text-right">
-                          {(order.amountLbp ?? 0).toLocaleString()}
-                        </td>
-                        <td className="px-4 py-2 text-green-300 text-xs text-right font-mono">
-                          ${(order.collectedUsd ?? 0).toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
-                          ${(order.driverCommissionUsd ?? 0).toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
-                          {order.payoutReference || order.payoutId || "—"}
-                        </td>
-                      </tr>
-                    ))}
+                    {(modalPayout.orders || []).map((order) => {
+                      const actualCollectedUsd =
+                        (order.collectedUsd ?? 0) === 0
+                          ? (order.amountUsd ?? 0)
+                          : (order.collectedUsd ?? 0);
+                      const actualCollectedLbp =
+                        (order.collectedLbp ?? 0) === 0
+                          ? (order.amountLbp ?? 0)
+                          : (order.collectedLbp ?? 0);
+                      const isMismatched =
+                        (order.amountUsd ?? 0) !== actualCollectedUsd ||
+                        (order.amountLbp ?? 0) !== actualCollectedLbp;
+                      return (
+                        <tr
+                          key={order.id}
+                          className={`border-b border-white/[0.03] transition-colors ${
+                            isMismatched
+                              ? "bg-yellow-500/20"
+                              : "hover:bg-white/[0.01]"
+                          }`}
+                        >
+                          <td className="px-4 py-2 font-mono text-cyan-400 text-xs">
+                            {order.orderId}
+                          </td>
+                          <td className="px-4 py-2 text-gray-500 text-xs whitespace-nowrap">
+                            {beirutDate(order.createdAt)}
+                          </td>
+                          <td className="px-4 py-2 text-gray-300 text-sm">
+                            {order.customerName}
+                          </td>
+                          <td className="px-4 py-2 text-gray-500 text-xs max-w-[160px] truncate">
+                            {order.customerAddress || "—"}
+                          </td>
+                          <td className="px-4 py-2 text-gray-500 text-xs">
+                            {order.zone?.name || "—"}
+                          </td>
+                          <td className="px-4 py-2 text-gray-400 text-xs">
+                            {order.merchant?.merchantName || "—"}
+                          </td>
+                          <td className="px-4 py-2 text-green-400 text-xs text-right font-mono">
+                            ${(order.amountUsd ?? 0).toFixed(2)}
+                          </td>
+                          <td className="px-4 py-2 text-gray-400 text-xs text-right">
+                            {(order.amountLbp ?? 0).toLocaleString()}
+                          </td>
+                          <td className="px-4 py-2 text-green-300 text-xs text-right font-mono">
+                            ${actualCollectedUsd.toFixed(2)}
+                          </td>
+                          <td className="px-4 py-2 text-gray-400 text-xs text-right">
+                            {(order.collectedLbp ?? 0).toLocaleString()}
+                          </td>
+                          <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
+                            ${(order.driverCommissionUsd ?? 0).toFixed(2)}
+                          </td>
+                          <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
+                            {order.payoutReference || order.payoutId || "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

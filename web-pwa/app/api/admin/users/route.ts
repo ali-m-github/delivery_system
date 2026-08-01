@@ -14,6 +14,9 @@ export async function GET() {
         email: true,
         role: true,
         permissions: true,
+        permissionGroupId: true,
+        permissionGroup: { select: { id: true, name: true } },
+        customPermissions: true,
       },
       orderBy: { username: "asc" },
     });
@@ -31,7 +34,15 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { username, email, password, role, permissions } = body;
+    const {
+      username,
+      email,
+      password,
+      role,
+      permissions,
+      permissionGroupId,
+      customPermissions,
+    } = body;
 
     // Validate required fields
     if (!username || !email || !password || !role) {
@@ -72,6 +83,8 @@ export async function POST(request: Request) {
         password: hashedPassword,
         role,
         permissions: permissions || [],
+        permissionGroupId: permissionGroupId || null,
+        customPermissions: customPermissions || [],
       },
       select: {
         id: true,
@@ -79,6 +92,9 @@ export async function POST(request: Request) {
         email: true,
         role: true,
         permissions: true,
+        permissionGroupId: true,
+        permissionGroup: { select: { id: true, name: true } },
+        customPermissions: true,
       },
     });
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -70,7 +71,8 @@ async function enrichOrdersWithCommission(payouts: any[]) {
   );
 }
 
-// GET /api/admin/drivers/settlements — Fetch PENDING + historical (CLEARED/PAID) DriverPayouts
+// GET /api/admin/drivers/settlements — Fetch PENDING DriverPayouts only.
+// Cleared payouts (PENDING_APPROVAL / SETTLED) are handled on the Cleared Payouts page.
 export async function GET() {
   try {
     // Fetch Active (Pending) Payouts
@@ -116,35 +118,6 @@ export async function GET() {
     // Enrich pending payouts with per-order commission
     const enrichedPending = await enrichOrdersWithCommission(pendingPayouts);
 
-    // Fetch Historical (Settled) Payouts — limited to recent 50
-    const settledPayouts = await prisma.driverPayout.findMany({
-      where: { status: { in: ["CLEARED", "PAID"] } },
-      include: {
-        driver: {
-          select: {
-            id: true,
-            driverId: true,
-            firstName: true,
-            lastName: true,
-            carriedDebtUsd: true,
-            carriedDebtLbp: true,
-          },
-        },
-        orders: {
-          select: {
-            id: true,
-            orderId: true,
-            amountUsd: true,
-            amountLbp: true,
-            collectedUsd: true,
-            collectedLbp: true,
-          },
-        },
-      },
-      orderBy: { clearedAt: "desc" },
-      take: 50,
-    });
-
     // Map to clean settlement objects
     const mapPayout = (p: any) => {
       const totalCollected = (p.orders || []).reduce(
@@ -180,18 +153,23 @@ export async function GET() {
     };
 
     const settlements = enrichedPending.map(mapPayout);
-    const history = settledPayouts.map(mapPayout);
 
-    return NextResponse.json({ settlements, history }, { status: 200 });
+    return NextResponse.json({ settlements }, { status: 200 });
   } catch (error: any) {
     console.error("GET settlements error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
-// POST /api/admin/drivers/settlements — Partial or full settlement
+// POST /api/admin/drivers/settlements — Phase 1 (Settle): record amount paid and
+// move a PENDING payout to PENDING_APPROVAL. Orders remain 'WD' until approval.
 export async function POST(request: Request) {
   try {
+    // ── Server-side RBAC: require DRIVERS_PAYOUT before any work ──
+    const authResult = await requireServerPermission(request, "DRIVERS_PAYOUT");
+    if (authResult instanceof Response) return authResult;
+    const { user } = authResult;
+
     const body = await request.json();
     const { payoutId, treasuryBoxId, amountPaidUsd, amountPaidLbp } = body;
 
@@ -235,8 +213,9 @@ export async function POST(request: Request) {
       const remainingUsd = payout.netUsd - safeAmountPaidUsd;
       const remainingLbp = payout.totalLbp - safeAmountPaidLbp;
 
-      // Always mark as CLEARED — any deficit is carried as debt on the DriverProfile
-      const newStatus = "CLEARED";
+      // Phase 1 (Settle): record the amount paid and move to PENDING_APPROVAL.
+      // Orders stay at 'WD' — they flip to 'WO' only during approval (Phase 2).
+      const newStatus = "PENDING_APPROVAL";
 
       // 2. Update the DriverPayout
       const updatedPayout = await tx.driverPayout.update({
@@ -247,7 +226,6 @@ export async function POST(request: Request) {
           remainingUsd,
           remainingLbp,
           status: newStatus,
-          clearedAt: new Date(),
         },
       });
 
@@ -264,16 +242,10 @@ export async function POST(request: Request) {
         });
       }
 
-      // 4. Update orders tied to this payout: enforce WO (With Office)
-      // Cash has physically moved from driver to office treasury
-      await tx.order.updateMany({
-        where: { driverPayoutId: payoutId },
-        data: {
-          financialStatus: "WO",
-        },
-      });
+      // Orders tied to this payout remain 'WD' at settle time — they are only
+      // flipped to 'WO' (With Office) when the payout is approved (Phase 2).
 
-      // 5. Create TreasuryTransaction (type "IN" — money coming into treasury)
+      // 4. Create TreasuryTransaction (type "IN" — money coming into treasury)
       await tx.treasuryTransaction.create({
         data: {
           boxId: treasuryBoxId,
@@ -285,7 +257,7 @@ export async function POST(request: Request) {
         },
       });
 
-      // 6. Update TreasuryBox balance
+      // 5. Update TreasuryBox balance
       const treasuryBox = await tx.treasuryBox.findUnique({
         where: { id: treasuryBoxId },
       });
@@ -313,10 +285,9 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         success: true,
-        message:
-          result.newStatus === "CLEARED"
-            ? "Settlement fully cleared."
-            : `Partial settlement recorded. Remaining: $${result.remainingUsd.toFixed(2)} USD carried as debt.`,
+        message: `Settlement recorded ($${result.remainingUsd.toFixed(
+          2,
+        )} USD carried as debt if short-paid). Payout is now PENDING_APPROVAL.`,
         ...result,
       },
       { status: 200 },

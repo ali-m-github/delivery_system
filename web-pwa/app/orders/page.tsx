@@ -9,6 +9,7 @@ import SharedOrderTable, {
 import GlobalSheetImportModal from "@/components/orders/GlobalSheetImportModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import BarcodeScannerModal from "@/components/BarcodeScannerModal";
+import PermissionGuard from "@/components/PermissionGuard";
 
 // ─── Header Alias Mapping for Bulk Upload ─────────────────────────────────────
 const HEADER_ALIASES: Record<string, string> = {
@@ -2600,6 +2601,9 @@ function OrdersPageInner() {
                                   Order ID
                                 </th>
                                 <th className="px-2 py-2 text-left font-medium">
+                                  Date Received
+                                </th>
+                                <th className="px-2 py-2 text-left font-medium">
                                   Seller
                                 </th>
                                 <th className="px-2 py-2 text-left font-medium">
@@ -2662,6 +2666,9 @@ function OrdersPageInner() {
                                       </button>
                                       <span>#{order.orderId}</span>
                                     </div>
+                                  </td>
+                                  <td className="px-2 py-1.5 text-xs text-gray-400 whitespace-nowrap">
+                                    {formatDDMMYYYY(order.createdAt)}
                                   </td>
                                   <td className="px-2 py-1.5 text-xs text-cyan-300 whitespace-nowrap">
                                     {order.merchant
@@ -3286,12 +3293,14 @@ function OrdersPageInner() {
                               {order.amountLbp}
                             </td>
                             <td className="px-3 py-2 text-center">
-                              <button
-                                onClick={() => openEditModal(order)}
-                                className="px-2 py-1 text-[10px] font-semibold rounded bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-all"
-                              >
-                                Edit
-                              </button>
+                              <PermissionGuard requires="ORDERS_EDIT">
+                                <button
+                                  onClick={() => openEditModal(order)}
+                                  className="px-2 py-1 text-[10px] font-semibold rounded bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-all"
+                                >
+                                  Edit
+                                </button>
+                              </PermissionGuard>
                             </td>
                           </tr>
                         ))}

@@ -349,6 +349,14 @@ export async function PATCH(request: Request) {
         if (!updateData.deliveredAt) {
           updateData.deliveredAt = new Date();
         }
+        // Collected defaults to the original order amount unless the driver
+        // explicitly recorded a different collected price.
+        if (updateData.collectedUsd === undefined) {
+          updateData.collectedUsd = existing.amountUsd ?? 0;
+        }
+        if (updateData.collectedLbp === undefined) {
+          updateData.collectedLbp = existing.amountLbp ?? 0;
+        }
       } else if (
         updateData.location === "ASSIGNED" ||
         updateData.location === "WITH_DRIVER"

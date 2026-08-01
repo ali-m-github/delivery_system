@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
 // GET /api/admin/treasury — List all TreasuryBoxes
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    // ── Server-side RBAC: require PAGE_ADMIN_TREASURY before exposing the
+    //    sensitive cashbox/ledger view ──
+    const auth = await requireServerPermission(request, "PAGE_ADMIN_TREASURY");
+    if (auth instanceof Response) return auth;
+
     const boxes = await prisma.treasuryBox.findMany({
       include: {
         transactions: {
@@ -26,6 +32,14 @@ export async function GET() {
 // POST /api/admin/treasury — Create a new TreasuryBox
 export async function POST(request: Request) {
   try {
+    // ── Server-side RBAC: require ACTION_TREASURY_TRANSACT before any
+    //    state-mutating cashbox operation ──
+    const auth = await requireServerPermission(
+      request,
+      "ACTION_TREASURY_TRANSACT",
+    );
+    if (auth instanceof Response) return auth;
+
     const body = await request.json();
     const { name, isPositive } = body;
 

@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import { SYSTEM_PERMISSIONS } from "@/lib/permissions";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Zone {
@@ -24,6 +26,9 @@ interface User {
   email: string;
   role: string;
   permissions: string[];
+  permissionGroupId: string | null;
+  permissionGroup?: { id: string; name: string } | null;
+  customPermissions: string[];
 }
 
 const PERMISSION_MAP: Record<string, string[]> = {
@@ -38,11 +43,80 @@ const PERMISSION_MAP: Record<string, string[]> = {
   "Admin Functions": ["ZONES_MANAGE", "MERCHANTS_MANAGE", "USERS_MANAGE"],
 };
 
-type Tab = "employees" | "zones" | "drivers";
+// ─── Categorized Permission Taxonomy ───────────────────────────────────────────
+// Hierarchical catalog separating Page Access (route-level) from Actions
+// (button/action-level) to enable granular Page-Level and Button-Level control.
+const PERMISSION_TAXONOMY = {
+  Pages: [
+    { id: "PAGE_DASHBOARD", label: "View Dashboard" },
+    { id: "PAGE_SETTLEMENTS", label: "View Settlements (Pending)" },
+    { id: "PAGE_CLEARED_PAYOUTS", label: "View Cleared Payouts" },
+    { id: "PAGE_ADMIN", label: "View Admin Panel" },
+    { id: "PAGE_ORDERS", label: "View Orders" },
+    { id: "PAGE_ADMIN_TREASURY", label: "View Treasury (Cashbox)" },
+  ],
+  Actions: [
+    { id: "ACTION_PAYOUT_INITIATE", label: "Initiate Payout" },
+    { id: "ACTION_PAYOUT_APPROVE", label: "Approve Payout" },
+    { id: "ACTION_ORDER_EDIT", label: "Edit Orders" },
+    { id: "ACTION_DRIVER_CREATE", label: "Create Drivers" },
+    {
+      id: "ACTION_TREASURY_TRANSACT",
+      label: "Treasury Transactions (Add/Withdraw/Transfer)",
+    },
+  ],
+} as const;
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// Display metadata (section header + helper text) for each taxonomy section.
+const PERMISSION_SECTION_META: Record<
+  string,
+  { label: string; description: string }
+> = {
+  Pages: {
+    label: "Page Access",
+    description: "Grant access to specific pages/routes.",
+  },
+  Actions: {
+    label: "Button Actions",
+    description: "Grant access to specific buttons/actions.",
+  },
+};
+
+type Tab = "employees" | "zones" | "drivers" | "permission-groups";
+
+const VALID_TABS: Tab[] = [
+  "employees",
+  "zones",
+  "drivers",
+  "permission-groups",
+];
+
+// ─── Default Export (Suspense Boundary) ───────────────────────────────────────
 export default function AdminPage() {
-  const [activeTab, setActiveTab] = useState<Tab>("employees");
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center">
+          Loading...
+        </div>
+      }
+    >
+      <AdminContent />
+    </Suspense>
+  );
+}
+
+// ─── Inner Component (uses useSearchParams) ────────────────────────────────────
+function AdminContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const rawTab = searchParams.get("tab");
+  const activeTab: Tab = VALID_TABS.includes(rawTab as Tab)
+    ? (rawTab as Tab)
+    : "employees";
+
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
   useEffect(() => {
@@ -60,7 +134,12 @@ export default function AdminPage() {
     { key: "employees", label: "Employees" },
     { key: "zones", label: "Zones" },
     { key: "drivers", label: "Drivers" },
+    { key: "permission-groups", label: "Permission Groups" },
   ];
+
+  const handleTabChange = (tab: Tab) => {
+    router.push(`${pathname}?tab=${tab}`);
+  };
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
@@ -84,7 +163,7 @@ export default function AdminPage() {
             <button
               key={tab.key}
               type="button"
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => handleTabChange(tab.key)}
               className={`px-5 py-3 text-sm font-medium rounded-t-lg transition-all duration-200 ${
                 activeTab === tab.key
                   ? "text-cyan-400 border-b-2 border-cyan-400 bg-white/5"
@@ -103,6 +182,8 @@ export default function AdminPage() {
           <ZonesTab />
         ) : activeTab === "drivers" ? (
           <DriversTab />
+        ) : activeTab === "permission-groups" ? (
+          <PermissionGroupsTab />
         ) : null}
       </div>
     </div>
@@ -1488,6 +1569,223 @@ function DriversTab() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  Permission Groups Tab
+// ══════════════════════════════════════════════════════════════════════════════
+interface PermissionGroup {
+  id: string;
+  name: string;
+  permissions: string[];
+  _count?: { users: number };
+}
+
+function PermissionGroupsTab() {
+  const [groups, setGroups] = useState<PermissionGroup[]>([]);
+  const [groupName, setGroupName] = useState("");
+  const [selectedPerms, setSelectedPerms] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const fetchGroups = async () => {
+    try {
+      const res = await fetch("/api/admin/permission-groups");
+      if (res.ok) {
+        const data = await res.json();
+        setGroups(data);
+      }
+    } catch {
+      // silently fail
+    }
+  };
+
+  useEffect(() => {
+    fetchGroups();
+  }, []);
+
+  const togglePerm = (perm: string) => {
+    setSelectedPerms((prev) =>
+      prev.includes(perm) ? prev.filter((p) => p !== perm) : [...prev, perm],
+    );
+  };
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!groupName.trim()) return;
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const res = await fetch("/api/admin/permission-groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: groupName.trim(),
+          permissions: selectedPerms,
+        }),
+      });
+
+      if (res.ok) {
+        setGroupName("");
+        setSelectedPerms([]);
+        await fetchGroups();
+      } else {
+        const data = await res.json();
+        setError(data.error || "Failed to create permission group");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* ── Create Permission Group Form ── */}
+      <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-6 shadow-[0_0_15px_rgba(6,182,212,0.1)]">
+        <h2 className="text-lg font-semibold text-gray-200 mb-4">
+          Create Permission Group
+        </h2>
+        <form onSubmit={handleCreate} className="space-y-4">
+          <div>
+            <label
+              htmlFor="groupName"
+              className="block text-xs font-medium text-gray-400 mb-1.5"
+            >
+              Group Name
+            </label>
+            <input
+              id="groupName"
+              type="text"
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+              placeholder="e.g. Finance Team"
+              className="w-full sm:w-64 px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-gray-100 placeholder-gray-600
+                         focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500/50
+                         transition-all duration-200 text-sm"
+            />
+          </div>
+
+          {/* Permission Checkboxes — categorized taxonomy */}
+          <div>
+            <span className="block text-xs font-medium text-gray-400 mb-3">
+              Permissions
+            </span>
+            <div className="space-y-5">
+              {Object.entries(PERMISSION_TAXONOMY).map(([category, items]) => {
+                const meta = PERMISSION_SECTION_META[category];
+                return (
+                  <div key={category}>
+                    {/* Section Header */}
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-sm font-bold text-gray-200 uppercase tracking-wider">
+                        {meta.label}
+                      </span>
+                      <span className="h-px flex-1 bg-white/10" />
+                    </div>
+                    <p className="text-[10px] text-cyan-400/80 mb-2">
+                      {meta.description}
+                    </p>
+                    <div className="flex flex-wrap gap-3">
+                      {items.map((item) => (
+                        <label
+                          key={item.id}
+                          className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer group"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedPerms.includes(item.id)}
+                            onChange={() => togglePerm(item.id)}
+                            className="w-4 h-4 rounded border-white/20 bg-white/5 text-cyan-500
+                                       focus:ring-cyan-500/40 focus:ring-offset-0
+                                       cursor-pointer accent-cyan-500"
+                          />
+                          <span className="group-hover:text-white transition-colors duration-200">
+                            {item.label}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading || !groupName.trim()}
+            className="px-6 py-2.5 rounded-lg text-sm font-semibold text-white bg-gradient-to-r from-cyan-500 to-cyan-600
+                       hover:from-cyan-400 hover:to-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed
+                       shadow-[0_0_12px_rgba(6,182,212,0.3)] hover:shadow-[0_0_20px_rgba(6,182,212,0.5)]
+                       transition-all duration-200"
+          >
+            {loading ? "Creating..." : "Create Group"}
+          </button>
+          {error && <p className="text-xs text-red-400">{error}</p>}
+        </form>
+      </div>
+
+      {/* ── Groups List ── */}
+      <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-6 shadow-[0_0_15px_rgba(6,182,212,0.1)]">
+        <h2 className="text-lg font-semibold text-gray-200 mb-4">
+          Permission Groups ({groups.length})
+        </h2>
+        {groups.length === 0 ? (
+          <p className="text-sm text-gray-500">
+            No permission groups created yet.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead>
+                <tr className="border-b border-white/10 text-xs text-gray-500 uppercase tracking-wider">
+                  <th className="py-3 px-4 font-medium">Name</th>
+                  <th className="py-3 px-4 font-medium">Permissions</th>
+                  <th className="py-3 px-4 font-medium">Users</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {groups.map((group) => (
+                  <tr
+                    key={group.id}
+                    className="hover:bg-white/[0.03] transition-colors duration-150"
+                  >
+                    <td className="py-3 px-4 text-gray-200 font-medium">
+                      {group.name}
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex flex-wrap gap-1.5">
+                        {group.permissions.length === 0 ? (
+                          <span className="text-xs text-gray-600">None</span>
+                        ) : (
+                          group.permissions.map((perm) => (
+                            <span
+                              key={perm}
+                              className="inline-block px-2 py-0.5 rounded text-[10px] font-medium
+                                         bg-cyan-500/10 text-cyan-300 border border-cyan-500/20"
+                            >
+                              {perm.replace(/_/g, " ")}
+                            </span>
+                          ))
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 text-gray-400">
+                      {group._count?.users ?? 0}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  Employees Tab
 // ══════════════════════════════════════════════════════════════════════════════
 function EmployeesTab() {
@@ -1499,6 +1797,11 @@ function EmployeesTab() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("EMPLOYEE");
   const [selectedPermissions, setSelectedPermissions] = useState<string[]>([]);
+  const [permissionGroups, setPermissionGroups] = useState<
+    { id: string; name: string; permissions: string[] }[]
+  >([]);
+  const [permissionGroupId, setPermissionGroupId] = useState("");
+  const [customPermissions, setCustomPermissions] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(
@@ -1517,8 +1820,21 @@ function EmployeesTab() {
     }
   };
 
+  const fetchPermissionGroups = async () => {
+    try {
+      const res = await fetch("/api/admin/permission-groups");
+      if (res.ok) {
+        const data = await res.json();
+        setPermissionGroups(data);
+      }
+    } catch {
+      // silently fail
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
+    fetchPermissionGroups();
   }, []);
 
   const togglePermission = (perm: string) => {
@@ -1538,6 +1854,12 @@ function EmployeesTab() {
     );
   };
 
+  const toggleCustomPermission = (perm: string) => {
+    setCustomPermissions((prev) =>
+      prev.includes(perm) ? prev.filter((p) => p !== perm) : [...prev, perm],
+    );
+  };
+
   const resetEmployeeForm = () => {
     setUsername("");
     setFirstName("");
@@ -1546,6 +1868,8 @@ function EmployeesTab() {
     setPassword("");
     setRole("EMPLOYEE");
     setSelectedPermissions([]);
+    setPermissionGroupId("");
+    setCustomPermissions([]);
     setEditingEmployeeId(null);
   };
 
@@ -1567,6 +1891,8 @@ function EmployeesTab() {
         username: username.trim(),
         role,
         permissions: selectedPermissions,
+        permissionGroupId: permissionGroupId || null,
+        customPermissions,
       };
       if (!editingEmployeeId) {
         // Create mode: email and password are required
@@ -1734,6 +2060,36 @@ function EmployeesTab() {
             </select>
           </div>
 
+          {/* Permission Group */}
+          <div>
+            <label
+              htmlFor="permissionGroupId"
+              className="block text-xs font-medium text-gray-400 mb-1.5"
+            >
+              Permission Group
+            </label>
+            <select
+              id="permissionGroupId"
+              value={permissionGroupId}
+              onChange={(e) => setPermissionGroupId(e.target.value)}
+              className="w-full sm:w-64 px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-gray-100
+                         focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500/50
+                         transition-all duration-200 text-sm appearance-none cursor-pointer"
+            >
+              <option value="" className="bg-gray-900">
+                No group (custom permissions only)
+              </option>
+              {permissionGroups.map((group) => (
+                <option key={group.id} value={group.id} className="bg-gray-900">
+                  {group.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[10px] text-gray-500 italic">
+              The selected group's permissions are granted to this user.
+            </p>
+          </div>
+
           {/* Permissions */}
           <div>
             <span className="block text-xs font-medium text-gray-400 mb-3">
@@ -1787,6 +2143,37 @@ function EmployeesTab() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Custom Permissions (layered on top of the Permission Group) */}
+          <div>
+            <span className="block text-xs font-medium text-gray-400 mb-1.5">
+              Custom Permissions
+            </span>
+            <p className="text-[10px] text-cyan-400/80 mb-3">
+              These permissions are added on top of the selected Permission
+              Group.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {SYSTEM_PERMISSIONS.map((perm) => (
+                <label
+                  key={perm}
+                  className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer group"
+                >
+                  <input
+                    type="checkbox"
+                    checked={customPermissions.includes(perm)}
+                    onChange={() => toggleCustomPermission(perm)}
+                    className="w-4 h-4 rounded border-white/20 bg-white/5 text-purple-500
+                               focus:ring-purple-500/40 focus:ring-offset-0
+                               cursor-pointer accent-purple-500"
+                  />
+                  <span className="group-hover:text-white transition-colors duration-200">
+                    {perm.replace(/_/g, " ")}
+                  </span>
+                </label>
+              ))}
             </div>
           </div>
 
@@ -1919,6 +2306,8 @@ function EmployeesTab() {
                             setEmail(user.email);
                             setRole(user.role);
                             setSelectedPermissions(user.permissions);
+                            setPermissionGroupId(user.permissionGroupId || "");
+                            setCustomPermissions(user.customPermissions || []);
                             setPassword("");
                             // Scroll to form
                             window.scrollTo({ top: 0, behavior: "smooth" });

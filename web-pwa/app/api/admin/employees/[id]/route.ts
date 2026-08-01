@@ -1,20 +1,27 @@
-import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-import { hashPassword } from '@/helpers/auth';
+import { NextResponse } from "next/server";
+import { PrismaClient } from "@prisma/client";
+import { hashPassword } from "@/helpers/auth";
 
 const prisma = new PrismaClient();
 
 // PUT /api/admin/employees/[id] — Update an employee (user)
 export async function PUT(
   request: Request,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const resolvedParams = await params;
     const id = resolvedParams.id;
 
     const body = await request.json();
-    const { username, password, role, permissions } = body;
+    const {
+      username,
+      password,
+      role,
+      permissions,
+      permissionGroupId,
+      customPermissions,
+    } = body;
 
     // Build conditional update payload
     const updateData: Record<string, unknown> = {};
@@ -22,15 +29,21 @@ export async function PUT(
     if (username) updateData.username = username;
     if (role) updateData.role = role;
     if (permissions !== undefined) updateData.permissions = permissions;
-    if (password && password.trim() !== '') {
+    if (permissionGroupId !== undefined) {
+      updateData.permissionGroupId = permissionGroupId || null;
+    }
+    if (customPermissions !== undefined) {
+      updateData.customPermissions = customPermissions;
+    }
+    if (password && password.trim() !== "") {
       updateData.password = await hashPassword(password);
     }
 
     // Ensure at least one field is being updated
     if (Object.keys(updateData).length === 0) {
       return NextResponse.json(
-        { error: 'No valid fields provided for update' },
-        { status: 400 }
+        { error: "No valid fields provided for update" },
+        { status: 400 },
       );
     }
 
@@ -43,20 +56,26 @@ export async function PUT(
         email: true,
         role: true,
         permissions: true,
+        permissionGroupId: true,
+        permissionGroup: { select: { id: true, name: true } },
+        customPermissions: true,
       },
     });
 
     return NextResponse.json(user, { status: 200 });
   } catch (error) {
-    console.error('PUT /api/admin/employees Error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    console.error("PUT /api/admin/employees Error:", error);
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }
 
 // DELETE /api/admin/employees/[id] — Delete an employee (user)
 export async function DELETE(
   request: Request,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const resolvedParams = await params;
@@ -64,9 +83,15 @@ export async function DELETE(
 
     await prisma.user.delete({ where: { id } });
 
-    return NextResponse.json({ message: 'Employee deleted successfully' }, { status: 200 });
+    return NextResponse.json(
+      { message: "Employee deleted successfully" },
+      { status: 200 },
+    );
   } catch (error) {
-    console.error('DELETE /api/admin/employees Error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    console.error("DELETE /api/admin/employees Error:", error);
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }

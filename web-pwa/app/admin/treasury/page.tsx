@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { createTreasuryBox } from "@/app/actions/treasury";
+import PermissionGuard from "@/components/PermissionGuard";
 
 interface TreasuryBox {
   id: string;
@@ -132,42 +133,45 @@ export default function TreasuryAdminPage() {
           </div>
         </div>
 
-        {/* Create New Box */}
-        <div className="bg-slate-900 border border-gray-800 rounded-xl p-6 mb-8">
-          <h2 className="text-lg font-bold text-white mb-4">
-            Create New Treasury Box
-          </h2>
-          <div className="flex flex-col md:flex-row gap-4">
-            <input
-              type="text"
-              placeholder="Box Name (e.g. Main Cash Register)"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              className="flex-1 bg-slate-800 border border-gray-700 text-white rounded-lg px-4 py-2.5 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none font-mono"
-              onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-            />
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={newIsPositive}
-                  onChange={(e) => setNewIsPositive(e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
-                />
-                <span className="text-sm text-gray-300">
-                  {newIsPositive ? "Asset (Income)" : "Liability (Expense)"}
-                </span>
-              </label>
+        {/* Create New Box — action-level RBAC: only users holding
+            ACTION_TREASURY_TRANSACT can mutate treasury state */}
+        <PermissionGuard requires="ACTION_TREASURY_TRANSACT">
+          <div className="bg-slate-900 border border-gray-800 rounded-xl p-6 mb-8">
+            <h2 className="text-lg font-bold text-white mb-4">
+              Create New Treasury Box
+            </h2>
+            <div className="flex flex-col md:flex-row gap-4">
+              <input
+                type="text"
+                placeholder="Box Name (e.g. Main Cash Register)"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                className="flex-1 bg-slate-800 border border-gray-700 text-white rounded-lg px-4 py-2.5 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none font-mono"
+                onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+              />
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={newIsPositive}
+                    onChange={(e) => setNewIsPositive(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                  />
+                  <span className="text-sm text-gray-300">
+                    {newIsPositive ? "Asset (Income)" : "Liability (Expense)"}
+                  </span>
+                </label>
+              </div>
+              <button
+                onClick={handleCreate}
+                disabled={creating || !newName.trim()}
+                className="bg-cyan-600/20 text-cyan-400 hover:bg-cyan-600/40 border border-cyan-500/30 px-6 py-2.5 rounded-lg font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {creating ? "Creating..." : "Create Box"}
+              </button>
             </div>
-            <button
-              onClick={handleCreate}
-              disabled={creating || !newName.trim()}
-              className="bg-cyan-600/20 text-cyan-400 hover:bg-cyan-600/40 border border-cyan-500/30 px-6 py-2.5 rounded-lg font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {creating ? "Creating..." : "Create Box"}
-            </button>
           </div>
-        </div>
+        </PermissionGuard>
 
         {/* Treasury Boxes List */}
         {boxes.length === 0 ? (

@@ -81,12 +81,23 @@ export default function SharedOrderTable({
       return `px-1.5 py-0.5 text-[10px] font-semibold rounded-full border ${colors[fin] || "text-gray-400 border-white/10 bg-white/5"}`;
     })();
 
-    // Apply strict fallback logic: if collected is 0, default to original amount.
-    const actualCollectedUsd = order.collectedUsd ?? order.amountUsd ?? 0;
-    const actualCollectedLbp = order.collectedLbp ?? order.amountLbp ?? 0;
+    // Apply fallback logic: for delivered orders, if collected is 0 (not
+    // explicitly recorded), default to the original order amount. The driver
+    // may still override with a different collected price when it is non-zero.
+    const isDelivered = order.location === "DELIVERED";
+    const rawCollectedUsd = Number(order.collectedUsd ?? 0);
+    const rawCollectedLbp = Number(order.collectedLbp ?? 0);
+    const actualCollectedUsd =
+      isDelivered && rawCollectedUsd === 0
+        ? Number(order.amountUsd ?? 0)
+        : rawCollectedUsd;
+    const actualCollectedLbp =
+      isDelivered && rawCollectedLbp === 0
+        ? Number(order.amountLbp ?? 0)
+        : rawCollectedLbp;
 
     const isMismatched =
-      order.location === "DELIVERED" &&
+      isDelivered &&
       (Number(order.amountUsd) !== Number(actualCollectedUsd) ||
         Number(order.amountLbp) !== Number(actualCollectedLbp));
 

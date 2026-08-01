@@ -2192,10 +2192,17 @@ export default function DriverProfilePage() {
                   <thead>
                     <tr className="bg-white/[0.03] border-b border-white/10 text-gray-400 uppercase tracking-wider">
                       <th className="px-4 py-2.5 font-semibold">Order ID</th>
+                      <th className="px-4 py-2.5 font-semibold">
+                        Date Received
+                      </th>
                       <th className="px-4 py-2.5 font-semibold">Seller</th>
                       <th className="px-4 py-2.5 font-semibold">Customer</th>
+                      <th className="px-4 py-2.5 font-semibold">Address</th>
                       <th className="px-4 py-2.5 font-semibold text-right">
                         $ Amt
+                      </th>
+                      <th className="px-4 py-2.5 font-semibold text-right">
+                        $ Collected
                       </th>
                       <th className="px-4 py-2.5 font-semibold text-right">
                         Actions
@@ -2206,89 +2213,117 @@ export default function DriverProfilePage() {
                     {(selectedPayout.orders || []).length === 0 ? (
                       <tr>
                         <td
-                          colSpan={5}
+                          colSpan={8}
                           className="text-center py-6 text-gray-500 italic"
                         >
                           No orders linked to this payout.
                         </td>
                       </tr>
                     ) : (
-                      (selectedPayout.orders || []).map((order: any) => (
-                        <tr
-                          key={order.id}
-                          className="border-b border-white/5 hover:bg-white/[0.02]"
-                        >
-                          <td className="px-4 py-2.5 font-mono text-cyan-400">
-                            {order.orderId}
-                          </td>
-                          <td className="px-4 py-2.5 text-white">
-                            {order.merchant?.merchantName || "—"}
-                          </td>
-                          <td className="px-4 py-2.5 text-white">
-                            {order.customerName}
-                          </td>
-                          <td className="px-4 py-2.5 text-right text-green-400 font-mono">
-                            ${(order.amountUsd ?? 0).toFixed(2)}
-                          </td>
-                          <td className="px-4 py-2.5 text-right">
-                            <div className="flex gap-1.5 justify-end">
-                              <button
-                                onClick={async () => {
-                                  const res = await fetch(
-                                    `/api/drivers/payouts/items/${order.id}`,
-                                    { method: "POST" },
-                                  );
-                                  if (res.ok) {
-                                    const data = await res.json();
-                                    if (data.deleted) {
-                                      // Last order — close modal entirely
-                                      setSelectedPayout(null);
-                                    } else {
-                                      // Orders remain — filter out the removed order locally
-                                      setSelectedPayout((prev: any) => {
-                                        if (!prev) return prev;
-                                        const updatedOrders = (
-                                          prev.orders || []
-                                        ).filter((o: any) => o.id !== order.id);
-                                        // Recalculate displayed totals from remaining orders
-                                        const newTotalUsd =
-                                          updatedOrders.reduce(
-                                            (s: number, o: any) =>
-                                              s + (o.amountUsd ?? 0),
-                                            0,
+                      (selectedPayout.orders || []).map((order: any) => {
+                        const actualCollectedUsd =
+                          (order.collectedUsd ?? 0) === 0
+                            ? (order.amountUsd ?? 0)
+                            : (order.collectedUsd ?? 0);
+                        const actualCollectedLbp =
+                          (order.collectedLbp ?? 0) === 0
+                            ? (order.amountLbp ?? 0)
+                            : (order.collectedLbp ?? 0);
+                        const isMismatched =
+                          (order.amountUsd ?? 0) !== actualCollectedUsd ||
+                          (order.amountLbp ?? 0) !== actualCollectedLbp;
+                        return (
+                          <tr
+                            key={order.id}
+                            className={`border-b border-white/5 ${
+                              isMismatched
+                                ? "bg-yellow-500/20"
+                                : "hover:bg-white/[0.02]"
+                            }`}
+                          >
+                            <td className="px-4 py-2.5 font-mono text-cyan-400">
+                              {order.orderId}
+                            </td>
+                            <td className="px-4 py-2.5 text-gray-400 text-xs whitespace-nowrap">
+                              {formatDate(order.createdAt)}
+                            </td>
+                            <td className="px-4 py-2.5 text-white">
+                              {order.merchant?.merchantName || "—"}
+                            </td>
+                            <td className="px-4 py-2.5 text-white">
+                              {order.customerName}
+                            </td>
+                            <td className="px-4 py-2.5 text-gray-400 text-xs max-w-[160px] truncate">
+                              {order.customerAddress || "—"}
+                            </td>
+                            <td className="px-4 py-2.5 text-right text-green-400 font-mono">
+                              ${(order.amountUsd ?? 0).toFixed(2)}
+                            </td>
+                            <td className="px-4 py-2.5 text-right text-green-300 font-mono">
+                              ${actualCollectedUsd.toFixed(2)}
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              <div className="flex gap-1.5 justify-end">
+                                <button
+                                  onClick={async () => {
+                                    const res = await fetch(
+                                      `/api/drivers/payouts/items/${order.id}`,
+                                      { method: "POST" },
+                                    );
+                                    if (res.ok) {
+                                      const data = await res.json();
+                                      if (data.deleted) {
+                                        // Last order — close modal entirely
+                                        setSelectedPayout(null);
+                                      } else {
+                                        // Orders remain — filter out the removed order locally
+                                        setSelectedPayout((prev: any) => {
+                                          if (!prev) return prev;
+                                          const updatedOrders = (
+                                            prev.orders || []
+                                          ).filter(
+                                            (o: any) => o.id !== order.id,
                                           );
-                                        const newTotalLbp =
-                                          updatedOrders.reduce(
-                                            (s: number, o: any) =>
-                                              s + (o.amountLbp ?? 0),
-                                            0,
-                                          );
-                                        return {
-                                          ...prev,
-                                          orders: updatedOrders,
-                                          totalUsd: newTotalUsd,
-                                          totalLbp: newTotalLbp,
-                                          netUsd: data.netUsd ?? prev.netUsd,
-                                          commissionUsd:
-                                            data.commissionUsd ??
-                                            prev.commissionUsd,
-                                        };
-                                      });
+                                          // Recalculate displayed totals from remaining orders
+                                          const newTotalUsd =
+                                            updatedOrders.reduce(
+                                              (s: number, o: any) =>
+                                                s + (o.amountUsd ?? 0),
+                                              0,
+                                            );
+                                          const newTotalLbp =
+                                            updatedOrders.reduce(
+                                              (s: number, o: any) =>
+                                                s + (o.amountLbp ?? 0),
+                                              0,
+                                            );
+                                          return {
+                                            ...prev,
+                                            orders: updatedOrders,
+                                            totalUsd: newTotalUsd,
+                                            totalLbp: newTotalLbp,
+                                            netUsd: data.netUsd ?? prev.netUsd,
+                                            commissionUsd:
+                                              data.commissionUsd ??
+                                              prev.commissionUsd,
+                                          };
+                                        });
+                                      }
+                                      await refreshData();
                                     }
-                                    await refreshData();
-                                  }
-                                }}
-                                className="px-2 py-1 rounded text-[10px] font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20 transition-colors"
-                              >
-                                Return to Driver
-                              </button>
-                              <button className="px-2 py-1 rounded text-[10px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
-                                Edit Price
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
+                                  }}
+                                  className="px-2 py-1 rounded text-[10px] font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20 transition-colors"
+                                >
+                                  Return to Driver
+                                </button>
+                                <button className="px-2 py-1 rounded text-[10px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
+                                  Edit Price
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>

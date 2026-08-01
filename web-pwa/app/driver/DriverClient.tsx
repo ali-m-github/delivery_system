@@ -86,6 +86,7 @@ type PayoutOrder = {
   collectedLbp: number;
   financialStatus: string;
   location: string;
+  createdAt: string;
   zone: { name: string };
   merchant?: { merchantName: string } | null;
   driverCommissionUsd?: number;
@@ -2014,10 +2015,16 @@ export default function DriverClient({
                                         <thead>
                                           <tr className="bg-white/[0.02] text-gray-500 text-[11px] uppercase tracking-wider">
                                             <th className="px-4 py-2 font-semibold">
+                                              Date Received
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold">
                                               Tracking ID
                                             </th>
                                             <th className="px-4 py-2 font-semibold">
                                               Customer
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold">
+                                              Address
                                             </th>
                                             <th className="px-4 py-2 font-semibold">
                                               Phone
@@ -2046,57 +2053,83 @@ export default function DriverClient({
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {payout.orders.map((order) => (
-                                            <tr
-                                              key={order.id}
-                                              className="border-b border-white/5 text-sm hover:bg-white/[0.02] transition-colors"
-                                            >
-                                              <td className="px-4 py-2 font-mono text-cyan-400">
-                                                {order.orderId}
-                                              </td>
-                                              <td className="px-4 py-2 text-gray-300">
-                                                {order.customerName}
-                                              </td>
-                                              <td className="px-4 py-2 text-gray-400 font-mono text-xs">
-                                                {order.customerPhone || "—"}
-                                              </td>
-                                              <td className="px-4 py-2 text-gray-400">
-                                                {order.zone?.name || "—"}
-                                              </td>
-                                              <td className="px-4 py-2 text-gray-400">
-                                                {order.merchant?.merchantName ||
-                                                  "—"}
-                                              </td>
-                                              <td className="px-4 py-2 text-green-400 text-right font-mono">
-                                                $
-                                                {(order.amountUsd ?? 0).toFixed(
-                                                  2,
-                                                )}
-                                              </td>
-                                              <td className="px-4 py-2 text-yellow-400 text-right font-mono">
-                                                {(
-                                                  order.amountLbp ?? 0
-                                                ).toLocaleString()}
-                                              </td>
-                                              <td className="px-4 py-2 text-green-400 text-right font-mono">
-                                                $
-                                                {(
-                                                  order.collectedUsd ?? 0
-                                                ).toFixed(2)}
-                                              </td>
-                                              <td className="px-4 py-2 text-yellow-400 text-right font-mono">
-                                                {(
-                                                  order.collectedLbp ?? 0
-                                                ).toLocaleString()}
-                                              </td>
-                                              <td className="px-4 py-2 text-cyan-400 text-right font-mono">
-                                                $
-                                                {(
-                                                  order.driverCommissionUsd ?? 0
-                                                ).toFixed(2)}
-                                              </td>
-                                            </tr>
-                                          ))}
+                                          {payout.orders.map((order) => {
+                                            const actualCollectedUsd =
+                                              (order.collectedUsd ?? 0) === 0
+                                                ? (order.amountUsd ?? 0)
+                                                : (order.collectedUsd ?? 0);
+                                            const actualCollectedLbp =
+                                              (order.collectedLbp ?? 0) === 0
+                                                ? (order.amountLbp ?? 0)
+                                                : (order.collectedLbp ?? 0);
+                                            const isMismatched =
+                                              (order.amountUsd ?? 0) !==
+                                                actualCollectedUsd ||
+                                              (order.amountLbp ?? 0) !==
+                                                actualCollectedLbp;
+                                            return (
+                                              <tr
+                                                key={order.id}
+                                                className={`border-b border-white/5 text-sm transition-colors ${
+                                                  isMismatched
+                                                    ? "bg-yellow-500/20"
+                                                    : "hover:bg-white/[0.02]"
+                                                }`}
+                                              >
+                                                <td className="px-4 py-2 text-gray-500 text-xs whitespace-nowrap">
+                                                  {beirutDate(order.createdAt)}
+                                                </td>
+                                                <td className="px-4 py-2 font-mono text-cyan-400">
+                                                  {order.orderId}
+                                                </td>
+                                                <td className="px-4 py-2 text-gray-300">
+                                                  {order.customerName}
+                                                </td>
+                                                <td className="px-4 py-2 text-gray-400 text-xs max-w-[160px] truncate">
+                                                  {order.customerAddress || "—"}
+                                                </td>
+                                                <td className="px-4 py-2 text-gray-400 font-mono text-xs">
+                                                  {order.customerPhone || "—"}
+                                                </td>
+                                                <td className="px-4 py-2 text-gray-400">
+                                                  {order.zone?.name || "—"}
+                                                </td>
+                                                <td className="px-4 py-2 text-gray-400">
+                                                  {order.merchant
+                                                    ?.merchantName || "—"}
+                                                </td>
+                                                <td className="px-4 py-2 text-green-400 text-right font-mono">
+                                                  $
+                                                  {(
+                                                    order.amountUsd ?? 0
+                                                  ).toFixed(2)}
+                                                </td>
+                                                <td className="px-4 py-2 text-yellow-400 text-right font-mono">
+                                                  {(
+                                                    order.amountLbp ?? 0
+                                                  ).toLocaleString()}
+                                                </td>
+                                                <td className="px-4 py-2 text-green-400 text-right font-mono">
+                                                  $
+                                                  {(
+                                                    order.collectedUsd ?? 0
+                                                  ).toFixed(2)}
+                                                </td>
+                                                <td className="px-4 py-2 text-yellow-400 text-right font-mono">
+                                                  {(
+                                                    order.collectedLbp ?? 0
+                                                  ).toLocaleString()}
+                                                </td>
+                                                <td className="px-4 py-2 text-cyan-400 text-right font-mono">
+                                                  $
+                                                  {(
+                                                    order.driverCommissionUsd ??
+                                                    0
+                                                  ).toFixed(2)}
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
                                         </tbody>
                                       </table>
                                     </div>
