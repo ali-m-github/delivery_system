@@ -15,6 +15,9 @@ export async function GET(request: Request) {
     const boxes = await prisma.treasuryBox.findMany({
       include: {
         transactions: {
+          include: {
+            user: { select: { id: true, email: true, username: true } },
+          },
           orderBy: { createdAt: "desc" },
           take: 5,
         },

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 
 const LOCATION_LABELS: Record<string, string> = {
@@ -58,6 +58,17 @@ export default function SharedOrderTable({
     currentUser?.role === "ADMIN" ||
     currentUser?.permissions?.includes(perm) ||
     false;
+
+  // Select-all header checkbox. Reflects "all selected" and shows an
+  // indeterminate state when only some rows are checked.
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  const isIndeterminate = selectedOrderIds.length > 0 && !isAllSelected;
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = isIndeterminate;
+    }
+  }, [isIndeterminate, isAllSelected, selectedOrderIds]);
 
   const renderTableRow = (order: any) => {
     const sellerName =
@@ -370,7 +381,16 @@ export default function SharedOrderTable({
         <table className="w-full table-auto text-[10px] md:text-xs min-w-[1200px]">
           <thead className="hidden lg:table-header-group text-[10px] leading-tight">
             <tr className="border-b border-gray-700 text-left">
-              <th className="px-0.5 py-2 whitespace-nowrap">SEL</th>
+              <th className="px-0.5 py-2 whitespace-nowrap">
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={isAllSelected}
+                  onChange={onToggleSelectAll}
+                  title="Select all"
+                  className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
+                />
+              </th>
               <th className="px-0.5 py-2 whitespace-nowrap">ID</th>
               <th className="px-0.5 py-2 whitespace-nowrap">DATE</th>
               <th className="px-0.5 py-2 whitespace-nowrap">SELLER</th>

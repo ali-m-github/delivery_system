@@ -11,6 +11,45 @@ export default function StatementsPage() {
   const [loading, setLoading] = useState(true);
   const [selectedStatement, setSelectedStatement] = useState<any | null>(null);
 
+  // ── Pay Statement Modal State ──
+  const [payStatement, setPayStatement] = useState<any | null>(null);
+  const [treasuryBoxes, setTreasuryBoxes] = useState<any[]>([]);
+  const [payBoxId, setPayBoxId] = useState("");
+  const [payAmountUsd, setPayAmountUsd] = useState(0);
+  const [payAmountLbp, setPayAmountLbp] = useState(0);
+  const [paying, setPaying] = useState(false);
+
+  // Cash-seller flat fee (seller rate + profit rate) overrides any zone rate
+  // for that seller.
+  const effectiveShipUsd = (stmt: any, order: any) => {
+    const merchant = stmt.merchant || {};
+    if (merchant.isCashSeller && merchant.defaultSellerRate != null) {
+      return (
+        (Number(merchant.defaultSellerRate) || 0) +
+        (Number(merchant.defaultProfitRate) || 0)
+      );
+    }
+    const rate = merchant.zoneRates?.find(
+      (zr: any) =>
+        String(zr.zoneId) === String(order.zoneId) ||
+        String(zr.zoneId) === String(order.zone?.name),
+    );
+    return rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
+  };
+
+  const effectiveShipLbp = (stmt: any, order: any) => {
+    const merchant = stmt.merchant || {};
+    if (merchant.isCashSeller && merchant.defaultSellerRate != null) {
+      return 0; // cash sellers are flat USD
+    }
+    const rate = merchant.zoneRates?.find(
+      (zr: any) =>
+        String(zr.zoneId) === String(order.zoneId) ||
+        String(zr.zoneId) === String(order.zone?.name),
+    );
+    return rate?.rateLbp ?? 0;
+  };
+
   useEffect(() => {
     const fetchStatements = async () => {
       setLoading(true);
@@ -32,6 +71,59 @@ export default function StatementsPage() {
     fetchStatements();
   }, [merchantIdFilter]);
 
+  // ── Fetch treasury boxes for the pay modal ──
+  useEffect(() => {
+    fetch("/api/admin/treasury")
+      .then((res) => res.json())
+      .then((data) => setTreasuryBoxes(Array.isArray(data) ? data : []))
+      .catch(() => setTreasuryBoxes([]));
+  }, []);
+
+  // ── Open the pay statement modal (prefill net amount, editable) ──
+  const openPayStatement = (stmt: any) => {
+    setPayStatement(stmt);
+    setPayBoxId("");
+    setPayAmountUsd(stmt.netUsd ?? 0);
+    setPayAmountLbp(stmt.netLbp ?? 0);
+  };
+
+  // ── Submit statement payment ──
+  const handlePayStatement = async () => {
+    if (!payStatement || !payBoxId) return;
+    setPaying(true);
+    try {
+      const res = await fetch(`/api/statements/${payStatement.id}/pay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          treasuryBoxId: payBoxId,
+          amountUsd: payAmountUsd,
+          amountLbp: payAmountLbp,
+        }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        alert(
+          result.message || "Statement payment recorded (pending approval).",
+        );
+        setPayStatement(null);
+        // refresh the statement list
+        const url = merchantIdFilter
+          ? `/api/statements?merchantId=${merchantIdFilter}`
+          : `/api/statements`;
+        const fres = await fetch(url);
+        if (fres.ok) setStatements(await fres.json());
+      } else {
+        alert(result.error || "Failed to pay statement.");
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Network error during statement payment.");
+    } finally {
+      setPaying(false);
+    }
+  };
+
   const exportToExcel = async (statement: any) => {
     const ExcelJS = (await import("exceljs")).default;
     const workbook = new ExcelJS.Workbook();
@@ -51,18 +143,14 @@ export default function StatementsPage() {
       { header: "Collected LBP", key: "collLbp", width: 15 },
       { header: "Shipping USD", key: "shipUsd", width: 15 },
       { header: "Shipping LBP", key: "shipLbp", width: 15 },
+      { header: "Profit USD", key: "profitUsd", width: 15 },
       { header: "Net USD", key: "netUsd", width: 15 },
       { header: "Net LBP", key: "netLbp", width: 15 },
     ];
 
     statement.orders.forEach((order: any) => {
-      const rate = statement.merchant.zoneRates?.find(
-        (zr: any) =>
-          String(zr.zoneId) === String(order.zoneId) ||
-          String(zr.zoneId) === String(order.zone?.name),
-      );
-      const shipUsd = rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
-      const shipLbp = rate?.rateLbp ?? 0;
+      const shipUsd = effectiveShipUsd(statement, order);
+      const shipLbp = effectiveShipLbp(statement, order);
       const origUsd = order.amountUsd ?? 0;
       const origLbp = order.amountLbp ?? 0;
       const collUsd = order.collectedUsd ?? order.amountUsd ?? 0;
@@ -79,6 +167,7 @@ export default function StatementsPage() {
         collLbp: collLbp,
         shipUsd: shipUsd,
         shipLbp: shipLbp,
+        profitUsd: statement.profitUsd ?? 0,
         netUsd: collUsd - shipUsd,
         netLbp: collLbp - shipLbp,
       });
@@ -145,9 +234,16 @@ export default function StatementsPage() {
                     <th className="px-6 py-4 font-medium text-right">
                       Shipping
                     </th>
+                    <th
+                      className="px-6 py-4 font-medium text-right text-yellow-400"
+                      title="Profit = the seller's profit rate per delivered/PS order. If the assigned driver's flat-rate exception equals the full fee (seller rate + profit rate), the driver keeps the whole fee and profit is $0."
+                    >
+                      Profit
+                    </th>
                     <th className="px-6 py-4 font-medium text-right text-cyan-400">
                       Net Payout
                     </th>
+                    <th className="px-6 py-4 font-medium">Status</th>
                     <th className="px-6 py-4 font-medium text-right">Action</th>
                   </tr>
                 </thead>
@@ -193,6 +289,12 @@ export default function StatementsPage() {
                       </td>
 
                       <td className="px-6 py-4 text-right">
+                        <div className="text-yellow-400 font-mono">
+                          ${(stmt.profitUsd ?? 0).toFixed(2)}
+                        </div>
+                      </td>
+
+                      <td className="px-6 py-4 text-right">
                         <div className="text-green-400 font-mono font-bold">
                           ${stmt.netUsd.toFixed(2)}
                         </div>
@@ -203,18 +305,65 @@ export default function StatementsPage() {
                         )}
                       </td>
 
-                      <td className="px-6 py-4 text-right">
-                        <button
-                          onClick={() => setSelectedStatement(stmt)}
-                          className="px-3 py-1.5 text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded hover:bg-cyan-500/20"
+                      <td className="px-6 py-4">
+                        <span
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded border ${
+                            stmt.paymentStatus === "PAID"
+                              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                              : stmt.paymentStatus === "PENDING_APPROVAL"
+                                ? "bg-amber-500/10 text-amber-400 border-amber-500/20 animate-pulse"
+                                : stmt.paymentStatus === "REJECTED"
+                                  ? "bg-red-500/10 text-red-400 border-red-500/20"
+                                  : "bg-gray-500/10 text-gray-400 border-gray-500/20"
+                          }`}
                         >
-                          View Details
-                        </button>
+                          {stmt.paymentStatus || "UNPAID"}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => setSelectedStatement(stmt)}
+                            className="px-3 py-1.5 text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded hover:bg-cyan-500/20"
+                          >
+                            View Details
+                          </button>
+                          <button
+                            onClick={() => openPayStatement(stmt)}
+                            disabled={
+                              stmt.paymentStatus === "PAID" ||
+                              stmt.paymentStatus === "PENDING_APPROVAL"
+                            }
+                            title={
+                              stmt.paymentStatus === "PAID"
+                                ? "This statement is already paid"
+                                : stmt.paymentStatus === "PENDING_APPROVAL"
+                                  ? "This statement has a payment pending approval"
+                                  : "Pay this statement to a cashbox"
+                            }
+                            className="px-3 py-1.5 text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {stmt.paymentStatus === "PENDING_APPROVAL"
+                              ? "Pending"
+                              : "Pay"}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              <div className="px-6 py-3 border-t border-white/5 text-[11px] leading-relaxed text-gray-500">
+                <span className="font-semibold text-gray-400">
+                  Profit note:
+                </span>{" "}
+                Profit = the configured profit rate per delivered/PS order for
+                this seller, <em>unless</em> the assigned driver flat-rate
+                exception equals the full fee (seller rate + profit rate). In
+                that case the driver keeps the entire fee, so the company profit
+                for the statement is $0 — this is intended, not a calculation
+                error.
+              </div>
             </div>
           )}
         </div>
@@ -282,6 +431,9 @@ export default function StatementsPage() {
                     | -{selectedStatement.shippingLbp.toLocaleString()} LL
                   </span>
                 </p>
+                <p className="text-xs font-mono text-yellow-400 mt-1.5 print:text-yellow-600">
+                  Profit: ${(selectedStatement.profitUsd ?? 0).toFixed(2)}
+                </p>
               </div>
               <div className="p-4 rounded bg-[#0B0F17] border border-cyan-500/30 print:bg-gray-50 print:border-gray-400">
                 <p className="text-cyan-400 text-xs uppercase font-bold tracking-wider mb-1 print:text-black">
@@ -315,14 +467,8 @@ export default function StatementsPage() {
                 </thead>
                 <tbody>
                   {selectedStatement.orders.map((order: any) => {
-                    const rate = selectedStatement.merchant.zoneRates?.find(
-                      (zr: any) =>
-                        String(zr.zoneId) === String(order.zoneId) ||
-                        String(zr.zoneId) === String(order.zone?.name),
-                    );
-                    const shipUsd =
-                      rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
-                    const shipLbp = rate?.rateLbp ?? 0;
+                    const shipUsd = effectiveShipUsd(selectedStatement, order);
+                    const shipLbp = effectiveShipLbp(selectedStatement, order);
 
                     const origUsd = order.amountUsd ?? 0;
                     const origLbp = order.amountLbp ?? 0;
@@ -408,6 +554,140 @@ export default function StatementsPage() {
                 End of Statement #{selectedStatement.sequentialIndex} &mdash;
                 Generated by Delivery System
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Pay Statement Modal (Phase 1: record payment, pending approval) ── */}
+      {payStatement && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-[#121824] border border-white/10 rounded-2xl w-full max-w-lg mx-4 shadow-2xl">
+            {/* Header */}
+            <div className="flex justify-between items-center p-6 border-b border-white/10">
+              <div>
+                <h2 className="text-lg font-bold text-white">
+                  Pay Statement #{payStatement.sequentialIndex}
+                </h2>
+                <p className="text-gray-500 text-sm mt-1">
+                  {payStatement.merchant.merchantName} &middot;{" "}
+                  {payStatement.orders?.length || 0} orders
+                </p>
+              </div>
+              <button
+                onClick={() => setPayStatement(null)}
+                className="text-gray-500 hover:text-gray-300 transition-colors text-2xl leading-none"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4">
+              {/* Financial summary */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-[#0B0F17] border border-white/5 rounded-lg p-3">
+                  <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold">
+                    Net Payout
+                  </p>
+                  <p className="text-green-400 font-mono text-lg font-bold">
+                    ${(payStatement.netUsd || 0).toFixed(2)}
+                  </p>
+                </div>
+                <div className="bg-[#0B0F17] border border-white/5 rounded-lg p-3">
+                  <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold">
+                    Net LBP
+                  </p>
+                  <p className="text-yellow-400 font-mono text-lg font-bold">
+                    {(payStatement.netLbp || 0).toLocaleString()} LL
+                  </p>
+                </div>
+              </div>
+
+              {/* Cashbox selection */}
+              <div>
+                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5 font-bold">
+                  Cashbox
+                </label>
+                <select
+                  value={payBoxId}
+                  onChange={(e) => setPayBoxId(e.target.value)}
+                  className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors appearance-none cursor-pointer"
+                >
+                  <option value="">— Select a Cashbox —</option>
+                  {treasuryBoxes.map((box) => (
+                    <option key={box.id} value={box.id}>
+                      {box.name} (Balance: ${box.balanceUsd.toFixed(2)})
+                    </option>
+                  ))}
+                </select>
+                {!payBoxId && (
+                  <p className="text-xs text-red-400 mt-1">
+                    Required — select a Cashbox to pay this statement.
+                  </p>
+                )}
+              </div>
+
+              {/* Amount Paid USD (editable, prefilled with net) */}
+              <div>
+                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5 font-bold">
+                  Amount Paid (USD)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={payAmountUsd}
+                  onChange={(e) =>
+                    setPayAmountUsd(parseFloat(e.target.value) || 0)
+                  }
+                  className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
+                />
+              </div>
+
+              {/* Amount Paid LBP (editable, prefilled with net) */}
+              <div>
+                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5 font-bold">
+                  Amount Paid (LBP)
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={payAmountLbp}
+                  onChange={(e) =>
+                    setPayAmountLbp(parseFloat(e.target.value) || 0)
+                  }
+                  className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
+                />
+              </div>
+
+              {/* Warning note */}
+              <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3">
+                <p className="text-amber-400 text-xs">
+                  ⚠ This records the payment as{" "}
+                  <strong className="text-amber-300">PENDING APPROVAL</strong>.
+                  The cashbox balance is updated only after an admin/editor
+                  approves the transaction.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex gap-3 p-6 border-t border-white/10">
+              <button
+                onClick={() => setPayStatement(null)}
+                className="flex-1 px-4 py-2.5 rounded-lg font-bold text-gray-400 bg-white/5 border border-white/10 hover:bg-white/10 transition-colors text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handlePayStatement}
+                disabled={!payBoxId || paying}
+                className="flex-1 px-4 py-2.5 rounded-lg font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed transition-colors text-sm shadow-lg shadow-emerald-500/20"
+              >
+                {paying ? "Processing..." : "✓ Record Payment"}
+              </button>
             </div>
           </div>
         </div>

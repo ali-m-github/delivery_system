@@ -16,6 +16,19 @@ const formatDate = (iso: string) => {
   });
 };
 
+// Build a windowed list of page numbers (0-based) with ellipsis markers.
+function getPageNumbers(current: number, total: number): (number | "…")[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i);
+  const pages: (number | "…")[] = [0];
+  const start = Math.max(1, current - 1);
+  const end = Math.min(total - 2, current + 1);
+  if (start > 1) pages.push("…");
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (end < total - 2) pages.push("…");
+  pages.push(total - 1);
+  return pages;
+}
+
 type TabKey = "ALL" | "WAREHOUSE" | "ASSIGNED" | "WD" | "WO" | "RETURN" | "PS";
 
 interface SellerClientProps {
@@ -29,6 +42,10 @@ export default function SellerClient({ merchant }: SellerClientProps) {
   const [isProcessing, setIsProcessing] = useState(false); // Track button loading state
   const [showImportModal, setShowImportModal] = useState(false);
 
+  // ── Orders Table Pagination State (50 per page by default) ──
+  const [orderPage, setOrderPage] = useState(0);
+  const [orderPageSize, setOrderPageSize] = useState(50);
+
   // ─── Business Model Settings State ──────────────────────────────────────
   const [isEditingModel, setIsEditingModel] = useState(false);
   const [editIsCashSeller, setEditIsCashSeller] = useState(
@@ -39,9 +56,9 @@ export default function SellerClient({ merchant }: SellerClientProps) {
       ? String(merchant.defaultSellerRate)
       : "",
   );
-  const [editCompanyRate, setEditCompanyRate] = useState(
-    merchant.defaultCompanyRate != null
-      ? String(merchant.defaultCompanyRate)
+  const [editProfitRate, setEditProfitRate] = useState(
+    merchant.defaultProfitRate != null
+      ? String(merchant.defaultProfitRate)
       : "",
   );
   const [isSavingModel, setIsSavingModel] = useState(false);
@@ -57,8 +74,8 @@ export default function SellerClient({ merchant }: SellerClientProps) {
           defaultSellerRate: editIsCashSeller
             ? parseFloat(editSellerRate) || null
             : null,
-          defaultCompanyRate: editIsCashSeller
-            ? parseFloat(editCompanyRate) || null
+          defaultProfitRate: editIsCashSeller
+            ? parseFloat(editProfitRate) || null
             : null,
         }),
       });
@@ -75,11 +92,17 @@ export default function SellerClient({ merchant }: SellerClientProps) {
     } finally {
       setIsSavingModel(false);
     }
-  }, [merchant.id, editIsCashSeller, editSellerRate, editCompanyRate, router]);
+  }, [merchant.id, editIsCashSeller, editSellerRate, editProfitRate, router]);
 
   useEffect(() => {
     setSelectedOrders([]);
+    setOrderPage(0);
   }, [activeTab]);
+
+  // Reset to first page whenever the per-page size changes
+  useEffect(() => {
+    setOrderPage(0);
+  }, [orderPageSize]);
 
   const orders: any[] = useMemo(() => merchant?.orders || [], [merchant]);
 
@@ -204,6 +227,20 @@ export default function SellerClient({ merchant }: SellerClientProps) {
 
   const filteredOrders = tabFilters[activeTab];
 
+  // ── Orders Table Pagination (50 per page by default) ──
+  const totalOrderPages = Math.max(
+    1,
+    Math.ceil(filteredOrders.length / orderPageSize),
+  );
+  const safeOrderPage = Math.min(orderPage, totalOrderPages - 1);
+  const visibleOrders = filteredOrders.slice(
+    safeOrderPage * orderPageSize,
+    safeOrderPage * orderPageSize + orderPageSize,
+  );
+  const orderRangeStart =
+    filteredOrders.length === 0 ? 0 : safeOrderPage * orderPageSize + 1;
+  const orderRangeEnd = safeOrderPage * orderPageSize + visibleOrders.length;
+
   // ─── Checkbox Logic ─────────────────────────────────────────────────────
   const isAllSelected =
     filteredOrders.length > 0 &&
@@ -238,9 +275,24 @@ export default function SellerClient({ merchant }: SellerClientProps) {
     let shippingUsd = 0;
     let shippingLbp = 0;
 
+    // Cash sellers charge a flat per-order fee (sellerRate + profitRate) that
+    // overrides any zone rate. The profit portion is the company's margin.
+    const isCashSeller = merchant.isCashSeller === true;
+    const cashProfitRate = isCashSeller
+      ? Number(merchant.defaultProfitRate ?? 0) || 0
+      : 0;
+    const cashSellerRate = isCashSeller
+      ? (Number(merchant.defaultSellerRate ?? 0) || 0) + cashProfitRate
+      : 0;
+
     checkedOrders.forEach((order: any) => {
       totalUsd += order.collectedUsd ?? order.amountUsd ?? 0;
       totalLbp += order.collectedLbp ?? order.amountLbp ?? 0;
+
+      if (isCashSeller) {
+        shippingUsd += cashSellerRate;
+        return;
+      }
 
       const rate = merchant.zoneRates?.find(
         (zr: any) =>
@@ -263,8 +315,19 @@ export default function SellerClient({ merchant }: SellerClientProps) {
       shippingLbp,
       netUsd: totalUsd - shippingUsd,
       netLbp: totalLbp - shippingLbp,
+      // Estimated profit (profitRate x orders). The authoritative value is
+      // computed server-side in /api/statements (driver exceptions applied).
+      profitUsd: cashProfitRate * checkedOrders.length,
     };
-  }, [selectedOrders, filteredOrders, activeTab, merchant.zoneRates]);
+  }, [
+    selectedOrders,
+    filteredOrders,
+    activeTab,
+    merchant.zoneRates,
+    merchant.isCashSeller,
+    merchant.defaultSellerRate,
+    merchant.defaultProfitRate,
+  ]);
 
   // ─── Execute Payout Transaction ─────────────────────────────────────────
   const handlePayout = async () => {
@@ -272,7 +335,7 @@ export default function SellerClient({ merchant }: SellerClientProps) {
 
     if (
       !confirm(
-        `Generate payout statement for ${selectedWOData.count} orders?\nNet Payout: $${selectedWOData.netUsd.toFixed(2)} | ${selectedWOData.netLbp.toLocaleString()} LL`,
+        `Generate payout statement for ${selectedWOData.count} orders?\nNet Payout: $${selectedWOData.netUsd.toFixed(2)} | ${selectedWOData.netLbp.toLocaleString()} LL\nEstimated Profit: $${selectedWOData.profitUsd.toFixed(2)}`,
       )
     ) {
       return;
@@ -293,6 +356,7 @@ export default function SellerClient({ merchant }: SellerClientProps) {
           shippingLbp: selectedWOData.shippingLbp,
           netUsd: selectedWOData.netUsd,
           netLbp: selectedWOData.netLbp,
+          profitUsd: selectedWOData.profitUsd,
         }),
       });
 
@@ -379,9 +443,9 @@ export default function SellerClient({ merchant }: SellerClientProps) {
                       ? String(merchant.defaultSellerRate)
                       : "",
                   );
-                  setEditCompanyRate(
-                    merchant.defaultCompanyRate != null
-                      ? String(merchant.defaultCompanyRate)
+                  setEditProfitRate(
+                    merchant.defaultProfitRate != null
+                      ? String(merchant.defaultProfitRate)
                       : "",
                   );
                   setIsEditingModel(true);
@@ -421,9 +485,9 @@ export default function SellerClient({ merchant }: SellerClientProps) {
                     </span>
                   </span>
                   <span className="text-xs text-gray-500">
-                    Company Rate:{" "}
+                    Profit Rate:{" "}
                     <span className="text-yellow-400 font-mono">
-                      ${(merchant.defaultCompanyRate ?? 0).toFixed(2)}
+                      ${(merchant.defaultProfitRate ?? 0).toFixed(2)}
                     </span>
                   </span>
                 </>
@@ -469,19 +533,20 @@ export default function SellerClient({ merchant }: SellerClientProps) {
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-gray-400 mb-1.5">
-                      Default Company Cost Rate ($USD)
+                      Default Profit Rate ($USD)
                     </label>
                     <input
                       type="number"
                       step="0.01"
                       min="0"
-                      placeholder="$3.00"
-                      value={editCompanyRate}
-                      onChange={(e) => setEditCompanyRate(e.target.value)}
+                      placeholder="$1.00"
+                      value={editProfitRate}
+                      onChange={(e) => setEditProfitRate(e.target.value)}
                       className="w-full bg-[#0B0F17] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors text-sm"
                     />
                     <p className="text-[10px] text-gray-600 mt-1">
-                      Baseline delivery cost / target margin
+                      Company profit per order. Total fee = seller rate +
+                      profit.
                     </p>
                   </div>
                 </div>
@@ -511,7 +576,10 @@ export default function SellerClient({ merchant }: SellerClientProps) {
         {merchant.isCashSeller && (
           <CashSellerWorkspace
             merchantId={merchant.id}
-            defaultSellerRate={merchant.defaultSellerRate ?? 4.0}
+            defaultSellerRate={
+              (merchant.defaultSellerRate ?? 4.0) +
+              (merchant.defaultProfitRate ?? 0)
+            }
           />
         )}
 
@@ -683,17 +751,82 @@ export default function SellerClient({ merchant }: SellerClientProps) {
 
         {/* ── Order Count ── */}
         <div className="mb-3 text-xs text-gray-500">
-          Showing {filteredOrders.length} of {normalizedOrders.length} order(s)
+          Showing {orderRangeStart}–{orderRangeEnd} of {filteredOrders.length}{" "}
+          order(s)
         </div>
 
         {/* ── Shared Order Table ── */}
         <SharedOrderTable
-          orders={filteredOrders}
+          orders={visibleOrders}
           selectedOrderIds={selectedOrders}
           onToggleSelectOrder={handleSelectOrder}
           onToggleSelectAll={handleSelectAll}
           isAllSelected={isAllSelected}
         />
+
+        {/* ── Order Pagination Controls ── */}
+        {filteredOrders.length > 0 && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs text-gray-500">
+              Page {safeOrderPage + 1} of {totalOrderPages}
+            </p>
+            <div className="flex items-center gap-2">
+              <select
+                value={orderPageSize}
+                onChange={(e) => setOrderPageSize(Number(e.target.value))}
+                className="bg-[#121824] border border-white/10 rounded px-2 py-1.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
+                title="Orders per page"
+              >
+                {[50, 100, 250, 500].map((size) => (
+                  <option key={size} value={size}>
+                    {size} / page
+                  </option>
+                ))}
+              </select>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setOrderPage((p) => Math.max(0, p - 1))}
+                  disabled={safeOrderPage === 0}
+                  className="px-2 py-1.5 text-xs font-bold text-gray-300 bg-white/5 border border-white/10 rounded hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  ‹ Prev
+                </button>
+                {getPageNumbers(safeOrderPage, totalOrderPages).map(
+                  (page, idx) =>
+                    page === "…" ? (
+                      <span
+                        key={`ellipsis-${idx}`}
+                        className="w-7 text-center text-gray-500 text-xs"
+                      >
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        key={page}
+                        onClick={() => setOrderPage(page)}
+                        className={`w-7 h-7 text-xs font-bold rounded transition-colors ${
+                          safeOrderPage === page
+                            ? "bg-cyan-500 text-[#0B0F17]"
+                            : "bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+                        }`}
+                      >
+                        {page + 1}
+                      </button>
+                    ),
+                )}
+                <button
+                  onClick={() =>
+                    setOrderPage((p) => Math.min(totalOrderPages - 1, p + 1))
+                  }
+                  disabled={safeOrderPage === totalOrderPages - 1}
+                  className="px-2 py-1.5 text-xs font-bold text-gray-300 bg-white/5 border border-white/10 rounded hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Next ›
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Import Google Sheets Modal ── */}

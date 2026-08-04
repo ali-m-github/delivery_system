@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { SYSTEM_PERMISSIONS } from "@/lib/permissions";
+import ProfitTab from "@/components/admin/ProfitTab";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Zone {
@@ -82,13 +83,14 @@ const PERMISSION_SECTION_META: Record<
   },
 };
 
-type Tab = "employees" | "zones" | "drivers" | "permission-groups";
+type Tab = "employees" | "zones" | "drivers" | "permission-groups" | "profit";
 
 const VALID_TABS: Tab[] = [
   "employees",
   "zones",
   "drivers",
   "permission-groups",
+  "profit",
 ];
 
 // ─── Default Export (Suspense Boundary) ───────────────────────────────────────
@@ -135,6 +137,7 @@ function AdminContent() {
     { key: "zones", label: "Zones" },
     { key: "drivers", label: "Drivers" },
     { key: "permission-groups", label: "Permission Groups" },
+    { key: "profit", label: "Profit" },
   ];
 
   const handleTabChange = (tab: Tab) => {
@@ -184,6 +187,8 @@ function AdminContent() {
           <DriversTab />
         ) : activeTab === "permission-groups" ? (
           <PermissionGroupsTab />
+        ) : activeTab === "profit" ? (
+          <ProfitTab />
         ) : null}
       </div>
     </div>

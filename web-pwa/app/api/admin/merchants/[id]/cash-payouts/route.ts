@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { computeOrderProfit, resolveDriverSellerException } from "@/lib/profit";
 
 const prisma = new PrismaClient();
 
@@ -24,9 +25,11 @@ export async function GET(
     // Fetch merchant defaults for rate resolution
     const merchant = await prisma.merchant.findUnique({
       where: { id: merchantId },
-      select: { defaultSellerRate: true },
+      select: { defaultSellerRate: true, defaultProfitRate: true },
     });
-    const defaultRate = merchant?.defaultSellerRate ?? 4.0;
+    // Effective per-order fee = seller rate + profit rate
+    const defaultFee =
+      (merchant?.defaultSellerRate ?? 4.0) + (merchant?.defaultProfitRate ?? 0);
 
     // Build date filter for createdAt
     const dateFilter: { gte?: Date; lte?: Date } = {};
@@ -34,7 +37,7 @@ export async function GET(
     if (to) dateFilter.lte = new Date(`${to}T23:59:59.999Z`);
 
     // 1. Unpaid Eligible Orders (not yet batched, not excluded, location WAREHOUSE, ASSIGNED, or DELIVERED)
-    const rawOrders = await prisma.order.findMany({
+    const unpaidOrders = await prisma.order.findMany({
       where: {
         merchantId,
         cashPayoutBatchId: null,
@@ -54,37 +57,14 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
-    // Resolve per-order effective seller rate (check DriverCashSellerRate, fall back to merchant default)
-    const unpaidOrders = await Promise.all(
-      rawOrders.map(async (order) => {
-        let sellerRate = defaultRate;
-        if (order.driverId) {
-          // Check DriverCashSellerRate (references User.id via DriverProfile)
-          const profile = await prisma.driverProfile.findUnique({
-            where: { id: order.driverId },
-            select: { userId: true },
-          });
-          if (profile) {
-            const cashRate = await prisma.driverCashSellerRate.findUnique({
-              where: {
-                driverId_merchantId: {
-                  driverId: profile.userId,
-                  merchantId,
-                },
-              },
-            });
-            if (cashRate && cashRate.rateUsd > 0) {
-              sellerRate = cashRate.rateUsd;
-            }
-          }
-        }
-        return { ...order, sellerRate };
-      }),
-    );
+    const unpaidOrdersWithRate = unpaidOrders.map((order) => ({
+      ...order,
+      sellerRate: defaultFee,
+    }));
 
     // 2. Pending Unresolved Returns (not yet deducted, location RETURN, fin status Re only)
     // Exclude RTS (Returned to Seller) — those are already resolved.
-    const rawReturns = await prisma.order.findMany({
+    const pendingReturns = await prisma.order.findMany({
       where: {
         merchantId,
         returnDeductionBatchId: null,
@@ -102,31 +82,10 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
-    const pendingReturns = await Promise.all(
-      rawReturns.map(async (order) => {
-        let sellerRate = defaultRate;
-        if (order.driverId) {
-          const profile = await prisma.driverProfile.findUnique({
-            where: { id: order.driverId },
-            select: { userId: true },
-          });
-          if (profile) {
-            const cashRate = await prisma.driverCashSellerRate.findUnique({
-              where: {
-                driverId_merchantId: {
-                  driverId: profile.userId,
-                  merchantId,
-                },
-              },
-            });
-            if (cashRate && cashRate.rateUsd > 0) {
-              sellerRate = cashRate.rateUsd;
-            }
-          }
-        }
-        return { ...order, sellerRate };
-      }),
-    );
+    const pendingReturnsWithRate = pendingReturns.map((order) => ({
+      ...order,
+      sellerRate: defaultFee,
+    }));
 
     // 3. Historical Batches (all CashPayoutBatch records for this merchant)
     const batches = await prisma.cashPayoutBatch.findMany({
@@ -165,7 +124,11 @@ export async function GET(
     });
 
     return NextResponse.json(
-      { unpaidOrders, pendingReturns, batches },
+      {
+        unpaidOrders: unpaidOrdersWithRate,
+        pendingReturns: pendingReturnsWithRate,
+        batches,
+      },
       { status: 200 },
     );
   } catch (error: any) {
@@ -182,6 +145,11 @@ export async function GET(
 // Execute a batch cash advance payout with rolling return
 // deductions and manual adjustments in a single atomic
 // Prisma transaction.
+//
+// Profit model: per order the fee charged is (sellerRate + profitRate).
+// The company profit is profitRate unless the driver's seller rate
+// exception equals the fee — in that case profit is zero for that order
+// (the driver keeps the whole fee) but the order is still deducted at fee.
 // ============================================================
 export async function POST(
   request: Request,
@@ -212,7 +180,7 @@ export async function POST(
         select: {
           merchantId: true,
           defaultSellerRate: true,
-          defaultCompanyRate: true,
+          defaultProfitRate: true,
         },
       });
 
@@ -220,38 +188,12 @@ export async function POST(
         throw new Error("Merchant not found");
       }
 
-      const defaultSellerRate =
+      const sellerRate =
         sellerRateOverride ?? merchant.defaultSellerRate ?? 4.0;
+      const profitRate = merchant.defaultProfitRate ?? 0;
+      const fee = sellerRate + profitRate;
 
-      const companyRate = merchant.defaultCompanyRate ?? 3.0;
-
-      // Helper: resolve the effective seller rate for a given driver.
-      // Checks DriverCashSellerRate (cash-specific rate) before falling
-      // back to the merchant defaultSellerRate.
-      const resolveSellerRate = async (
-        driverProfileId: string | null,
-      ): Promise<number> => {
-        if (driverProfileId) {
-          // Check DriverCashSellerRate (references User.id, so fetch userId from DriverProfile)
-          const profile = await tx.driverProfile.findUnique({
-            where: { id: driverProfileId },
-            select: { userId: true },
-          });
-          if (profile) {
-            const cashRate = await tx.driverCashSellerRate.findUnique({
-              where: {
-                driverId_merchantId: { driverId: profile.userId, merchantId },
-              },
-            });
-            if (cashRate && cashRate.rateUsd > 0) {
-              return cashRate.rateUsd;
-            }
-          }
-        }
-        return defaultSellerRate;
-      };
-
-      // 2. Fetch target orders and calculate grossAdvance + companyProfit
+      // 2. Fetch target orders and calculate grossAdvance + profit
       const advanceOrders = orderIds.length
         ? await tx.order.findMany({
             where: {
@@ -264,15 +206,21 @@ export async function POST(
         : [];
 
       let grossAdvance = 0;
-      let companyProfit = 0;
+      let profit = 0;
 
       for (const o of advanceOrders) {
-        const effectiveRate = await resolveSellerRate(o.driverId);
-        grossAdvance += (o.amountUsd ?? 0) - effectiveRate;
-        companyProfit += effectiveRate - companyRate;
+        const driverException = await resolveDriverSellerException(
+          o.driverId,
+          merchantId,
+        );
+        grossAdvance += (o.amountUsd ?? 0) - fee;
+        profit += computeOrderProfit(
+          { defaultSellerRate: sellerRate, defaultProfitRate: profitRate },
+          driverException,
+        );
       }
 
-      // 3. Fetch return orders and calculate deductedReturns
+      // 3. Fetch return orders and calculate deductedReturns (same per-order fee)
       const returnOrders = returnIds.length
         ? await tx.order.findMany({
             where: {
@@ -287,8 +235,7 @@ export async function POST(
       let deductedReturns = 0;
 
       for (const o of returnOrders) {
-        const effectiveRate = await resolveSellerRate(o.driverId);
-        deductedReturns += (o.amountUsd ?? 0) - effectiveRate;
+        deductedReturns += (o.amountUsd ?? 0) - fee;
       }
 
       // 4. Sum manual adjustments
@@ -323,7 +270,7 @@ export async function POST(
           grossAdvance,
           deductedReturns,
           netPaid,
-          companyProfit,
+          profit,
         },
       });
 

@@ -137,7 +137,7 @@ export async function GET(
           adjustmentsTotal: totalAdjustmentsUsd,
           netPaid:
             totalNetToSeller - totalReturnsDeduction + totalAdjustmentsUsd,
-          companyProfit: batch.companyProfit,
+          profit: batch.profit,
         },
       },
       { status: 200 },

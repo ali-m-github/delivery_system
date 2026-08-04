@@ -111,12 +111,30 @@ export default function DriverConsignmentsPage() {
   const [settlementAmountPaid, setSettlementAmountPaid] = useState(0);
   const [settling, setSettling] = useState(false);
 
+  // ── Paid-by-driver statements state ──
+  const [availableStatements, setAvailableStatements] = useState<any[]>([]);
+  const [selectedStatementIds, setSelectedStatementIds] = useState<string[]>(
+    [],
+  );
+  // Cashbox chosen for each paid statement: { [statementId]: treasuryBoxId }
+  const [statementBoxes, setStatementBoxes] = useState<Record<string, string>>(
+    {},
+  );
+
   // ── Fetch treasury boxes ──
   const fetchTreasuryBoxes = useCallback(() => {
     fetch("/api/admin/treasury")
       .then((res) => res.json())
       .then((data) => setTreasuryBoxes(Array.isArray(data) ? data : []))
       .catch(() => setTreasuryBoxes([]));
+  }, []);
+
+  // ── Fetch available statements (not approved, not pending approval) ──
+  const fetchAvailableStatements = useCallback(() => {
+    fetch("/api/statements?paymentStatus=AVAILABLE")
+      .then((res) => res.json())
+      .then((data) => setAvailableStatements(Array.isArray(data) ? data : []))
+      .catch(() => setAvailableStatements([]));
   }, []);
 
   // ── Fetch all data from settlements API (PENDING only) ──
@@ -183,7 +201,8 @@ export default function DriverConsignmentsPage() {
   useEffect(() => {
     fetchAllData();
     fetchTreasuryBoxes();
-  }, [fetchAllData, fetchTreasuryBoxes]);
+    fetchAvailableStatements();
+  }, [fetchAllData, fetchTreasuryBoxes, fetchAvailableStatements]);
 
   // ── Toggle expanded row ──
   const toggleExpanded = (payoutId: string) => {
@@ -304,7 +323,34 @@ export default function DriverConsignmentsPage() {
   const openSettlementModal = (payout: DriverPayout) => {
     setSettlementModal(payout);
     setSettlementBoxId("");
+    setSelectedStatementIds([]);
+    setStatementBoxes({});
     setSettlementAmountPaid(payout.netUsd);
+  };
+
+  // ── Set the cashbox a selected statement is paid into ──
+  const setStatementBox = (id: string, boxId: string) => {
+    setStatementBoxes((prev) => ({ ...prev, [id]: boxId }));
+  };
+
+  // ── Toggle a paid-by-driver statement selection ──
+  const toggleStatement = (id: string) => {
+    const isSelected = selectedStatementIds.includes(id);
+    const next = isSelected
+      ? selectedStatementIds.filter((s) => s !== id)
+      : [...selectedStatementIds, id];
+    setSelectedStatementIds(next);
+    // Deduct the net amount of selected statements from the amount paid.
+    const deducted = availableStatements
+      .filter((s) => next.includes(s.id))
+      .reduce((sum, s) => sum + (s.netUsd ?? 0), 0);
+    setSettlementAmountPaid(
+      Math.max(0, (settlementModal?.netUsd ?? 0) - deducted),
+    );
+    // Default the statement's cashbox to the same box as the main payout.
+    if (!isSelected && settlementBoxId) {
+      setStatementBoxes((prev) => ({ ...prev, [id]: settlementBoxId }));
+    }
   };
 
   // ── Handle settlement submit ──
@@ -320,6 +366,10 @@ export default function DriverConsignmentsPage() {
           treasuryBoxId: settlementBoxId,
           amountPaidUsd: settlementAmountPaid,
           amountPaidLbp: 0,
+          statements: selectedStatementIds.map((id) => ({
+            id,
+            treasuryBoxId: statementBoxes[id] || "",
+          })),
         }),
       });
       const result = await res.json();
@@ -328,6 +378,7 @@ export default function DriverConsignmentsPage() {
         setSettlementModal(null);
         fetchAllData();
         fetchTreasuryBoxes();
+        fetchAvailableStatements();
       } else {
         alert(result.error || "Failed to process settlement.");
       }
@@ -978,6 +1029,87 @@ export default function DriverConsignmentsPage() {
                 )}
               </div>
 
+              {/* Statements Paid by Driver (deducted from payout) */}
+              <div>
+                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5 font-bold">
+                  Statements Paid by Driver
+                </label>
+                {availableStatements.length === 0 ? (
+                  <p className="text-xs text-gray-600">
+                    No available statements to deduct.
+                  </p>
+                ) : (
+                  <div className="bg-[#0B0F17] border border-white/10 rounded-lg max-h-64 overflow-y-auto divide-y divide-white/5">
+                    {availableStatements.map((stmt) => {
+                      const checked = selectedStatementIds.includes(stmt.id);
+                      return (
+                        <div
+                          key={stmt.id}
+                          className="px-3 py-2 cursor-pointer hover:bg-white/[0.03] transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleStatement(stmt.id)}
+                                className="w-4 h-4 rounded border-gray-600 bg-[#0B0F17] text-emerald-500 focus:ring-emerald-500/50 cursor-pointer"
+                              />
+                              <span className="text-sm text-gray-300 truncate">
+                                {stmt.merchant?.merchantName} · Statement #
+                                {stmt.sequentialIndex}
+                              </span>
+                            </div>
+                            <span className="text-sm font-mono text-emerald-400 shrink-0">
+                              -${(stmt.netUsd ?? 0).toFixed(2)}
+                            </span>
+                          </div>
+                          {checked && (
+                            <div className="mt-2 pl-6">
+                              <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1 font-bold">
+                                Pay to Cashbox
+                              </label>
+                              <select
+                                value={statementBoxes[stmt.id] || ""}
+                                onChange={(e) =>
+                                  setStatementBox(stmt.id, e.target.value)
+                                }
+                                className="w-full bg-[#0B0F17] border border-white/10 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500/50 transition-colors appearance-none cursor-pointer"
+                              >
+                                <option value="">— Select a Cashbox —</option>
+                                {treasuryBoxes.map((box) => (
+                                  <option key={box.id} value={box.id}>
+                                    {box.name}
+                                  </option>
+                                ))}
+                              </select>
+                              {!statementBoxes[stmt.id] && (
+                                <p className="text-[10px] text-red-400 mt-0.5">
+                                  Required — choose where this statement is
+                                  paid.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {selectedStatementIds.length > 0 && (
+                  <p className="text-xs text-emerald-400 mt-1">
+                    {selectedStatementIds.length} statement(s) selected —
+                    deducted from the payout amount. Each posts to its cashbox
+                    when the payout is approved.
+                  </p>
+                )}
+                {selectedStatementIds.some((id) => !statementBoxes[id]) && (
+                  <p className="text-xs text-red-400 mt-1">
+                    Select a cashbox for every selected statement.
+                  </p>
+                )}
+              </div>
+
               {/* Amount Paid USD */}
               <div>
                 <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5 font-bold">
@@ -994,8 +1126,16 @@ export default function DriverConsignmentsPage() {
                   className="w-full bg-[#0B0F17] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
                 />
                 {(() => {
+                  // Statements paid by the driver are also credited against the
+                  // payout, so the true short/over is after subtracting them.
+                  const deducted = selectedStatementIds.reduce((sum, id) => {
+                    const stmt = availableStatements.find((s) => s.id === id);
+                    return sum + (stmt?.netUsd ?? 0);
+                  }, 0);
                   const remaining =
-                    (settlementModal.netUsd || 0) - settlementAmountPaid;
+                    (settlementModal.netUsd || 0) -
+                    settlementAmountPaid -
+                    deducted;
                   const hasDeficit = remaining > 0.01;
                   const hasOverpay = remaining < -0.01;
                   return (
@@ -1021,11 +1161,14 @@ export default function DriverConsignmentsPage() {
               {/* Warning note */}
               <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3">
                 <p className="text-amber-400 text-xs">
-                  ⚠ This will mark the payout as{" "}
-                  <strong className="text-amber-300">CLEARED</strong>, update
-                  driver debt if short-paid, set all orders to{" "}
+                  ⚠ This moves the payout to{" "}
+                  <strong className="text-amber-300">PENDING APPROVAL</strong>.
+                  On approval it becomes CLEARED, all orders are set to{" "}
                   <strong className="text-amber-300">WO (With Office)</strong>,
-                  and record a Treasury IN transaction.
+                  the <strong className="text-amber-300">full payout</strong> is
+                  posted to the selected cashbox, each paid statement is posted
+                  to its own cashbox, and the statements are marked{" "}
+                  <strong className="text-amber-300">PAID</strong>.
                 </p>
               </div>
             </div>
@@ -1040,7 +1183,11 @@ export default function DriverConsignmentsPage() {
               </button>
               <button
                 onClick={handleSettlementSubmit}
-                disabled={!settlementBoxId || settling}
+                disabled={
+                  !settlementBoxId ||
+                  selectedStatementIds.some((id) => !statementBoxes[id]) ||
+                  settling
+                }
                 className="flex-1 px-4 py-2.5 rounded-lg font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed transition-colors text-sm shadow-lg shadow-emerald-500/20"
               >
                 {settling ? "Processing..." : "✓ Confirm Settlement"}

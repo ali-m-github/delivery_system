@@ -76,10 +76,10 @@ export async function PATCH(
           ? parseFloat(body.defaultSellerRate)
           : null;
     }
-    if (body.defaultCompanyRate !== undefined) {
-      updateData.defaultCompanyRate =
-        body.defaultCompanyRate != null
-          ? parseFloat(body.defaultCompanyRate)
+    if (body.defaultProfitRate !== undefined) {
+      updateData.defaultProfitRate =
+        body.defaultProfitRate != null
+          ? parseFloat(body.defaultProfitRate)
           : null;
     }
 

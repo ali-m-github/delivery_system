@@ -40,7 +40,7 @@ interface CashPayoutBatch {
   grossAdvance: number;
   deductedReturns: number;
   netPaid: number;
-  companyProfit: number;
+  profit: number;
   createdAt: string;
   orders: BatchOrder[];
   resolvedReturns: BatchOrder[];
@@ -70,6 +70,19 @@ function formatDateTime(iso: string): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()} ${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+}
+
+// Build a windowed list of page numbers (0-based) with ellipsis markers.
+function getPageNumbers(current: number, total: number): (number | "…")[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i);
+  const pages: (number | "…")[] = [0];
+  const start = Math.max(1, current - 1);
+  const end = Math.min(total - 2, current + 1);
+  if (start > 1) pages.push("…");
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (end < total - 2) pages.push("…");
+  pages.push(total - 1);
+  return pages;
 }
 
 function computeAdvance(amountUsd: number, sellerRate: number): number {
@@ -103,6 +116,10 @@ export default function CashSellerWorkspace({
 
   // ── Expanded batch state for ledger detail rows ──
   const [expandedBatchId, setExpandedBatchId] = useState<number | null>(null);
+
+  // ── Historical batch pagination state (5 per page by default) ──
+  const [batchPage, setBatchPage] = useState(0);
+  const [batchPageSize, setBatchPageSize] = useState(5);
 
   // ── Manual Adjustments State ──
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
@@ -144,6 +161,22 @@ export default function CashSellerWorkspace({
   useEffect(() => {
     applyDateFilter("", "");
   }, [applyDateFilter]);
+
+  // ── Historical batch pagination (5 per page by default) ──
+  const totalBatchPages = Math.max(
+    1,
+    Math.ceil(batches.length / batchPageSize),
+  );
+  const safeBatchPage = Math.min(batchPage, totalBatchPages - 1);
+  const visibleBatches = batches.slice(
+    safeBatchPage * batchPageSize,
+    safeBatchPage * batchPageSize + batchPageSize,
+  );
+
+  // Reset to first page whenever the batch list or page size changes
+  useEffect(() => {
+    setBatchPage(0);
+  }, [batches.length, batchPageSize]);
 
   // ── Exclude Order Handler ──
   const excludeOrder = async (orderId: string, dbId: string) => {
@@ -813,142 +846,230 @@ export default function CashSellerWorkspace({
             No payout batches have been generated yet
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="border-b border-white/5 text-gray-500">
-                <tr>
-                  <th className="px-4 py-2 text-left w-8" />
-                  <th className="px-2 py-2 text-left font-medium">Batch Ref</th>
-                  <th className="px-2 py-2 text-left font-medium">Date</th>
-                  <th className="px-2 py-2 text-right font-medium">
-                    Gross Advance
-                  </th>
-                  <th className="px-2 py-2 text-right font-medium">
-                    Deducted Returns
-                  </th>
-                  <th className="px-2 py-2 text-right font-medium">Net Paid</th>
-                  <th className="px-4 py-2 text-right font-medium">
-                    Company Profit
-                  </th>
-                  <th className="px-4 py-2 text-center font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {batches.map((batch) => {
-                  const isExpanded = expandedBatchId === batch.id;
-                  return (
-                    <Fragment key={batch.id}>
-                      <tr
-                        onClick={() =>
-                          setExpandedBatchId(isExpanded ? null : batch.id)
-                        }
-                        className="hover:bg-white/[0.02] transition-colors cursor-pointer"
-                      >
-                        <td className="px-4 py-2">
-                          <span
-                            className={`text-gray-500 text-xs transition-transform inline-block ${
-                              isExpanded ? "rotate-90" : ""
-                            }`}
-                          >
-                            ▶
-                          </span>
-                        </td>
-                        <td className="px-2 py-2 font-mono text-cyan-400">
-                          {batch.batchReference}
-                        </td>
-                        <td className="px-2 py-2 text-gray-400">
-                          {formatDateTime(batch.createdAt)}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-green-400">
-                          ${batch.grossAdvance.toFixed(2)}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-orange-400">
-                          −${batch.deductedReturns.toFixed(2)}
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-white font-bold">
-                          ${batch.netPaid.toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono text-yellow-400">
-                          ${batch.companyProfit.toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2 text-center">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              window.location.href = `/sellers/${merchantId}/payouts/${batch.id}`;
-                            }}
-                            className="px-3 py-1 text-[10px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 rounded hover:bg-cyan-500/20 transition-colors"
-                          >
-                            View Details
-                          </button>
-                        </td>
-                      </tr>
-                      {/* Expandable detail row */}
-                      {isExpanded && (
-                        <tr>
-                          <td colSpan={8} className="px-4 py-3 bg-[#0B0F17]/50">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                              {/* Advance Orders */}
-                              <div>
-                                <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold mb-2">
-                                  Advance Orders ({batch.orders.length})
-                                </p>
-                                {batch.orders.length === 0 ? (
-                                  <p className="text-gray-600 text-xs">None</p>
-                                ) : (
-                                  <div className="space-y-1">
-                                    {batch.orders.map((o) => (
-                                      <div
-                                        key={o.id}
-                                        className="flex justify-between text-xs bg-white/[0.02] rounded px-2 py-1"
-                                      >
-                                        <span className="font-mono text-gray-300">
-                                          {o.orderId}
-                                        </span>
-                                        <span className="font-mono text-green-400">
-                                          ${o.amountUsd.toFixed(2)}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                              {/* Deducted Returns */}
-                              <div>
-                                <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold mb-2">
-                                  Deducted Returns (
-                                  {batch.resolvedReturns.length})
-                                </p>
-                                {batch.resolvedReturns.length === 0 ? (
-                                  <p className="text-gray-600 text-xs">None</p>
-                                ) : (
-                                  <div className="space-y-1">
-                                    {batch.resolvedReturns.map((r) => (
-                                      <div
-                                        key={r.id}
-                                        className="flex justify-between text-xs bg-white/[0.02] rounded px-2 py-1"
-                                      >
-                                        <span className="font-mono text-gray-300">
-                                          {r.orderId}
-                                        </span>
-                                        <span className="font-mono text-orange-400">
-                                          −${r.amountUsd.toFixed(2)}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="border-b border-white/5 text-gray-500">
+                  <tr>
+                    <th className="px-4 py-2 text-left w-8" />
+                    <th className="px-2 py-2 text-left font-medium">
+                      Batch Ref
+                    </th>
+                    <th className="px-2 py-2 text-left font-medium">Date</th>
+                    <th className="px-2 py-2 text-right font-medium">
+                      Gross Advance
+                    </th>
+                    <th className="px-2 py-2 text-right font-medium">
+                      Deducted Returns
+                    </th>
+                    <th className="px-2 py-2 text-right font-medium">
+                      Net Paid
+                    </th>
+                    <th className="px-4 py-2 text-right font-medium">Profit</th>
+                    <th className="px-4 py-2 text-center font-medium">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {visibleBatches.map((batch) => {
+                    const isExpanded = expandedBatchId === batch.id;
+                    return (
+                      <Fragment key={batch.id}>
+                        <tr
+                          onClick={() =>
+                            setExpandedBatchId(isExpanded ? null : batch.id)
+                          }
+                          className="hover:bg-white/[0.02] transition-colors cursor-pointer"
+                        >
+                          <td className="px-4 py-2">
+                            <span
+                              className={`text-gray-500 text-xs transition-transform inline-block ${
+                                isExpanded ? "rotate-90" : ""
+                              }`}
+                            >
+                              ▶
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 font-mono text-cyan-400">
+                            {batch.batchReference}
+                          </td>
+                          <td className="px-2 py-2 text-gray-400">
+                            {formatDateTime(batch.createdAt)}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono text-green-400">
+                            ${batch.grossAdvance.toFixed(2)}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono text-orange-400">
+                            −${batch.deductedReturns.toFixed(2)}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono text-white font-bold">
+                            ${batch.netPaid.toFixed(2)}
+                          </td>
+                          <td className="px-4 py-2 text-right font-mono text-yellow-400">
+                            ${batch.profit.toFixed(2)}
+                          </td>
+                          <td className="px-4 py-2 text-center">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                window.location.href = `/sellers/${merchantId}/payouts/${batch.id}`;
+                              }}
+                              className="px-3 py-1 text-[10px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 rounded hover:bg-cyan-500/20 transition-colors"
+                            >
+                              View Details
+                            </button>
                           </td>
                         </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                        {/* Expandable detail row */}
+                        {isExpanded && (
+                          <tr>
+                            <td
+                              colSpan={8}
+                              className="px-4 py-3 bg-[#0B0F17]/50"
+                            >
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {/* Advance Orders */}
+                                <div>
+                                  <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold mb-2">
+                                    Advance Orders ({batch.orders.length})
+                                  </p>
+                                  {batch.orders.length === 0 ? (
+                                    <p className="text-gray-600 text-xs">
+                                      None
+                                    </p>
+                                  ) : (
+                                    <div className="space-y-1">
+                                      {batch.orders.map((o) => (
+                                        <div
+                                          key={o.id}
+                                          className="flex justify-between text-xs bg-white/[0.02] rounded px-2 py-1"
+                                        >
+                                          <span className="font-mono text-gray-300">
+                                            {o.orderId}
+                                          </span>
+                                          <span className="font-mono text-green-400">
+                                            ${o.amountUsd.toFixed(2)}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                                {/* Deducted Returns */}
+                                <div>
+                                  <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold mb-2">
+                                    Deducted Returns (
+                                    {batch.resolvedReturns.length})
+                                  </p>
+                                  {batch.resolvedReturns.length === 0 ? (
+                                    <p className="text-gray-600 text-xs">
+                                      None
+                                    </p>
+                                  ) : (
+                                    <div className="space-y-1">
+                                      {batch.resolvedReturns.map((r) => (
+                                        <div
+                                          key={r.id}
+                                          className="flex justify-between text-xs bg-white/[0.02] rounded px-2 py-1"
+                                        >
+                                          <span className="font-mono text-gray-300">
+                                            {r.orderId}
+                                          </span>
+                                          <span className="font-mono text-orange-400">
+                                            −${r.amountUsd.toFixed(2)}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* ── Historical Batch Pagination Controls ── */}
+            <div className="px-4 py-3 border-t border-white/5 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-[10px] text-gray-500">
+                Showing{" "}
+                <span className="text-gray-300 font-mono">
+                  {visibleBatches.length > 0
+                    ? safeBatchPage * batchPageSize + 1
+                    : 0}
+                  –{safeBatchPage * batchPageSize + visibleBatches.length}
+                </span>{" "}
+                of{" "}
+                <span className="text-gray-300 font-mono">
+                  {batches.length}
+                </span>{" "}
+                batches
+              </p>
+              <div className="flex items-center gap-3">
+                {/* Per-page size selector */}
+                <select
+                  value={batchPageSize}
+                  onChange={(e) => setBatchPageSize(Number(e.target.value))}
+                  className="bg-[#0B0F17] border border-gray-800 rounded px-2 py-1 text-white text-[10px] outline-none focus:border-cyan-500 cursor-pointer"
+                  title="Batches per page"
+                >
+                  {[5, 10, 25, 50, 100].map((size) => (
+                    <option key={size} value={size}>
+                      {size} / page
+                    </option>
+                  ))}
+                </select>
+                {/* Prev / numbered pages / Next */}
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setBatchPage((p) => Math.max(0, p - 1))}
+                    disabled={safeBatchPage === 0}
+                    className="px-2 py-1 text-[10px] font-bold text-gray-300 bg-white/5 border border-white/10 rounded hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    ‹ Prev
+                  </button>
+                  {getPageNumbers(safeBatchPage, totalBatchPages).map(
+                    (page, idx) =>
+                      page === "…" ? (
+                        <span
+                          key={`ellipsis-${idx}`}
+                          className="w-7 text-center text-gray-500 text-[10px]"
+                        >
+                          …
+                        </span>
+                      ) : (
+                        <button
+                          key={page}
+                          onClick={() => setBatchPage(page)}
+                          className={`w-7 h-7 text-[10px] font-bold rounded transition-colors ${
+                            safeBatchPage === page
+                              ? "bg-cyan-500 text-[#0B0F17]"
+                              : "bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10"
+                          }`}
+                        >
+                          {page + 1}
+                        </button>
+                      ),
+                  )}
+                  <button
+                    onClick={() =>
+                      setBatchPage((p) => Math.min(totalBatchPages - 1, p + 1))
+                    }
+                    disabled={safeBatchPage === totalBatchPages - 1}
+                    className="px-2 py-1 text-[10px] font-bold text-gray-300 bg-white/5 border border-white/10 rounded hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Next ›
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>

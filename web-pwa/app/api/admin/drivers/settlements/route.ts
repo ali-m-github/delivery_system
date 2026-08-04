@@ -168,10 +168,16 @@ export async function POST(request: Request) {
     // ── Server-side RBAC: require DRIVERS_PAYOUT before any work ──
     const authResult = await requireServerPermission(request, "DRIVERS_PAYOUT");
     if (authResult instanceof Response) return authResult;
-    const { user } = authResult;
 
     const body = await request.json();
-    const { payoutId, treasuryBoxId, amountPaidUsd, amountPaidLbp } = body;
+    const {
+      payoutId,
+      treasuryBoxId,
+      amountPaidUsd,
+      amountPaidLbp,
+      paidStatementIds = [],
+      statements = [],
+    } = body;
 
     if (!payoutId) {
       return NextResponse.json({ error: "Missing payoutId" }, { status: 400 });
@@ -186,6 +192,31 @@ export async function POST(request: Request) {
 
     const safeAmountPaidUsd = parseFloat(String(amountPaidUsd ?? 0)) || 0;
     const safeAmountPaidLbp = parseFloat(String(amountPaidLbp ?? 0)) || 0;
+
+    // ── Paid-by-driver statements ─────────────────────────────────────────
+    // The driver paid these statements from his own money, so the company
+    // deducts them from the payout. They must be AVAILABLE (not approved and
+    // not pending approval) — the driver cannot pay a statement twice.
+    //
+    // Each statement is also assigned a cashbox (treasury box) to be paid
+    // into. On approval (Phase 2) the FULL payout posts to the main cashbox
+    // while each statement posts its own full amount to its chosen cashbox.
+    let statementSelections: { id: string; treasuryBoxId: string }[] = [];
+    if (Array.isArray(statements) && statements.length > 0) {
+      statementSelections = statements
+        .filter((s: any) => s && s.id)
+        .map((s: any) => ({
+          id: String(s.id),
+          treasuryBoxId: String(s.treasuryBoxId || ""),
+        }));
+    } else if (Array.isArray(paidStatementIds)) {
+      // Legacy clients: no per-statement cashbox — default to the main box.
+      statementSelections = paidStatementIds
+        .filter(Boolean)
+        .map((id: string) => ({ id: String(id), treasuryBoxId }));
+    }
+
+    const statementIds = statementSelections.map((s) => s.id);
 
     if (safeAmountPaidUsd <= 0 && safeAmountPaidLbp <= 0) {
       return NextResponse.json(
@@ -209,15 +240,61 @@ export async function POST(request: Request) {
         throw new Error("Payout is not in PENDING status");
       }
 
+      // 1b. Validate + resolve the paid-by-driver statements.
+      let statementsDeductedUsd = 0;
+      let statementsDeductedLbp = 0;
+      if (statementIds.length > 0) {
+        const statements = await tx.merchantPayout.findMany({
+          where: { id: { in: statementIds } },
+        });
+
+        if (statements.length !== statementIds.length) {
+          throw new Error(
+            "One or more selected statements could not be found.",
+          );
+        }
+
+        for (const stmt of statements) {
+          if (
+            stmt.paymentStatus === "PAID" ||
+            stmt.paymentStatus === "PENDING_APPROVAL"
+          ) {
+            throw new Error(
+              `Statement #${stmt.sequentialIndex} is already paid or pending approval and cannot be deducted twice.`,
+            );
+          }
+          if (stmt.paidByDriverPayoutId) {
+            throw new Error(
+              `Statement #${stmt.sequentialIndex} was already paid by a driver.`,
+            );
+          }
+          const selection = statementSelections.find((s) => s.id === stmt.id);
+          if (!selection || !selection.treasuryBoxId) {
+            throw new Error(
+              `Statement #${stmt.sequentialIndex} must have a cashbox selected to be paid into.`,
+            );
+          }
+          statementsDeductedUsd += stmt.netUsd ?? 0;
+          statementsDeductedLbp += stmt.netLbp ?? 0;
+        }
+      }
+
+      // The driver already paid the selected statements from his own money, so
+      // they are deducted from the total the driver must deliver. `amountPaidUsd`
+      // is the cash actually handed to the cashbox (already reduced by the
+      // frontend); the statements are deducted here so remaining = net - cash -
+      // statements.
       // Calculate remaining deficit — negative means overpaid, 0 means exact
-      const remainingUsd = payout.netUsd - safeAmountPaidUsd;
+      const remainingUsd =
+        payout.netUsd - safeAmountPaidUsd - statementsDeductedUsd;
       const remainingLbp = payout.totalLbp - safeAmountPaidLbp;
 
       // Phase 1 (Settle): record the amount paid and move to PENDING_APPROVAL.
       // Orders stay at 'WD' — they flip to 'WO' only during approval (Phase 2).
       const newStatus = "PENDING_APPROVAL";
 
-      // 2. Update the DriverPayout
+      // 2. Update the DriverPayout — record the amount paid, remember the chosen
+      //    treasury box, and move to PENDING_APPROVAL.
       const updatedPayout = await tx.driverPayout.update({
         where: { id: payoutId },
         data: {
@@ -226,8 +303,34 @@ export async function POST(request: Request) {
           remainingUsd,
           remainingLbp,
           status: newStatus,
+          treasuryBoxId,
+          statementsDeductedUsd,
+          statementsDeductedLbp,
         },
       });
+
+      // 2b. Link the paid-by-driver statements to this payout and hold them as
+      // PENDING_APPROVAL. Each statement records the cashbox it will be paid
+      // into; it is only marked PAID (and posted to its cashbox) when the
+      // payout is approved in Phase 2.
+      if (statementIds.length > 0) {
+        const statements = await tx.merchantPayout.findMany({
+          where: { id: { in: statementIds } },
+        });
+        for (const stmt of statements) {
+          const selection = statementSelections.find((s) => s.id === stmt.id);
+          await tx.merchantPayout.update({
+            where: { id: stmt.id },
+            data: {
+              paymentStatus: "PENDING_APPROVAL",
+              paidByDriverPayoutId: payout.id,
+              amountPaidUsd: stmt.netUsd ?? 0,
+              amountPaidLbp: stmt.netLbp ?? 0,
+              treasuryBoxId: selection?.treasuryBoxId || null,
+            },
+          });
+        }
+      }
 
       // 3. Update DriverProfile: atomically increment carriedDebt on short-payment
       //    Only carry debt forward when there's a deficit (remaining > 0).
@@ -244,41 +347,18 @@ export async function POST(request: Request) {
 
       // Orders tied to this payout remain 'WD' at settle time — they are only
       // flipped to 'WO' (With Office) when the payout is approved (Phase 2).
-
-      // 4. Create TreasuryTransaction (type "IN" — money coming into treasury)
-      await tx.treasuryTransaction.create({
-        data: {
-          boxId: treasuryBoxId,
-          type: "IN",
-          amountUsd: safeAmountPaidUsd,
-          amountLbp: safeAmountPaidLbp,
-          description: `Settlement for payout #${payout.sequentialIndex} — Driver ${payout.driverId}`,
-          referenceId: payoutId,
-        },
-      });
-
-      // 5. Update TreasuryBox balance
-      const treasuryBox = await tx.treasuryBox.findUnique({
-        where: { id: treasuryBoxId },
-      });
-
-      if (treasuryBox) {
-        await tx.treasuryBox.update({
-          where: { id: treasuryBoxId },
-          data: {
-            balanceUsd: treasuryBox.balanceUsd + safeAmountPaidUsd,
-            balanceLbp: treasuryBox.balanceLbp + safeAmountPaidLbp,
-          },
-        });
-      } else {
-        throw new Error("Treasury box not found");
-      }
+      // No treasury IN transaction is created here: the payout is not approved
+      // yet, so the money must NOT hit the treasury box. The transaction is
+      // created in the approve route (Phase 2) using the stored treasuryBoxId.
 
       return {
         payout: updatedPayout,
         remainingUsd,
         remainingLbp,
         newStatus,
+        statementsDeductedUsd,
+        statementsDeductedLbp,
+        statementsCount: statementIds.length,
       };
     });
 
@@ -287,7 +367,11 @@ export async function POST(request: Request) {
         success: true,
         message: `Settlement recorded ($${result.remainingUsd.toFixed(
           2,
-        )} USD carried as debt if short-paid). Payout is now PENDING_APPROVAL.`,
+        )} USD carried as debt if short-paid). ${
+          result.statementsCount > 0
+            ? `${result.statementsCount} statement(s) paid by driver deducted ($${result.statementsDeductedUsd.toFixed(2)}). `
+            : ""
+        }Payout is now PENDING_APPROVAL.`,
         ...result,
       },
       { status: 200 },

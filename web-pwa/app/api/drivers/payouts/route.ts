@@ -106,6 +106,16 @@ export async function GET(request: Request) {
             },
           },
         },
+        paidStatements: {
+          include: {
+            treasuryBox: {
+              select: { id: true, name: true },
+            },
+            merchant: {
+              select: { merchantName: true },
+            },
+          },
+        },
       },
       orderBy,
     });

@@ -377,14 +377,14 @@ export default function Sidebar() {
                   </span>
                   {item.href === "/settlements" &&
                   payoutCounts.pendingSettlements > 0 ? (
-                    <span className="ml-auto shrink-0 bg-red-500 text-white text-[10px] font-bold h-5 w-5 flex items-center justify-center rounded-full">
+                    <span className="ml-auto shrink-0 bg-amber-500 text-white text-[10px] font-bold h-5 w-5 flex items-center justify-center rounded-full">
                       {payoutCounts.pendingSettlements > 99
                         ? "99+"
                         : payoutCounts.pendingSettlements}
                     </span>
                   ) : item.href === "/cleared-payouts" &&
                     payoutCounts.pendingClearance > 0 ? (
-                    <span className="ml-auto shrink-0 bg-blue-500 text-white text-[10px] font-bold h-5 w-5 flex items-center justify-center rounded-full">
+                    <span className="ml-auto shrink-0 bg-amber-500 text-white text-[10px] font-bold h-5 w-5 flex items-center justify-center rounded-full">
                       {payoutCounts.pendingClearance > 99
                         ? "99+"
                         : payoutCounts.pendingClearance}

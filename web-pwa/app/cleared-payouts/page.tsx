@@ -53,6 +53,15 @@ interface DriverPayout {
     carriedDebtLbp: number;
   };
   orders: PayoutOrder[];
+  paidStatements?: {
+    id: string;
+    sequentialIndex: number;
+    netUsd: number;
+    netLbp: number;
+    paymentStatus: string;
+    treasuryBox?: { id: string; name: string } | null;
+    merchant?: { merchantName: string } | null;
+  }[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -147,7 +156,22 @@ export default function ClearedPayoutsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
-      const result = await res.json();
+
+      // Defensively parse the response body: the server-side auth guard can
+      // return a plain-text 401 ("Unauthorized") / 403 ("Forbidden") instead of
+      // JSON, which would otherwise throw a SyntaxError on `res.json()`.
+      let result: any = {};
+      try {
+        result = await res.json();
+      } catch {
+        result = {
+          error:
+            res.status === 401
+              ? "Your session has expired. Please log in again."
+              : `Request failed (${res.status}).`,
+        };
+      }
+
       if (res.ok && result.success) {
         router.refresh();
         await fetchData();
@@ -252,6 +276,7 @@ export default function ClearedPayoutsPage() {
                 className="bg-[#0a0f1a] border-b border-white/10 px-6 py-5"
               >
                 {renderOrdersTable(payout, `Pending ${payout.payoutReference}`)}
+                {renderStatements(payout)}
               </td>
             </tr>
           )}
@@ -367,6 +392,7 @@ export default function ClearedPayoutsPage() {
                 className="bg-[#0a0f1a] border-b border-white/10 px-6 py-5"
               >
                 {renderOrdersTable(payout, `Cleared ${payout.payoutReference}`)}
+                {renderStatements(payout)}
                 {/* Summary row for expanded payout */}
                 {payout.orders.length > 0 && (
                   <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -542,6 +568,77 @@ export default function ClearedPayoutsPage() {
             </table>
           </div>
         )}
+      </div>
+    );
+  };
+
+  // ── Statements the driver paid from his own money (deducted from payout) ──
+  const renderStatements = (payout: DriverPayout) => {
+    const statements = payout.paidStatements || [];
+    if (statements.length === 0) return null;
+    return (
+      <div className="mt-4">
+        <div className="flex justify-between items-center mb-3">
+          <h4 className="text-sm font-bold text-white uppercase tracking-wider">
+            Statements Paid by Driver
+          </h4>
+          <span className="text-xs text-gray-500">
+            {statements.length} statement{statements.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-white/5">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-white/[0.02] text-gray-500 text-[11px] uppercase tracking-wider">
+                <th className="px-4 py-2 font-semibold">Statement</th>
+                <th className="px-4 py-2 font-semibold">Seller</th>
+                <th className="px-4 py-2 font-semibold text-right">
+                  Amount USD
+                </th>
+                <th className="px-4 py-2 font-semibold text-right">
+                  Amount LBP
+                </th>
+                <th className="px-4 py-2 font-semibold">Paid To Cashbox</th>
+                <th className="px-4 py-2 font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {statements.map((stmt) => (
+                <tr
+                  key={stmt.id}
+                  className="border-b border-white/[0.03] transition-colors"
+                >
+                  <td className="px-4 py-2 font-mono text-cyan-400 text-xs">
+                    #{stmt.sequentialIndex}
+                  </td>
+                  <td className="px-4 py-2 text-gray-300 text-sm">
+                    {stmt.merchant?.merchantName || "—"}
+                  </td>
+                  <td className="px-4 py-2 text-green-400 text-xs text-right font-mono">
+                    ${(stmt.netUsd ?? 0).toFixed(2)}
+                  </td>
+                  <td className="px-4 py-2 text-gray-400 text-xs text-right">
+                    {(stmt.netLbp ?? 0).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2 text-amber-400/70 text-xs">
+                    {stmt.treasuryBox?.name || "—"}
+                  </td>
+                  <td className="px-4 py-2">
+                    <span
+                      className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border ${
+                        stmt.paymentStatus === "PAID"
+                          ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                          : "bg-amber-500/10 text-amber-400 border-amber-500/30"
+                      }`}
+                    >
+                      {stmt.paymentStatus}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   };

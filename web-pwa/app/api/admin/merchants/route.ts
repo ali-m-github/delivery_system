@@ -42,9 +42,9 @@ export async function POST(request: Request) {
           body.defaultSellerRate != null
             ? parseFloat(body.defaultSellerRate)
             : null,
-        defaultCompanyRate:
-          body.defaultCompanyRate != null
-            ? parseFloat(body.defaultCompanyRate)
+        defaultProfitRate:
+          body.defaultProfitRate != null
+            ? parseFloat(body.defaultProfitRate)
             : null,
       },
     });

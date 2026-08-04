@@ -1,12 +1,27 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { computeOrderProfit, resolveDriverSellerException } from "@/lib/profit";
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const merchantId = searchParams.get("merchantId");
+  const paymentStatus = searchParams.get("paymentStatus");
 
   try {
     const statements = await prisma.merchantPayout.findMany({
-      where: merchantId ? { merchantId } : undefined,
+      where: {
+        ...(merchantId ? { merchantId } : {}),
+        // Optional: filter by payment state. "AVAILABLE" = UNPAID or REJECTED
+        // (not approved and not pending approval → can be paid / deducted).
+        ...(paymentStatus
+          ? paymentStatus === "AVAILABLE"
+            ? {
+                paymentStatus: {
+                  notIn: ["PAID", "PENDING_APPROVAL"],
+                },
+              }
+            : { paymentStatus }
+          : {}),
+      },
       include: {
         merchant: {
           include: { zoneRates: true },
@@ -48,9 +63,10 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. Fetch the current highest sequential index for this specific merchant to generate statement numbers (e.g., Statement #1, Statement #2)
+    // 2. Generate a GLOBALLY-unique sequential index so statement numbers never
+    //    collide across sellers (e.g., CashTest #1 vs Tloba #1). The next index
+    //    is the max across ALL statements + 1.
     const lastPayout = await prisma.merchantPayout.findFirst({
-      where: { merchantId },
       orderBy: { sequentialIndex: "desc" },
     });
     const nextIndex = lastPayout ? lastPayout.sequentialIndex + 1 : 1;
@@ -58,6 +74,34 @@ export async function POST(req: Request) {
     // 3. Execute the Atomic Transaction
     // An atomic transaction ensures that if the orders fail to update, the statement is NOT created (preventing ghost ledgers).
     const transaction = await prisma.$transaction(async (tx) => {
+      // A1. Fetch the merchant + selected orders to compute the company profit.
+      // Profit = profitRate per delivered/PS order, EXCEPT orders where the
+      // driver's seller rate exception equals (sellerRate + profitRate) — those
+      // contribute 0 profit (the driver keeps the whole fee).
+      const merchant = await tx.merchant.findUnique({
+        where: { id: merchantId },
+        select: { defaultSellerRate: true, defaultProfitRate: true },
+      });
+      const profitOrders = await tx.order.findMany({
+        where: { id: { in: orderIds } },
+        select: { id: true, driverId: true },
+      });
+
+      let profitUsd = 0;
+      for (const o of profitOrders) {
+        const driverException = await resolveDriverSellerException(
+          o.driverId,
+          merchantId,
+        );
+        profitUsd += computeOrderProfit(
+          {
+            defaultSellerRate: merchant?.defaultSellerRate ?? 0,
+            defaultProfitRate: merchant?.defaultProfitRate ?? 0,
+          },
+          driverException,
+        );
+      }
+
       // A. Create the Payout Ledger Entry
       const payout = await tx.merchantPayout.create({
         data: {
@@ -69,6 +113,7 @@ export async function POST(req: Request) {
           shippingLbp,
           netUsd,
           netLbp,
+          profitUsd,
           status: "PAID",
         },
       });

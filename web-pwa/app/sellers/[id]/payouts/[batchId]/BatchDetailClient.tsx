@@ -45,7 +45,7 @@ interface Batch {
   grossAdvance: number;
   deductedReturns: number;
   netPaid: number;
-  companyProfit: number;
+  profit: number;
   createdAt: string;
   merchant: { id: string; merchantName: string; merchantId: number };
   orders: BatchOrder[];
@@ -330,7 +330,7 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
                 {Math.abs(batch.netPaid).toFixed(2)}
               </p>
               <p className="text-gray-600 text-[10px] mt-1">
-                Company Profit: ${batch.companyProfit.toFixed(2)}
+                Profit: ${batch.profit.toFixed(2)}
               </p>
             </div>
           </div>

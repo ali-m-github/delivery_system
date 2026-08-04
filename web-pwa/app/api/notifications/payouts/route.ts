@@ -26,7 +26,7 @@ export async function GET(request: Request) {
     //    users in the Sidebar) ──
     const token = getSessionToken(request);
     const payload = token ? await verifySessionToken(token) : null;
-    if (!payload?.userId) {
+    if (!payload?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

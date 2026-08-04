@@ -32,7 +32,7 @@ export async function POST(request: Request) {
       address,
       isCashSeller,
       defaultSellerRate,
-      defaultCompanyRate,
+      defaultProfitRate,
       contactName,
       socialMedia,
       ...otherData
@@ -52,9 +52,9 @@ export async function POST(request: Request) {
         ? parseFloat(defaultSellerRate)
         : null;
 
-    const parsedCompanyRate =
-      defaultCompanyRate !== undefined && defaultCompanyRate !== ""
-        ? parseFloat(defaultCompanyRate)
+    const parsedProfitRate =
+      defaultProfitRate !== undefined && defaultProfitRate !== ""
+        ? parseFloat(defaultProfitRate)
         : null;
 
     const newMerchant = await prisma.merchant.create({
@@ -69,9 +69,9 @@ export async function POST(request: Request) {
         defaultSellerRate: isNaN(parsedSellerRate as number)
           ? null
           : parsedSellerRate,
-        defaultCompanyRate: isNaN(parsedCompanyRate as number)
+        defaultProfitRate: isNaN(parsedProfitRate as number)
           ? null
-          : parsedCompanyRate,
+          : parsedProfitRate,
       },
     });
 

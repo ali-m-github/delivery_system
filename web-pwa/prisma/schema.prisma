@@ -74,6 +74,9 @@ model User {
 
   ordersCreated          Order[]                  @relation("EmployeeOrders")
   driverCashSellerRates  DriverCashSellerRate[]
+  treasuryTransactions   TreasuryTransaction[]
+  treasuryApproved       TreasuryTransaction[]    @relation("TreasuryApprovedBy")
+  treasuryRejected       TreasuryTransaction[]    @relation("TreasuryRejectedBy")
 }
 
 model Merchant {
@@ -98,8 +101,8 @@ model Merchant {
   payouts MerchantPayout[]
 
   isCashSeller          Boolean                @default(false)
-  defaultSellerRate     Float?                 // e.g., 4.00 (Fee charged to seller per order)
-  defaultCompanyRate    Float?                 // e.g., 3.00 (Internal baseline cost/target margin)
+  defaultSellerRate     Float?                 // e.g., 3.00 (Base fee charged to seller per order)
+  defaultProfitRate     Float?                 // e.g., 1.00 (Company profit per order; fee = sellerRate + profitRate)
   driverRates           DriverCashSellerRate[]
   driverSellerRates     DriverSellerRate[]
   cashPayoutBatches     CashPayoutBatch[]
@@ -142,10 +145,30 @@ model MerchantPayout {
   netUsd      Float @default(0) // Final Net USD Paid
   netLbp      Float @default(0) // Final Net LBP Paid
 
+  // Company profit realized on this statement (only delivered orders with
+  // fin status PS; zero for orders where the driver's seller exception
+  // equals the cash seller rate + profit rate).
+  profitUsd Float @default(0)
+
   status String @default("PAID")
 
   // The orders included in this payout statement
   orders Order[]
+
+  // ── Statement Payment / Cashbox Approval Flow ──────────────────────────
+  // paymentStatus: UNPAID | PENDING_APPROVAL | PAID | REJECTED
+  paymentStatus     String @default("UNPAID")
+  amountPaidUsd     Float  @default(0) // Amount settled to cashbox (or paid by driver)
+  amountPaidLbp     Float  @default(0)
+  treasuryBoxId     String? // Cashbox the statement was paid into
+  treasuryBox       TreasuryBox? @relation("StatementTreasuryBox", fields: [treasuryBoxId], references: [id])
+  // The treasury transaction created when the statement is paid (pending approval)
+  treasuryTransactionId String? @unique
+  treasuryTransaction   TreasuryTransaction? @relation("StatementTreasuryTx", fields: [treasuryTransactionId], references: [id])
+  // When the driver paid the statement from his own money, it is deducted from
+  // his payout and linked here so it can't be paid twice.
+  paidByDriverPayoutId String?
+  paidByDriverPayout   DriverPayout? @relation("DriverPaidStatements", fields: [paidByDriverPayoutId], references: [id])
 
   createdAt DateTime @default(now())
 }
@@ -169,7 +192,7 @@ model CashPayoutBatch {
   grossAdvance    Float    // Total COD minus seller shipping fees advanced
   deductedReturns Float    @default(0) // Value of past returned orders subtracted from this payout
   netPaid         Float    // grossAdvance minus deductedReturns
-  companyProfit   Float    @default(0) // Realized profit as orders are delivered
+  profit          Float    @default(0) // Realized company profit (profit rate per order, 0 where driver exception = sellerRate + profitRate)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -361,9 +384,23 @@ model DriverPayout {
   remainingUsd    Float @default(0)
   remainingLbp    Float @default(0)
 
+  // Treasury box selected at settle time; the IN transaction is only created
+  // (and the box credited) when the payout is approved in Phase 2.
+  treasuryBoxId String?
+
+  // Total value of statements the driver paid from his own money (deducted
+  // from the cash he hands over). On approval the FULL payout (amountPaidUsd +
+  // statementsDeductedUsd) is posted to the main cashbox so the payout shows in
+  // full, while each statement posts its own full amount to its chosen cashbox.
+  statementsDeductedUsd Float @default(0)
+  statementsDeductedLbp Float @default(0)
+
   orders    Order[]
   createdAt DateTime  @default(now())
   clearedAt DateTime?
+
+  // Statements the driver paid from his own money (deducted from this payout)
+  paidStatements MerchantPayout[] @relation("DriverPaidStatements")
 }
 
 model OrderHistory {
@@ -392,6 +429,8 @@ model TreasuryBox {
   balanceUsd  Float    @default(0)
   balanceLbp  Float    @default(0)
   transactions TreasuryTransaction[]
+  // Statements paid into this box
+  statements  MerchantPayout[] @relation("StatementTreasuryBox")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
@@ -404,6 +443,23 @@ model TreasuryTransaction {
   amountUsd   Float    @default(0)
   amountLbp   Float    @default(0)
   description String?
-  referenceId String?  // ID of the DriverPayout
-  createdAt   DateTime @default(now())
+  reference   String?  // Human-readable transaction ID like TX-0001
+  referenceId String?  // ID of the DriverPayout or MerchantPayout (statement)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+
+  // ── Approval Flow (applies to every cash box) ──
+  // status: APPROVED | PENDING_APPROVAL | REJECTED
+  status       String   @default("APPROVED")
+  approvedById String?
+  approvedBy   User?    @relation("TreasuryApprovedBy", fields: [approvedById], references: [id])
+  approvedAt   DateTime?
+  rejectedById String?
+  rejectedBy   User?    @relation("TreasuryRejectedBy", fields: [rejectedById], references: [id])
+  rejectedAt   DateTime?
+
+  // Statement this transaction pays (if any)
+  statement MerchantPayout? @relation("StatementTreasuryTx")
+
+  createdAt DateTime @default(now())
 }

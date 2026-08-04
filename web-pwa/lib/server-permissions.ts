@@ -37,16 +37,22 @@ export async function requireServerPermission(
 ): Promise<Response | { user: AuthenticatedUser }> {
   const token = getSessionToken(req);
   if (!token) {
-    return new Response("Unauthorized", { status: 401 });
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const payload = await verifySessionToken(token);
-  if (!payload?.userId) {
-    return new Response("Unauthorized", { status: 401 });
+  if (!payload?.id) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const user = await prisma.user.findUnique({
-    where: { id: payload.userId },
+    where: { id: payload.id },
     select: {
       id: true,
       role: true,
@@ -56,11 +62,17 @@ export async function requireServerPermission(
   });
 
   if (!user) {
-    return new Response("Unauthorized", { status: 401 });
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   if (!hasPermission(user, requiredPermission)) {
-    return new Response("Forbidden", { status: 403 });
+    return new Response(JSON.stringify({ error: "Forbidden" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   return { user };

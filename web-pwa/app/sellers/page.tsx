@@ -18,7 +18,7 @@ export default function SellersPage() {
     socialMedia: "",
     isCashSeller: false,
     defaultSellerRate: "",
-    defaultCompanyRate: "",
+    defaultProfitRate: "",
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -67,8 +67,8 @@ export default function SellersPage() {
           defaultSellerRate: newSeller.isCashSeller
             ? parseFloat(newSeller.defaultSellerRate) || null
             : null,
-          defaultCompanyRate: newSeller.isCashSeller
-            ? parseFloat(newSeller.defaultCompanyRate) || null
+          defaultProfitRate: newSeller.isCashSeller
+            ? parseFloat(newSeller.defaultProfitRate) || null
             : null,
         }),
       });
@@ -81,7 +81,7 @@ export default function SellersPage() {
           socialMedia: "",
           isCashSeller: false,
           defaultSellerRate: "",
-          defaultCompanyRate: "",
+          defaultProfitRate: "",
         });
         setIsAddModalOpen(false);
         await fetchData();
@@ -447,24 +447,25 @@ export default function SellersPage() {
                     </div>
                     <div>
                       <label className="block text-[10px] font-medium text-gray-400 mb-1">
-                        Default Company Cost Rate ($USD)
+                        Default Profit Rate ($USD)
                       </label>
                       <input
                         type="number"
                         step="0.01"
                         min="0"
-                        placeholder="$3.00"
-                        value={newSeller.defaultCompanyRate}
+                        placeholder="$1.00"
+                        value={newSeller.defaultProfitRate}
                         onChange={(e) =>
                           setNewSeller({
                             ...newSeller,
-                            defaultCompanyRate: e.target.value,
+                            defaultProfitRate: e.target.value,
                           })
                         }
                         className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors text-sm"
                       />
                       <p className="text-[10px] text-gray-600 mt-1">
-                        Baseline delivery cost / target margin
+                        Company profit per order. Total fee = seller rate +
+                        profit.
                       </p>
                     </div>
                   </div>

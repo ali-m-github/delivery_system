@@ -195,6 +195,162 @@ const NOTES_OPTIONS = [
   "Canceled by customer",
 ];
 
+// ─── Excel export column definitions ─────────────────────────────────────────
+// Each entry drives both the column-selection modal and the actual export, so
+// adding a new exportable column only requires adding one definition here.
+const EXPORT_COLUMNS: {
+  key: string;
+  label: string;
+  header: string;
+  width: number;
+  value: (order: Order) => string | number;
+}[] = [
+  {
+    key: "orderId",
+    label: "Order ID",
+    header: "Order ID",
+    width: 15,
+    value: (o) => o.orderId,
+  },
+  {
+    key: "date",
+    label: "Date",
+    header: "Date",
+    width: 15,
+    value: (o) => formatDDMMYYYY(o.createdAt),
+  },
+  {
+    key: "seller",
+    label: "Seller",
+    header: "Seller",
+    width: 20,
+    value: (o) => o.merchant?.ownerFirstName || o.merchant?.merchantName || "—",
+  },
+  {
+    key: "customer",
+    label: "Customer",
+    header: "Customer",
+    width: 25,
+    value: (o) => o.customerName,
+  },
+  {
+    key: "phone",
+    label: "Tel Number",
+    header: "Tel Number",
+    width: 18,
+    value: (o) => o.customerPhone,
+  },
+  {
+    key: "address",
+    label: "Address",
+    header: "Address",
+    width: 35,
+    value: (o) => o.customerAddress,
+  },
+  {
+    key: "zone",
+    label: "Zone",
+    header: "Zone",
+    width: 12,
+    value: (o) => o.zone?.name || o.zoneId || "—",
+  },
+  {
+    key: "city",
+    label: "City",
+    header: "City",
+    width: 20,
+    value: (o) => o.city || "-",
+  },
+  {
+    key: "driver",
+    label: "Driver",
+    header: "Driver",
+    width: 25,
+    value: (o) =>
+      o.driver
+        ? `${o.driver.firstName} ${o.driver.lastName} (${o.driver.driverId})`
+        : "Unassigned",
+  },
+  {
+    key: "location",
+    label: "Location",
+    header: "Location",
+    width: 18,
+    value: (o) => LOCATION_LABELS[o.location] || o.location,
+  },
+  {
+    key: "fin",
+    label: "Fin Status",
+    header: "Fin Status",
+    width: 12,
+    value: (o) => o.financialStatus,
+  },
+  {
+    key: "usd",
+    label: "Amount $",
+    header: "Amount $",
+    width: 15,
+    value: (o) => o.amountUsd ?? 0,
+  },
+  {
+    key: "lbp",
+    label: "Amount LL",
+    header: "Amount LL",
+    width: 15,
+    value: (o) => o.amountLbp ?? 0,
+  },
+  {
+    key: "collectedUsd",
+    label: "$ Collected",
+    header: "$ Collected",
+    width: 15,
+    value: (o) => {
+      const isDelivered = o.location === "DELIVERED";
+      const raw = Number(o.collectedUsd ?? 0);
+      return isDelivered && raw === 0 ? Number(o.amountUsd ?? 0) : raw;
+    },
+  },
+  {
+    key: "collectedLbp",
+    label: "LL Collected",
+    header: "LL Collected",
+    width: 15,
+    value: (o) => {
+      const isDelivered = o.location === "DELIVERED";
+      const raw = Number(o.collectedLbp ?? 0);
+      return isDelivered && raw === 0 ? Number(o.amountLbp ?? 0) : raw;
+    },
+  },
+  {
+    key: "waybill",
+    label: "Waybill",
+    header: "Waybill",
+    width: 30,
+    value: (o) => o.waybillUrl || "",
+  },
+  {
+    key: "deliveredAt",
+    label: "Delivered At",
+    header: "Delivered At",
+    width: 15,
+    value: (o) => formatDDMMYYYY(o.deliveredAt || ""),
+  },
+  {
+    key: "notes",
+    label: "Notes",
+    header: "Notes",
+    width: 25,
+    value: (o) => o.notes || "",
+  },
+  {
+    key: "payoutReference",
+    label: "Payout Ref",
+    header: "Payout Ref",
+    width: 20,
+    value: (o) => o.driverPayout?.payoutReference || "",
+  },
+];
+
 // ─── Helper to group orders by date ───────────────────────────────────────────
 function groupByDate(orders: Order[]): Record<string, Order[]> {
   const map: Record<string, Order[]> = {};
@@ -265,17 +421,14 @@ function OrdersPageInner() {
 
   // ── Excel column selector state ──
   const [excelModalOpen, setExcelModalOpen] = useState(false);
-  const [excelCols, setExcelCols] = useState({
-    orderId: true,
-    date: true,
-    seller: true,
-    customer: true,
-    phone: true,
-    address: true,
-    city: true,
-    usd: true,
-    lbp: true,
-  });
+  // All exportable columns are derived from EXPORT_COLUMNS and default to on.
+  const [excelCols, setExcelCols] = useState<Record<string, boolean>>(
+    () =>
+      Object.fromEntries(EXPORT_COLUMNS.map((c) => [c.key, true])) as Record<
+        string,
+        boolean
+      >,
+  );
 
   // ── Order Entry Form ──
   const [formData, setFormData] = useState({
@@ -4656,59 +4809,95 @@ function OrdersPageInner() {
                 Choose which columns to include in the Excel file.
               </p>
 
-              <div className="grid grid-cols-2 gap-3 mb-6">
-                {Object.entries(excelCols).map(([key, val]) => (
-                  <label
-                    key={key}
-                    className="flex items-center gap-3 cursor-pointer group"
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs text-gray-500">
+                  {Object.values(excelCols).filter(Boolean).length} of{" "}
+                  {EXPORT_COLUMNS.length} columns selected
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExcelCols(
+                        Object.fromEntries(
+                          EXPORT_COLUMNS.map((c) => [c.key, true]),
+                        ) as Record<string, boolean>,
+                      )
+                    }
+                    className="px-2 py-1 text-[10px] font-semibold rounded-md
+                               bg-white/5 text-gray-300 border border-white/10
+                               hover:bg-white/10 transition-colors"
                   >
-                    <div
-                      className={`w-5 h-5 rounded-md border-2 flex items-center justify-center
-                                  transition-all duration-200
-                                  ${
-                                    val
-                                      ? "bg-cyan-500 border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
-                                      : "border-gray-600 group-hover:border-gray-500"
-                                  }`}
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExcelCols(
+                        Object.fromEntries(
+                          EXPORT_COLUMNS.map((c) => [c.key, false]),
+                        ) as Record<string, boolean>,
+                      )
+                    }
+                    className="px-2 py-1 text-[10px] font-semibold rounded-md
+                               bg-white/5 text-gray-300 border border-white/10
+                               hover:bg-white/10 transition-colors"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 mb-6 max-h-[50vh] overflow-y-auto pr-1">
+                {EXPORT_COLUMNS.map((col) => {
+                  const val = excelCols[col.key];
+                  return (
+                    <label
+                      key={col.key}
+                      className="flex items-center gap-3 cursor-pointer group"
                     >
-                      {val && (
-                        <svg
-                          className="w-3 h-3 text-white"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                          strokeWidth={3}
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M5 13l4 4L19 7"
-                          />
-                        </svg>
-                      )}
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={val}
-                      onChange={() =>
-                        setExcelCols((prev) => ({
-                          ...prev,
-                          [key]: !prev[key as keyof typeof prev],
-                        }))
-                      }
-                      className="sr-only"
-                    />
-                    <span className="text-sm text-gray-300 group-hover:text-white transition-colors capitalize">
-                      {key === "orderId"
-                        ? "Order ID"
-                        : key === "usd"
-                          ? "Amount $"
-                          : key === "lbp"
-                            ? "Amount LL"
-                            : key}
-                    </span>
-                  </label>
-                ))}
+                      <div
+                        className={`w-5 h-5 rounded-md border-2 flex items-center justify-center
+                                    transition-all duration-200
+                                    ${
+                                      val
+                                        ? "bg-cyan-500 border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                                        : "border-gray-600 group-hover:border-gray-500"
+                                    }`}
+                      >
+                        {val && (
+                          <svg
+                            className="w-3 h-3 text-white"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={3}
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M5 13l4 4L19 7"
+                            />
+                          </svg>
+                        )}
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={val}
+                        onChange={() =>
+                          setExcelCols((prev) => ({
+                            ...prev,
+                            [col.key]: !prev[col.key],
+                          }))
+                        }
+                        className="sr-only"
+                      />
+                      <span className="text-sm text-gray-300 group-hover:text-white transition-colors">
+                        {col.label}
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
 
               <div className="flex gap-3">
@@ -4728,36 +4917,16 @@ function OrdersPageInner() {
 
                     // Build columns dynamically based on selected excelCols
                     const cols: any[] = [];
-                    if (excelCols.orderId)
+                    const selectedDefs = EXPORT_COLUMNS.filter(
+                      (c) => excelCols[c.key],
+                    );
+                    selectedDefs.forEach((c) => {
                       cols.push({
-                        header: "Order ID",
-                        key: "orderId",
-                        width: 15,
+                        header: c.header,
+                        key: c.key,
+                        width: c.width,
                       });
-                    if (excelCols.date)
-                      cols.push({ header: "Date", key: "date", width: 15 });
-                    if (excelCols.seller)
-                      cols.push({ header: "Seller", key: "seller", width: 20 });
-                    if (excelCols.customer)
-                      cols.push({
-                        header: "Customer",
-                        key: "customer",
-                        width: 25,
-                      });
-                    if (excelCols.phone)
-                      cols.push({ header: "Phone", key: "phone", width: 18 });
-                    if (excelCols.address)
-                      cols.push({
-                        header: "Address",
-                        key: "address",
-                        width: 35,
-                      });
-                    if (excelCols.city)
-                      cols.push({ header: "City", key: "city", width: 20 });
-                    if (excelCols.usd)
-                      cols.push({ header: "Amount $", key: "usd", width: 15 });
-                    if (excelCols.lbp)
-                      cols.push({ header: "Amount LL", key: "lbp", width: 15 });
+                    });
                     worksheet.columns = cols;
 
                     // Add Rows & Format
@@ -4765,21 +4934,11 @@ function OrdersPageInner() {
                       selectedOrderIds.includes(o.id),
                     );
                     exportData.forEach((order) => {
-                      const sellerName =
-                        order.merchant?.ownerFirstName ||
-                        order.merchant?.merchantName ||
-                        "—";
-                      worksheet.addRow({
-                        orderId: order.orderId,
-                        date: new Date(order.createdAt).toLocaleDateString(),
-                        seller: sellerName,
-                        customer: order.customerName,
-                        phone: order.customerPhone,
-                        address: order.customerAddress,
-                        city: order.city || "-",
-                        usd: order.amountUsd,
-                        lbp: order.amountLbp,
+                      const row: Record<string, string | number> = {};
+                      selectedDefs.forEach((c) => {
+                        row[c.key] = c.value(order);
                       });
+                      worksheet.addRow(row);
                     });
 
                     // Apply borders and centering to all cells
