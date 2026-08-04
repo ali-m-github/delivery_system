@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import SharedOrderTable from "@/components/SharedOrderTable";
 import CashSellerWorkspace from "@/components/sellers/CashSellerWorkspace";
 import ImportGoogleSheetsModal from "@/components/orders/ImportGoogleSheetsModal";
@@ -62,29 +63,48 @@ export default function SellerClient({ merchant }: SellerClientProps) {
       : "",
   );
   const [isSavingModel, setIsSavingModel] = useState(false);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
 
   const handleSaveBusinessModel = useCallback(async () => {
     setIsSavingModel(true);
     try {
-      const res = await fetch(`/api/sellers/${merchant.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          isCashSeller: editIsCashSeller,
-          defaultSellerRate: editIsCashSeller
-            ? parseFloat(editSellerRate) || null
-            : null,
-          defaultProfitRate: editIsCashSeller
-            ? parseFloat(editProfitRate) || null
-            : null,
-        }),
-      });
+      const payload = {
+        isCashSeller: editIsCashSeller,
+        defaultSellerRate: editIsCashSeller
+          ? parseFloat(editSellerRate) || null
+          : null,
+        defaultProfitRate: editIsCashSeller
+          ? parseFloat(editProfitRate) || null
+          : null,
+      };
+
+      let res: Response;
+      if (logoFile) {
+        // Use FormData (multipart) when a file is attached so the image can be uploaded
+        const formData = new FormData();
+        Object.entries(payload).forEach(([key, value]) => {
+          if (value !== null && value !== undefined)
+            formData.append(key, String(value));
+        });
+        formData.append("logo", logoFile);
+        res = await fetch(`/api/sellers/${merchant.id}`, {
+          method: "PATCH",
+          body: formData,
+        });
+      } else {
+        res = await fetch(`/api/sellers/${merchant.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
 
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || "Failed to update business model");
       }
 
+      setLogoFile(null);
       setIsEditingModel(false);
       router.refresh();
     } catch (error: any) {
@@ -92,7 +112,14 @@ export default function SellerClient({ merchant }: SellerClientProps) {
     } finally {
       setIsSavingModel(false);
     }
-  }, [merchant.id, editIsCashSeller, editSellerRate, editProfitRate, router]);
+  }, [
+    merchant.id,
+    editIsCashSeller,
+    editSellerRate,
+    editProfitRate,
+    logoFile,
+    router,
+  ]);
 
   useEffect(() => {
     setSelectedOrders([]);
@@ -393,32 +420,46 @@ export default function SellerClient({ merchant }: SellerClientProps) {
       <div className="max-w-[1400px] mx-auto">
         {/* ── Header ── */}
         <div className="flex justify-between items-start mb-6 border-b border-white/10 pb-6">
-          <div>
-            <h1 className="text-3xl font-bold text-white">
-              {merchant.merchantName}
-            </h1>
-            <p className="text-gray-400 text-sm mt-2">
-              <span className="bg-[#121824] px-2 py-1 rounded border border-white/5 mr-2 font-mono text-cyan-400">
-                ID: {merchant.merchantId}
-              </span>
-              Phone: {merchant.phone || "N/A"} &middot; Address:{" "}
-              {merchant.address || "N/A"}
-            </p>
-            <div className="mt-4 flex gap-2">
-              <button
-                onClick={() =>
-                  window.open(`/statements?merchantId=${merchant.id}`, "_blank")
-                }
-                className="px-3 py-1.5 text-xs font-bold bg-white/5 text-gray-300 border border-white/10 rounded hover:bg-white/10 transition-colors"
-              >
-                View Historical Statements
-              </button>
-              <button
-                onClick={() => setShowImportModal(true)}
-                className="px-3 py-1.5 text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded hover:bg-cyan-500/20 transition-colors"
-              >
-                Import Orders from Google Sheets
-              </button>
+          <div className="flex items-start gap-4">
+            {merchant.logoUrl && (
+              <Image
+                src={merchant.logoUrl}
+                alt={`${merchant.merchantName} logo`}
+                width={64}
+                height={64}
+                className="w-16 h-16 rounded-full object-cover border border-white/10 bg-[#121824]"
+              />
+            )}
+            <div>
+              <h1 className="text-3xl font-bold text-white">
+                {merchant.merchantName}
+              </h1>
+              <p className="text-gray-400 text-sm mt-2">
+                <span className="bg-[#121824] px-2 py-1 rounded border border-white/5 mr-2 font-mono text-cyan-400">
+                  ID: {merchant.merchantId}
+                </span>
+                Phone: {merchant.phone || "N/A"} &middot; Address:{" "}
+                {merchant.address || "N/A"}
+              </p>
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={() =>
+                    window.open(
+                      `/statements?merchantId=${merchant.id}`,
+                      "_blank",
+                    )
+                  }
+                  className="px-3 py-1.5 text-xs font-bold bg-white/5 text-gray-300 border border-white/10 rounded hover:bg-white/10 transition-colors"
+                >
+                  View Historical Statements
+                </button>
+                <button
+                  onClick={() => setShowImportModal(true)}
+                  className="px-3 py-1.5 text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded hover:bg-cyan-500/20 transition-colors"
+                >
+                  Import Orders from Google Sheets
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -551,6 +592,33 @@ export default function SellerClient({ merchant }: SellerClientProps) {
                   </div>
                 </div>
               )}
+
+              {/* Logo Upload */}
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                  Logo
+                </label>
+                <div className="flex items-center gap-3">
+                  {merchant.logoUrl && (
+                    <Image
+                      src={merchant.logoUrl}
+                      alt="Current logo"
+                      width={40}
+                      height={40}
+                      className="w-10 h-10 rounded-full object-cover border border-white/10 bg-[#0B0F17]"
+                    />
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
+                    className="text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-cyan-500/10 file:text-cyan-400 file:font-bold file:cursor-pointer cursor-pointer"
+                  />
+                </div>
+                <p className="text-[10px] text-gray-600 mt-1">
+                  Optional. Replace the merchant logo (rounded avatar).
+                </p>
+              </div>
 
               {/* Action Buttons */}
               <div className="flex justify-end gap-3">

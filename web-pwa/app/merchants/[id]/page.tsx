@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
+import Image from "next/image";
 
 type Tab = "ALL" | "WAREHOUSE" | "ASSIGNED" | "WD" | "WO" | "RETURN" | "PS";
 
@@ -128,20 +129,31 @@ export default function MerchantProfilePage() {
       <div className="max-w-7xl mx-auto">
         {/* ── Header ──────────────────────────────────────────────────── */}
         <div className="flex justify-between items-start mb-6 border-b border-white/10 pb-6">
-          <div>
-            <h1 className="text-3xl font-bold text-white">
-              {merchant.merchantName}
-            </h1>
-            <p className="text-gray-400 text-sm mt-2 flex flex-wrap gap-x-4 gap-y-1">
-              <span className="bg-[#121824] px-2 py-1 rounded border border-white/5 font-mono text-cyan-400">
-                M-{merchant.merchantId}
-              </span>
-              {merchant.contactName && (
-                <span>Contact: {merchant.contactName}</span>
-              )}
-              {merchant.phone && <span>Phone: {merchant.phone}</span>}
-              {merchant.address && <span>Address: {merchant.address}</span>}
-            </p>
+          <div className="flex items-start gap-4">
+            {merchant.logoUrl && (
+              <Image
+                src={merchant.logoUrl}
+                alt={`${merchant.merchantName} logo`}
+                width={64}
+                height={64}
+                className="w-16 h-16 rounded-full object-cover border border-white/10 bg-[#121824]"
+              />
+            )}
+            <div>
+              <h1 className="text-3xl font-bold text-white">
+                {merchant.merchantName}
+              </h1>
+              <p className="text-gray-400 text-sm mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                <span className="bg-[#121824] px-2 py-1 rounded border border-white/5 font-mono text-cyan-400">
+                  M-{merchant.merchantId}
+                </span>
+                {merchant.contactName && (
+                  <span>Contact: {merchant.contactName}</span>
+                )}
+                {merchant.phone && <span>Phone: {merchant.phone}</span>}
+                {merchant.address && <span>Address: {merchant.address}</span>}
+              </p>
+            </div>
           </div>
           <button
             onClick={() => router.push("/merchants")}

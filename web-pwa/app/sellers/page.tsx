@@ -21,6 +21,7 @@ export default function SellersPage() {
     defaultProfitRate: "",
   });
   const [submitting, setSubmitting] = useState(false);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
 
   // Zone Overrides Modal State
   const [isRatesModalOpen, setIsRatesModalOpen] = useState(false);
@@ -54,24 +55,41 @@ export default function SellersPage() {
 
     setSubmitting(true);
     try {
-      const res = await fetch("/api/sellers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          merchantName: newSeller.merchantName.trim(),
-          contactName: newSeller.contactName.trim() || null,
-          phone: newSeller.phone.trim() || null,
-          address: newSeller.address?.trim() || null,
-          socialMedia: newSeller.socialMedia?.trim() || null,
-          isCashSeller: newSeller.isCashSeller,
-          defaultSellerRate: newSeller.isCashSeller
-            ? parseFloat(newSeller.defaultSellerRate) || null
-            : null,
-          defaultProfitRate: newSeller.isCashSeller
-            ? parseFloat(newSeller.defaultProfitRate) || null
-            : null,
-        }),
-      });
+      const payload: Record<string, string | number | boolean | null> = {
+        merchantName: newSeller.merchantName.trim(),
+        contactName: newSeller.contactName.trim() || null,
+        phone: newSeller.phone.trim() || null,
+        address: newSeller.address?.trim() || null,
+        socialMedia: newSeller.socialMedia?.trim() || null,
+        isCashSeller: newSeller.isCashSeller,
+        defaultSellerRate: newSeller.isCashSeller
+          ? parseFloat(newSeller.defaultSellerRate) || null
+          : null,
+        defaultProfitRate: newSeller.isCashSeller
+          ? parseFloat(newSeller.defaultProfitRate) || null
+          : null,
+      };
+
+      let res: Response;
+      if (logoFile) {
+        // Use FormData (multipart) when a file is attached so the image can be uploaded
+        const formData = new FormData();
+        Object.entries(payload).forEach(([key, value]) => {
+          if (value !== null && value !== undefined)
+            formData.append(key, String(value));
+        });
+        formData.append("logo", logoFile);
+        res = await fetch("/api/sellers", {
+          method: "POST",
+          body: formData,
+        });
+      } else {
+        res = await fetch("/api/sellers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
       if (res.ok) {
         setNewSeller({
           merchantName: "",
@@ -83,6 +101,7 @@ export default function SellersPage() {
           defaultSellerRate: "",
           defaultProfitRate: "",
         });
+        setLogoFile(null);
         setIsAddModalOpen(false);
         await fetchData();
       } else {
@@ -394,6 +413,21 @@ export default function SellersPage() {
                     }
                     className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                    Logo
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
+                    className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#124046] file:text-[#42d4e6] file:font-bold file:cursor-pointer cursor-pointer"
+                  />
+                  <p className="text-[10px] text-gray-600 mt-1">
+                    Optional. Upload a square PNG/JPG/WebP logo (displayed as a
+                    rounded avatar).
+                  </p>
                 </div>
 
                 {/* ── Cash Seller Toggle ── */}

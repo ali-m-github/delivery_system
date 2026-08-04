@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { hashPassword } from "@/helpers/auth";
+import { isImageFile, saveMerchantLogo } from "@/lib/logoUpload";
 
 const prisma = new PrismaClient();
+
+// Helper: read a string field from a FormData payload (empty → null)
+function formString(formData: FormData, key: string): string | null {
+  const value = formData.get(key);
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
 
 // GET /api/admin/users — Fetch all users (select fields)
 export async function GET() {
@@ -33,16 +40,43 @@ export async function GET() {
 // POST /api/admin/users — Create a new user (employee/admin)
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const {
-      username,
-      email,
-      password,
-      role,
-      permissions,
-      permissionGroupId,
-      customPermissions,
-    } = body;
+    // Accept both `application/json` and `multipart/form-data` (for logo upload).
+    const contentType = request.headers.get("content-type") || "";
+    const isMultipart = contentType.includes("multipart/form-data");
+
+    let username = "";
+    let email = "";
+    let password = "";
+    let role = "";
+    let permissions: string[] = [];
+    let permissionGroupId: string | null = null;
+    let customPermissions: string[] = [];
+    let logoUrl: string | null = null;
+
+    if (isMultipart) {
+      const formData = await request.formData();
+      username = formString(formData, "username") ?? "";
+      email = formString(formData, "email") ?? "";
+      password = formString(formData, "password") ?? "";
+      role = formString(formData, "role") ?? "";
+      const perms = formString(formData, "permissions");
+      permissions = perms ? JSON.parse(perms) : [];
+      permissionGroupId = formString(formData, "permissionGroupId");
+      const custom = formString(formData, "customPermissions");
+      customPermissions = custom ? JSON.parse(custom) : [];
+      const logo = formData.get("logo");
+      if (isImageFile(logo)) logoUrl = await saveMerchantLogo(logo);
+    } else {
+      const body = await request.json();
+      username = body.username || "";
+      email = body.email || "";
+      password = body.password || "";
+      role = body.role || "";
+      permissions = body.permissions || [];
+      permissionGroupId = body.permissionGroupId || null;
+      customPermissions = body.customPermissions || [];
+      logoUrl = body.logoUrl ?? null;
+    }
 
     // Validate required fields
     if (!username || !email || !password || !role) {
@@ -97,6 +131,15 @@ export async function POST(request: Request) {
         customPermissions: true,
       },
     });
+
+    // Persist the logo on the merchant record linked to this user
+    if (role === "MERCHANT" && logoUrl) {
+      await prisma.merchant.upsert({
+        where: { userId: user.id },
+        create: { userId: user.id, merchantName: username, logoUrl },
+        update: { logoUrl },
+      });
+    }
 
     return NextResponse.json(user, { status: 201 });
   } catch (error) {

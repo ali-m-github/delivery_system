@@ -1801,6 +1801,7 @@ function EmployeesTab() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("EMPLOYEE");
+  const [logoFile, setLogoFile] = useState<File | null>(null);
   const [selectedPermissions, setSelectedPermissions] = useState<string[]>([]);
   const [permissionGroups, setPermissionGroups] = useState<
     { id: string; name: string; permissions: string[] }[]
@@ -1871,6 +1872,7 @@ function EmployeesTab() {
     setLastName("");
     setEmail("");
     setPassword("");
+    setLogoFile(null);
     setRole("EMPLOYEE");
     setSelectedPermissions([]);
     setPermissionGroupId("");
@@ -1892,25 +1894,33 @@ function EmployeesTab() {
         : "/api/admin/users";
       const method = editingEmployeeId ? "PUT" : "POST";
 
-      const body: Record<string, unknown> = {
-        username: username.trim(),
-        role,
-        permissions: selectedPermissions,
-        permissionGroupId: permissionGroupId || null,
-        customPermissions,
-      };
+      // Use FormData (multipart) so a logo file can be uploaded; the browser
+      // sets the multipart boundary automatically (no manual Content-Type).
+      const formData = new FormData();
+      formData.append("username", username.trim());
+      formData.append("role", role);
+      formData.append("permissions", JSON.stringify(selectedPermissions));
+      formData.append("permissionGroupId", permissionGroupId || "");
+      formData.append("customPermissions", JSON.stringify(customPermissions));
       if (!editingEmployeeId) {
         // Create mode: email and password are required
-        Object.assign(body, { email, password });
+        formData.append("email", email);
+        formData.append("password", password);
       } else {
         // Edit mode: email stays unchanged; password optional
-        if (password && password.trim()) body.password = password.trim();
+        if (password && password.trim()) {
+          formData.append("password", password.trim());
+        }
+      }
+      // Append the logo file if it exists (only meaningful for Merchant role)
+      if (logoFile) {
+        formData.append("logo", logoFile);
       }
 
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        // No Content-Type — browser sets multipart boundary automatically
+        body: formData,
       });
 
       if (res.ok) {
@@ -2062,8 +2072,39 @@ function EmployeesTab() {
               <option value="ADMIN" className="bg-gray-900">
                 ADMIN
               </option>
+              <option value="MERCHANT" className="bg-gray-900">
+                MERCHANT
+              </option>
             </select>
           </div>
+
+          {/* Merchant Logo (only for Merchant role) */}
+          {role === "MERCHANT" && (
+            <div>
+              <label
+                htmlFor="merchantLogo"
+                className="block text-xs font-medium text-gray-400 mb-1.5"
+              >
+                Merchant Logo
+              </label>
+              <input
+                id="merchantLogo"
+                type="file"
+                accept="image/*"
+                onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
+                className="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4
+                           file:rounded-lg file:border-0 file:text-sm file:font-semibold
+                           file:bg-cyan-500/20 file:text-cyan-300
+                           hover:file:bg-cyan-500/30 file:cursor-pointer file:transition-all file:duration-200
+                           focus:outline-none"
+              />
+              {logoFile && (
+                <p className="mt-1 text-[10px] text-cyan-400/80">
+                  {logoFile.name} selected
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Permission Group */}
           <div>
@@ -2314,6 +2355,7 @@ function EmployeesTab() {
                             setPermissionGroupId(user.permissionGroupId || "");
                             setCustomPermissions(user.customPermissions || []);
                             setPassword("");
+                            setLogoFile(null);
                             // Scroll to form
                             window.scrollTo({ top: 0, behavior: "smooth" });
                           }}

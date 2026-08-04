@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { isImageFile, saveMerchantLogo } from "@/lib/logoUpload";
 
 const prisma = new PrismaClient();
+
+// Helper: read a string field from a FormData payload (empty → null)
+function formString(formData: FormData, key: string): string | null {
+  const value = formData.get(key);
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
 
 // GET /api/admin/merchants/[id] — Fetch a single merchant with orders and zone rates
 export async function GET(
@@ -41,6 +48,7 @@ export async function GET(
 }
 
 // PATCH /api/admin/merchants/[id] — Update a merchant (incl. cash seller settings)
+// Accepts both `application/json` and `multipart/form-data` (for logo upload).
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -48,39 +56,91 @@ export async function PATCH(
   try {
     const resolvedParams = await params;
     const merchantId = resolvedParams.id;
-    const body = await request.json();
+    const contentType = request.headers.get("content-type") || "";
+    const isMultipart = contentType.includes("multipart/form-data");
 
     // Build update data dynamically — only include fields that are provided
     const updateData: Record<string, unknown> = {};
 
-    if (body.merchantName !== undefined)
-      updateData.merchantName = body.merchantName;
-    if (body.contactName !== undefined)
-      updateData.contactName = body.contactName;
-    if (body.phone !== undefined) updateData.phone = body.phone;
-    if (body.address !== undefined) updateData.address = body.address;
-    if (body.socialMedia !== undefined)
-      updateData.socialMedia = body.socialMedia;
-    if (body.isActive !== undefined) updateData.isActive = body.isActive;
+    if (isMultipart) {
+      const formData = await request.formData();
 
-    // Saved sheet import template
-    if (body.sheetImportConfig !== undefined)
-      updateData.sheetImportConfig = body.sheetImportConfig;
+      if (formData.has("merchantName"))
+        updateData.merchantName = formString(formData, "merchantName") ?? "";
+      if (formData.has("contactName"))
+        updateData.contactName = formString(formData, "contactName");
+      if (formData.has("phone"))
+        updateData.phone = formString(formData, "phone");
+      if (formData.has("address"))
+        updateData.address = formString(formData, "address");
+      if (formData.has("socialMedia"))
+        updateData.socialMedia = formString(formData, "socialMedia");
+      if (formData.has("isActive"))
+        updateData.isActive = formString(formData, "isActive") === "true";
 
-    // Cash seller toggles & rates
-    if (body.isCashSeller !== undefined)
-      updateData.isCashSeller = body.isCashSeller === true;
-    if (body.defaultSellerRate !== undefined) {
-      updateData.defaultSellerRate =
-        body.defaultSellerRate != null
-          ? parseFloat(body.defaultSellerRate)
-          : null;
-    }
-    if (body.defaultProfitRate !== undefined) {
-      updateData.defaultProfitRate =
-        body.defaultProfitRate != null
-          ? parseFloat(body.defaultProfitRate)
-          : null;
+      // Saved sheet import template
+      if (formData.has("sheetImportConfig")) {
+        const raw = formString(formData, "sheetImportConfig");
+        if (raw != null) {
+          try {
+            updateData.sheetImportConfig = JSON.parse(raw);
+          } catch {
+            updateData.sheetImportConfig = raw;
+          }
+        }
+      }
+
+      // Cash seller toggles & rates
+      if (formData.has("isCashSeller"))
+        updateData.isCashSeller =
+          formString(formData, "isCashSeller") === "true";
+      if (formData.has("defaultSellerRate")) {
+        const rate = formString(formData, "defaultSellerRate");
+        updateData.defaultSellerRate = rate != null ? parseFloat(rate) : null;
+      }
+      if (formData.has("defaultProfitRate")) {
+        const rate = formString(formData, "defaultProfitRate");
+        updateData.defaultProfitRate = rate != null ? parseFloat(rate) : null;
+      }
+
+      // Logo upload / removal
+      const logo = formData.get("logo");
+      if (isImageFile(logo)) updateData.logoUrl = await saveMerchantLogo(logo);
+      if (formString(formData, "clearLogo") === "true")
+        updateData.logoUrl = null;
+    } else {
+      const body = await request.json();
+
+      if (body.merchantName !== undefined)
+        updateData.merchantName = body.merchantName;
+      if (body.contactName !== undefined)
+        updateData.contactName = body.contactName;
+      if (body.phone !== undefined) updateData.phone = body.phone;
+      if (body.address !== undefined) updateData.address = body.address;
+      if (body.socialMedia !== undefined)
+        updateData.socialMedia = body.socialMedia;
+      if (body.isActive !== undefined) updateData.isActive = body.isActive;
+      if (body.logoUrl !== undefined) updateData.logoUrl = body.logoUrl;
+
+      // Saved sheet import template
+      if (body.sheetImportConfig !== undefined)
+        updateData.sheetImportConfig = body.sheetImportConfig;
+
+      // Cash seller toggles & rates
+      if (body.isCashSeller !== undefined)
+        updateData.isCashSeller = body.isCashSeller === true;
+      if (body.defaultSellerRate !== undefined) {
+        updateData.defaultSellerRate =
+          body.defaultSellerRate != null
+            ? parseFloat(body.defaultSellerRate)
+            : null;
+      }
+      if (body.defaultProfitRate !== undefined) {
+        updateData.defaultProfitRate =
+          body.defaultProfitRate != null
+            ? parseFloat(body.defaultProfitRate)
+            : null;
+      }
     }
 
     // Step 1: Resolve the true primary key UUID regardless of input format

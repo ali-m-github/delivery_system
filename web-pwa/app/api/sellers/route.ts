@@ -1,7 +1,24 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { isImageFile, saveMerchantLogo } from "@/lib/logoUpload";
 
 const prisma = new PrismaClient();
+
+// Parse a multipart request into a plain object. String fields are collected
+// as-is; a `logo` file is persisted to public/uploads/merchants and exposed as
+// a `logoUrl` web path.
+async function parseFormBody(
+  request: Request,
+): Promise<Record<string, unknown>> {
+  const formData = await request.formData();
+  const body: Record<string, unknown> = {};
+  for (const [key, value] of formData.entries()) {
+    if (typeof value === "string") body[key] = value;
+  }
+  const logo = formData.get("logo");
+  if (isImageFile(logo)) body.logoUrl = await saveMerchantLogo(logo);
+  return body;
+}
 
 // GET all sellers with their zone rates
 export async function GET() {
@@ -20,9 +37,16 @@ export async function GET() {
 }
 
 // POST a new seller
+// Accepts both `application/json` and `multipart/form-data` (for logo upload).
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
+    const contentType = request.headers.get("content-type") || "";
+    const isMultipart = contentType.includes("multipart/form-data");
+
+    // Parse a multipart payload (with optional logo) or fall back to JSON.
+    const body = isMultipart
+      ? await parseFormBody(request)
+      : await request.json();
 
     const {
       name,
@@ -35,6 +59,7 @@ export async function POST(request: Request) {
       defaultProfitRate,
       contactName,
       socialMedia,
+      logoUrl,
       ...otherData
     } = body;
 
@@ -65,7 +90,9 @@ export async function POST(request: Request) {
         phone: phone || "N/A",
         address: address || "N/A",
         socialMedia: socialMedia || null,
-        isCashSeller: Boolean(isCashSeller),
+        logoUrl: logoUrl || null,
+        // FormData sends booleans as "true"/"false" strings; JSON sends real booleans.
+        isCashSeller: isCashSeller === true || isCashSeller === "true",
         defaultSellerRate: isNaN(parsedSellerRate as number)
           ? null
           : parsedSellerRate,
