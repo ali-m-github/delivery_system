@@ -79,6 +79,9 @@ export async function POST(request: Request) {
             for (const match of matches) {
               const order = await prisma.order.findUnique({
                 where: { orderId: match },
+                include: {
+                  merchant: { select: { logoUrl: true } },
+                },
               });
 
               // 5. Only lock in the number if the database confirms it exists
@@ -142,6 +145,9 @@ export async function POST(request: Request) {
             for (const match of matches) {
               const orderExists = await prisma.order.findUnique({
                 where: { orderId: match },
+                include: {
+                  merchant: { select: { logoUrl: true } },
+                },
               });
 
               if (orderExists) {

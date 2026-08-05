@@ -44,3 +44,33 @@ body {
 @utility animate-scan-line {
   animation: scan-line 2s ease-in-out infinite;
 }
+
+/* ── Waybill logo: print-safe rendering ─────────────────────────────────── */
+.waybill-logo {
+  width: 56px;
+  height: 56px;
+  max-width: 56px;
+  max-height: 56px;
+  object-fit: contain;
+  display: inline-block;
+}
+
+@media print {
+  /* Keep the logo header on one page — never split across a page break */
+  .waybill-header,
+  .waybill-logo {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .waybill-logo {
+    /* Ensure colors/images are rendered and the logo cannot be rescaled
+       unpredictably during PDF generation. */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    width: 56px;
+    height: 56px;
+    max-width: 56px;
+    max-height: 56px;
+  }
+}

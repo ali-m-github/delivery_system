@@ -18,6 +18,7 @@ interface Order {
     ownerFirstName: string;
     ownerLastName: string;
     merchantName: string;
+    logoUrl: string | null;
   } | null;
   createdAt: string;
 }
@@ -97,8 +98,41 @@ export default function PrintPage() {
   const sellerName = (o: Order) =>
     o.merchant?.ownerFirstName || o.merchant?.merchantName || "—";
 
+  // ── Waybill header branding: merchant logo + name ───────────────────────
+  const headerMerchant =
+    orders.find((o) => o.merchant?.logoUrl)?.merchant ||
+    orders[0]?.merchant ||
+    null;
+
   return (
     <div id="print-container" className="bg-white text-black p-8">
+      {headerMerchant && (
+        <div className="waybill-header mb-4 flex items-center gap-3 border-b-2 border-gray-800 pb-3">
+          {headerMerchant.logoUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={headerMerchant.logoUrl}
+              alt={headerMerchant.merchantName || "Merchant logo"}
+              className="waybill-logo"
+            />
+          )}
+          <div>
+            <h1 className="text-xl font-bold text-black">
+              {headerMerchant.merchantName ||
+                headerMerchant.ownerFirstName ||
+                "Waybill"}
+            </h1>
+            <p className="text-xs text-gray-500">
+              {orders.length} order{orders.length !== 1 ? "s" : ""} · Generated{" "}
+              {new Date().toLocaleDateString("en-US", {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              })}
+            </p>
+          </div>
+        </div>
+      )}
       <table className="w-full border-collapse border-2 border-gray-800 text-sm">
         <thead>
           <tr>

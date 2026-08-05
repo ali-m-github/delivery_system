@@ -92,6 +92,7 @@ export async function GET(request: NextRequest) {
               id: true,
               merchantName: true,
               contactName: true,
+              logoUrl: true,
             },
           },
           creator: {
