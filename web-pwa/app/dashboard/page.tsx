@@ -310,7 +310,7 @@ export default async function DashboardPage() {
         {/* ── System Modules (kept from original) ── */}
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
           <Link
-            href="/sellers"
+            href="/merchants"
             className="backdrop-blur-xl bg-white/5 border border-white/10 hover:border-cyan-500/50 p-6 rounded-2xl transition-all duration-300 flex flex-col items-center justify-center text-center group hover:shadow-[0_0_20px_rgba(6,182,212,0.15)]"
           >
             <div className="w-14 h-14 bg-cyan-500/10 text-cyan-400 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 group-hover:bg-cyan-500/20 transition-all duration-300 text-2xl shadow-[0_0_15px_rgba(6,182,212,0.2)]">

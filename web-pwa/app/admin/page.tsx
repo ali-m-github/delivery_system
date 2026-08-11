@@ -62,6 +62,10 @@ const PERMISSION_TAXONOMY = {
     { id: "ACTION_ORDER_EDIT", label: "Edit Orders" },
     { id: "ACTION_DRIVER_CREATE", label: "Create Drivers" },
     {
+      id: "ACTION_DRIVER_RATE_EDIT",
+      label: "Edit Driver Rates",
+    },
+    {
       id: "ACTION_TREASURY_TRANSACT",
       label: "Treasury Transactions (Add/Withdraw/Transfer)",
     },

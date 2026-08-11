@@ -302,7 +302,13 @@ export default function CashSellerWorkspace({
 
   // ── Submission Handler ──
   const handleSubmit = async () => {
-    if (selectedOrderIds.size === 0 || isSubmitting) return;
+    // Allow a batch with only returned orders selected (net will be negative).
+    if (
+      (selectedOrderIds.size === 0 && selectedReturnIds.size === 0) ||
+      isSubmitting
+    ) {
+      return;
+    }
 
     setIsSubmitting(true);
     setError(null);
@@ -338,7 +344,9 @@ export default function CashSellerWorkspace({
 
       const batch = await res.json();
       setSuccessMessage(
-        `Payout batch ${batch.batchReference} generated successfully! Net: $${batch.netPaid.toFixed(2)}`,
+        `Payout batch ${batch.batchReference} generated successfully! Net: ${
+          batch.netPaid >= 0 ? "" : "−"
+        }$${Math.abs(batch.netPaid).toFixed(2)}`,
       );
       setSelectedOrderIds(new Set());
       setSelectedReturnIds(new Set());
@@ -458,7 +466,10 @@ export default function CashSellerWorkspace({
         <div className="bg-[#121824] border border-white/5 rounded-xl p-4 flex flex-col justify-center">
           <button
             onClick={handleSubmit}
-            disabled={selectedOrderIds.size === 0 || isSubmitting}
+            disabled={
+              (selectedOrderIds.size === 0 && selectedReturnIds.size === 0) ||
+              isSubmitting
+            }
             className="w-full bg-cyan-500 hover:bg-cyan-400 text-[#0B0F17] font-bold py-2.5 px-4 rounded-lg transition-all shadow-[0_0_15px_rgba(6,182,212,0.3)] disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none text-sm"
           >
             {isSubmitting ? (
@@ -470,9 +481,9 @@ export default function CashSellerWorkspace({
               "Generate & Save Payout Batch"
             )}
           </button>
-          {selectedOrderIds.size === 0 && (
+          {selectedOrderIds.size === 0 && selectedReturnIds.size === 0 && (
             <p className="text-gray-600 text-[10px] text-center mt-2">
-              Select at least one order to enable
+              Select at least one order or return to enable
             </p>
           )}
         </div>
@@ -913,7 +924,7 @@ export default function CashSellerWorkspace({
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                window.location.href = `/sellers/${merchantId}/payouts/${batch.id}`;
+                                window.location.href = `/merchants/${merchantId}/payouts/${batch.id}`;
                               }}
                               className="px-3 py-1 text-[10px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 rounded hover:bg-cyan-500/20 transition-colors"
                             >

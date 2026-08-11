@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import SharedOrderTable from "@/components/SharedOrderTable";
-import CashSellerWorkspace from "@/components/sellers/CashSellerWorkspace";
+import CashSellerWorkspace from "@/components/merchants/CashSellerWorkspace";
 import ImportGoogleSheetsModal from "@/components/orders/ImportGoogleSheetsModal";
 
 const formatDate = (iso: string) => {
@@ -32,10 +32,10 @@ function getPageNumbers(current: number, total: number): (number | "…")[] {
 
 type TabKey = "ALL" | "WAREHOUSE" | "ASSIGNED" | "WD" | "WO" | "RETURN" | "PS";
 
-interface SellerClientProps {
+interface MerchantClientProps {
   merchant: any;
 }
-export default function SellerClient({ merchant }: SellerClientProps) {
+export default function MerchantClient({ merchant }: MerchantClientProps) {
   const router = useRouter();
 
   const [activeTab, setActiveTab] = useState<TabKey>("ALL");
@@ -87,12 +87,12 @@ export default function SellerClient({ merchant }: SellerClientProps) {
             formData.append(key, String(value));
         });
         formData.append("logo", logoFile);
-        res = await fetch(`/api/sellers/${merchant.id}`, {
+        res = await fetch(`/api/admin/merchants/${merchant.id}`, {
           method: "PATCH",
           body: formData,
         });
       } else {
-        res = await fetch(`/api/sellers/${merchant.id}`, {
+        res = await fetch(`/api/admin/merchants/${merchant.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),

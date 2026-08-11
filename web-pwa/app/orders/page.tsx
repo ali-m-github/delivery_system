@@ -5,6 +5,9 @@ import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import * as XLSX from "xlsx";
 import SharedOrderTable, {
   formatDDMMYYYY,
+  SortableTh,
+  getOrderSortValue,
+  compareSortValues,
 } from "@/components/SharedOrderTable";
 import GlobalSheetImportModal from "@/components/orders/GlobalSheetImportModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
@@ -815,6 +818,21 @@ function OrdersPageInner() {
   const [rwdPage, setRwdPage] = useState(1);
   const [rwdItemsPerPage, setRwdItemsPerPage] = useState(50);
 
+  // ── Warehouse column sorting (click header to toggle asc/desc) ──
+  const [warehouseSortKey, setWarehouseSortKey] = useState<string>("");
+  const [warehouseSortDir, setWarehouseSortDir] = useState<"asc" | "desc">(
+    "asc",
+  );
+
+  const handleWarehouseSort = (key: string) => {
+    if (warehouseSortKey === key) {
+      setWarehouseSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setWarehouseSortKey(key);
+      setWarehouseSortDir("asc");
+    }
+  };
+
   // Reset warehouse pagination when zone or search query changes
   useEffect(() => {
     setWarehousePage(1);
@@ -864,7 +882,7 @@ function OrdersPageInner() {
           fetch("/api/admin/zones"),
           fetch("/api/admin/drivers"),
           fetch("/api/admin/merchants"),
-          fetch("/api/sellers/list"),
+          fetch("/api/admin/merchants/list"),
         ]);
       if (ordersRes.ok) {
         const result = await ordersRes.json();
@@ -1640,12 +1658,23 @@ function OrdersPageInner() {
     });
   }, [zoneItems, batchSearchQuery]);
 
+  const sortedWarehouseItems = useMemo(() => {
+    if (!warehouseSortKey) return warehouseItems;
+    const dir = warehouseSortDir;
+    return [...warehouseItems].sort((a, b) => {
+      const va = getOrderSortValue(a, warehouseSortKey);
+      const vb = getOrderSortValue(b, warehouseSortKey);
+      const cmp = compareSortValues(va, vb);
+      return dir === "asc" ? cmp : -cmp;
+    });
+  }, [warehouseItems, warehouseSortKey, warehouseSortDir]);
+
   const paginatedWarehouseItems = useMemo(() => {
-    return warehouseItems.slice(
+    return sortedWarehouseItems.slice(
       (warehousePage - 1) * itemsPerPage,
       warehousePage * itemsPerPage,
     );
-  }, [warehouseItems, warehousePage, itemsPerPage]);
+  }, [sortedWarehouseItems, warehousePage, itemsPerPage]);
 
   const paginatedReturns = useMemo(() => {
     return returnsOrders.slice(
@@ -2073,9 +2102,24 @@ function OrdersPageInner() {
                             "_blank",
                           )
                         }
+                        title="Open printable waybills for the selected orders"
                         className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
                       >
-                        🔗 New Tab
+                        🖨️ Print Waybills
+                      </button>
+                      <button
+                        onClick={() =>
+                          window.open(
+                            "/print/orders?ids=" +
+                              selectedOrderIds.join(",") +
+                              "&simple=true",
+                            "_blank",
+                          )
+                        }
+                        title="Open a printable financial summary of the selected orders (non-waybill)"
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold text-purple-400 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 transition-colors"
+                      >
+                        📋 Summary
                       </button>
                       <button
                         onClick={() => setExcelModalOpen(true)}
@@ -2750,36 +2794,88 @@ function OrdersPageInner() {
                                     className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
                                   />
                                 </th>
-                                <th className="px-2 py-2 text-left font-medium">
-                                  Order ID
-                                </th>
-                                <th className="px-2 py-2 text-left font-medium">
-                                  Date Received
-                                </th>
-                                <th className="px-2 py-2 text-left font-medium">
-                                  Seller
-                                </th>
-                                <th className="px-2 py-2 text-left font-medium">
-                                  Customer
-                                </th>
-                                <th className="px-2 py-2 text-left font-medium">
-                                  Phone
-                                </th>
-                                <th className="px-2 py-2 text-left font-medium">
-                                  Address
-                                </th>
-                                <th className="px-2 py-2 text-left font-medium">
-                                  Driver
-                                </th>
-                                <th className="px-2 py-2 text-left font-medium">
-                                  Fin Status
-                                </th>
-                                <th className="px-2 py-2 text-right font-medium">
-                                  Amt $
-                                </th>
-                                <th className="px-2 py-2 text-right font-medium">
-                                  Amt LL
-                                </th>
+                                <SortableTh
+                                  label="Order ID"
+                                  sortKey="orderId"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  className="px-2"
+                                />
+                                <SortableTh
+                                  label="Date Received"
+                                  sortKey="dateReceived"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  className="px-2"
+                                />
+                                <SortableTh
+                                  label="Seller"
+                                  sortKey="seller"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  className="px-2"
+                                />
+                                <SortableTh
+                                  label="Customer"
+                                  sortKey="customer"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  className="px-2"
+                                />
+                                <SortableTh
+                                  label="Phone"
+                                  sortKey="phone"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  className="px-2"
+                                />
+                                <SortableTh
+                                  label="Address"
+                                  sortKey="address"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  className="px-2"
+                                />
+                                <SortableTh
+                                  label="Driver"
+                                  sortKey="driver"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  className="px-2"
+                                />
+                                <SortableTh
+                                  label="Fin Status"
+                                  sortKey="fin"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  className="px-2"
+                                />
+                                <SortableTh
+                                  label="Amt $"
+                                  sortKey="amountUsd"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  align="text-right"
+                                  className="px-2"
+                                />
+                                <SortableTh
+                                  label="Amt LL"
+                                  sortKey="amountLbp"
+                                  activeKey={warehouseSortKey}
+                                  dir={warehouseSortDir}
+                                  onSort={handleWarehouseSort}
+                                  align="text-right"
+                                  className="px-2"
+                                />
                               </tr>
                             </thead>
                             <tbody>
@@ -3694,12 +3790,18 @@ function OrdersPageInner() {
                   </h3>
                   <div className="flex gap-3">
                     <button
-                      onClick={() =>
+                      onClick={() => {
+                        if (selectedOrderIds.length === 0) {
+                          alert(
+                            "Please select at least one return order to include in the RTS manifest.",
+                          );
+                          return;
+                        }
                         window.open(
-                          `/orders/print?ids=${returnsOrders.map((o) => o.id).join(",")}&pdf=true`,
+                          `/print/orders/manifest?ids=${selectedOrderIds.join(",")}`,
                           "_blank",
-                        )
-                      }
+                        );
+                      }}
                       className="px-3 py-1.5 text-xs font-bold rounded bg-white/10 text-white border border-white/20 hover:bg-white/20 transition-all shadow-sm"
                     >
                       Print RTS Manifest

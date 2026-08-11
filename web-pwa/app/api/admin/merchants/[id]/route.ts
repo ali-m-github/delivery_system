@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { isImageFile, saveMerchantLogo } from "@/lib/logoUpload";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -12,10 +13,13 @@ function formString(formData: FormData, key: string): string | null {
 
 // GET /api/admin/merchants/[id] — Fetch a single merchant with orders and zone rates
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+    if (auth instanceof Response) return auth;
+
     const resolvedParams = await params;
     const merchantId = resolvedParams.id;
 
@@ -54,6 +58,9 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+    if (auth instanceof Response) return auth;
+
     const resolvedParams = await params;
     const merchantId = resolvedParams.id;
     const contentType = request.headers.get("content-type") || "";

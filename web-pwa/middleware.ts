@@ -37,7 +37,7 @@ export const config = {
     "/admin/:path*",
     "/driver/:path*",
     "/drivers/:path*",
-    "/sellers/:path*",
+    "/merchants/:path*",
     "/settlements/:path*",
     "/merchant/:path*",
     "/zones/:path*",

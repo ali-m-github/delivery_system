@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 
 const LOCATION_LABELS: Record<string, string> = {
@@ -23,6 +23,95 @@ export function formatDDMMYYYY(iso: string): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
+}
+
+// ─── Column sorting helpers (shared by SharedOrderTable and orders page) ──────
+export function getOrderSortValue(order: any, key: string): string | number {
+  switch (key) {
+    case "orderId":
+      return String(order.orderId || "");
+    case "dateReceived":
+      return order.createdAt ? new Date(order.createdAt).getTime() : 0;
+    case "seller":
+      return (
+        order.merchant?.merchantName || order.merchant?.ownerFirstName || ""
+      );
+    case "customer":
+      return order.customerName || "";
+    case "phone":
+      return order.customerPhone || "";
+    case "address":
+      return order.customerAddress || "";
+    case "zone":
+      return order.zone?.name || order.zoneId || "";
+    case "driver":
+      return order.driver
+        ? `${order.driver.firstName} ${order.driver.lastName}`
+        : "";
+    case "location":
+      return order.location || "";
+    case "fin":
+      return order.financialStatus || "";
+    case "amountUsd":
+      return order.amountUsd ?? 0;
+    case "amountLbp":
+      return order.amountLbp ?? 0;
+    case "collectedUsd":
+      return order.collectedUsd ?? 0;
+    case "collectedLbp":
+      return order.collectedLbp ?? 0;
+    default:
+      return "";
+  }
+}
+
+export function compareSortValues(
+  a: string | number,
+  b: string | number,
+): number {
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  return String(a).localeCompare(String(b), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+// Clickable table header that toggles ascending / descending sort.
+export function SortableTh({
+  label,
+  sortKey,
+  activeKey,
+  dir,
+  onSort,
+  align = "text-left",
+  className = "",
+}: {
+  label: string;
+  sortKey: string;
+  activeKey: string;
+  dir: "asc" | "desc";
+  onSort: (key: string) => void;
+  align?: "text-left" | "text-right" | "text-center";
+  className?: string;
+}) {
+  const active = activeKey === sortKey;
+  return (
+    <th className={`px-2 py-2 whitespace-nowrap ${align} ${className}`}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        title={`Sort by ${label}`}
+        className={`inline-flex items-center gap-1 uppercase tracking-wider transition-colors ${
+          active ? "text-cyan-300" : "hover:text-cyan-300"
+        }`}
+      >
+        {label}
+        <span className="text-[9px] leading-none">
+          {active ? (dir === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </button>
+    </th>
+  );
 }
 
 interface SharedOrderTableProps {
@@ -69,6 +158,31 @@ export default function SharedOrderTable({
       selectAllRef.current.indeterminate = isIndeterminate;
     }
   }, [isIndeterminate, isAllSelected, selectedOrderIds]);
+
+  // ── Column sorting (click header to toggle asc/desc) ──
+  const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" }>({
+    key: "",
+    dir: "asc",
+  });
+
+  const handleSort = (key: string) => {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: "asc" },
+    );
+  };
+
+  const sortedOrders = useMemo(() => {
+    if (!sort.key) return orders;
+    const dir = sort.dir;
+    return [...orders].sort((a, b) => {
+      const va = getOrderSortValue(a, sort.key);
+      const vb = getOrderSortValue(b, sort.key);
+      const cmp = compareSortValues(va, vb);
+      return dir === "asc" ? cmp : -cmp;
+    });
+  }, [orders, sort.key, sort.dir]);
 
   const renderTableRow = (order: any) => {
     const sellerName =
@@ -151,7 +265,9 @@ export default function SharedOrderTable({
         </td>
 
         <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
-          <span className="lg:hidden font-bold text-gray-400">Date:</span>
+          <span className="lg:hidden font-bold text-gray-400">
+            Date Received:
+          </span>
           <span className="text-gray-400">
             {formatDDMMYYYY(order.createdAt)}
           </span>
@@ -367,7 +483,7 @@ export default function SharedOrderTable({
     return mainRow;
   };
 
-  if (orders.length === 0) {
+  if (sortedOrders.length === 0) {
     return (
       <div className="text-center py-20">
         <p className="text-gray-500 text-sm">No orders match this filter.</p>
@@ -391,20 +507,122 @@ export default function SharedOrderTable({
                   className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
                 />
               </th>
-              <th className="px-0.5 py-2 whitespace-nowrap">ID</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">DATE</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">SELLER</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">CUSTOMER</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">TEL NUMBER</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">ADDRESS</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">ZONE</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">DRIVER</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">LOCATION</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">FIN</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">AMT $</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">AMT LL</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">$ COLL</th>
-              <th className="px-0.5 py-2 whitespace-nowrap">LL COLL</th>
+              <SortableTh
+                label="ID"
+                sortKey="orderId"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="DATE RECEIVED"
+                sortKey="dateReceived"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="SELLER"
+                sortKey="seller"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="CUSTOMER"
+                sortKey="customer"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="TEL NUMBER"
+                sortKey="phone"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="ADDRESS"
+                sortKey="address"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="ZONE"
+                sortKey="zone"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="DRIVER"
+                sortKey="driver"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="LOCATION"
+                sortKey="location"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="FIN"
+                sortKey="fin"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                className="px-0.5"
+              />
+              <SortableTh
+                label="AMT $"
+                sortKey="amountUsd"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                align="text-right"
+                className="px-0.5"
+              />
+              <SortableTh
+                label="AMT LL"
+                sortKey="amountLbp"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                align="text-right"
+                className="px-0.5"
+              />
+              <SortableTh
+                label="$ COLL"
+                sortKey="collectedUsd"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                align="text-right"
+                className="px-0.5"
+              />
+              <SortableTh
+                label="LL COLL"
+                sortKey="collectedLbp"
+                activeKey={sort.key}
+                dir={sort.dir}
+                onSort={handleSort}
+                align="text-right"
+                className="px-0.5"
+              />
               <th className="px-0.5 py-2 whitespace-nowrap">WA</th>
               <th className="px-0.5 py-2 whitespace-nowrap">DOC</th>
               {onCopyLink && (
@@ -413,7 +631,7 @@ export default function SharedOrderTable({
             </tr>
           </thead>
           <tbody className="block lg:table-row-group">
-            {orders.flatMap(renderTableRow)}
+            {sortedOrders.flatMap(renderTableRow)}
           </tbody>
         </table>
       </div>

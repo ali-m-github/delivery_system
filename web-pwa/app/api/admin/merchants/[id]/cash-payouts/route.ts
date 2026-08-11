@@ -36,13 +36,18 @@ export async function GET(
     if (from) dateFilter.gte = new Date(from);
     if (to) dateFilter.lte = new Date(`${to}T23:59:59.999Z`);
 
-    // 1. Unpaid Eligible Orders (not yet batched, not excluded, location WAREHOUSE, ASSIGNED, or DELIVERED)
+    // 1. Unpaid Eligible Orders (not yet batched, not excluded).
+    //    Any location qualifies — including RETURNs — because the seller has
+    //    already been paid the advance; payments are sometimes recorded in the
+    //    system days later. Only orders already claimed by a cash payout batch
+    //    (as an advance or as a return deduction) are excluded.
     const unpaidOrders = await prisma.order.findMany({
       where: {
         merchantId,
         cashPayoutBatchId: null,
+        returnDeductionBatchId: null,
         cashPayoutExcluded: false,
-        location: { in: ["WAREHOUSE", "ASSIGNED", "DELIVERED"] },
+        isArchived: false,
         ...(Object.keys(dateFilter).length ? { createdAt: dateFilter } : {}),
       },
       select: {

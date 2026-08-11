@@ -143,7 +143,7 @@ const AdminIcon = () => (
 const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: <DashboardIcon /> },
   { label: "Orders", href: "/orders", icon: <OrdersIcon /> },
-  { label: "Sellers", href: "/sellers", icon: <SellersIcon /> },
+  { label: "Merchants", href: "/merchants", icon: <SellersIcon /> },
   { label: "Drivers", href: "/drivers", icon: <DriversIcon /> },
   {
     label: "Driver Consignments",
@@ -504,7 +504,9 @@ export default function Sidebar() {
 
   return (
     <>
-      <div className="h-screen sticky top-0 shrink-0">{sidebarContent}</div>
+      <div className="h-screen sticky top-0 shrink-0 print:hidden">
+        {sidebarContent}
+      </div>
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

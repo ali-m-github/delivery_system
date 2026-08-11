@@ -7,6 +7,7 @@ export default function SellersPage() {
   const [sellers, setSellers] = useState<any[]>([]);
   const [zones, setZones] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Add Modal State
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -31,15 +32,33 @@ export default function SellersPage() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [sellersRes, zonesRes] = await Promise.all([
-        fetch("/api/sellers"),
+        fetch("/api/admin/merchants"),
         fetch("/api/admin/zones"),
       ]);
-      if (sellersRes.ok) setSellers(await sellersRes.json());
-      if (zonesRes.ok) setZones(await zonesRes.json());
-    } catch (error) {
-      console.error("Failed to fetch data", error);
+
+      if (!sellersRes.ok) {
+        const errBody = await sellersRes.json().catch(() => null);
+        setError(
+          `Failed to load merchants (${sellersRes.status}): ${
+            (errBody as { error?: string } | null)?.error ??
+            sellersRes.statusText
+          }`,
+        );
+      } else {
+        setSellers(await sellersRes.json());
+      }
+
+      if (!zonesRes.ok) {
+        setError((prev) => prev ?? `Failed to load zones (${zonesRes.status})`);
+      } else {
+        setZones(await zonesRes.json());
+      }
+    } catch (err: any) {
+      console.error("Failed to fetch data", err);
+      setError(`Data fetch error: ${err?.message ?? String(err)}`);
     } finally {
       setLoading(false);
     }
@@ -79,12 +98,12 @@ export default function SellersPage() {
             formData.append(key, String(value));
         });
         formData.append("logo", logoFile);
-        res = await fetch("/api/sellers", {
+        res = await fetch("/api/admin/merchants", {
           method: "POST",
           body: formData,
         });
       } else {
-        res = await fetch("/api/sellers", {
+        res = await fetch("/api/admin/merchants", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -146,7 +165,9 @@ export default function SellersPage() {
     )
       return;
     try {
-      const res = await fetch(`/api/sellers?id=${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/admin/merchants?id=${id}`, {
+        method: "DELETE",
+      });
       if (res.ok) {
         fetchData(); // Refresh the board
       } else {
@@ -206,7 +227,7 @@ export default function SellersPage() {
             rateLbp: sr.rateLbp,
           })),
       };
-      const res = await fetch("/api/sellers", {
+      const res = await fetch("/api/admin/merchants", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -242,6 +263,13 @@ export default function SellersPage() {
             </button>
           </div>
         </div>
+
+        {/* Inline error state — surface the exact failure reason instead of a silent/looping redirect */}
+        {error && (
+          <div className="mb-6 rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
+            <strong>Access Denied or Data Mismatch:</strong> {error}
+          </div>
+        )}
 
         {/* Table */}
         {loading ? (
@@ -289,7 +317,7 @@ export default function SellersPage() {
                       </td>
                       <td className="p-4 text-right whitespace-nowrap">
                         <Link
-                          href={`/sellers/${seller.id}`}
+                          href={`/merchants/${seller.id}`}
                           className="inline-block bg-blue-600/20 text-blue-400 hover:bg-blue-600/40 border border-blue-500/30 px-3 py-1.5 rounded transition-colors text-xs font-bold mr-2"
                         >
                           View Profile

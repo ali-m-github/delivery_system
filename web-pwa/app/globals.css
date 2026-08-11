@@ -55,7 +55,234 @@ body {
   display: inline-block;
 }
 
+/* ── Waybill card: modern card-based print layout ───────────────────────── */
+.waybill-card {
+  border: 1px solid #000;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+  background: #fff;
+  color: #000;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* Company logo placeholder: fixed height + subtle border */
+.waybill-company-logo {
+  height: 60px;
+  border: 1px dashed #9ca3af;
+  border-radius: 6px;
+}
+
+.waybill-top {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.waybill-meta {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.waybill-order-id {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 1rem;
+}
+
+.waybill-submeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.waybill-sep {
+  color: #6b7280;
+}
+
+.waybill-seller {
+  margin-top: 6px;
+}
+
+.waybill-section-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid #000;
+  padding-bottom: 3px;
+  margin-bottom: 8px;
+}
+
+.waybill-seller-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.waybill-seller-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.waybill-label {
+  font-size: 0.75rem;
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.waybill-value {
+  font-weight: 700;
+  color: #000;
+  font-size: 0.95rem;
+}
+
+/* Merchant logo: constrained so it can never break the layout */
+.waybill-merchant-logo {
+  max-height: 60px;
+  max-width: 150px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* QR code block: spans the vertical space alongside the order details */
+.waybill-qr {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #000;
+  border-radius: 6px;
+  padding: 10px;
+  min-width: 132px;
+}
+
+.waybill-qr-img,
+.waybill-qr-placeholder {
+  display: block;
+}
+
+.waybill-qr-caption {
+  font-size: 0.68rem;
+  color: #4b5563;
+  word-break: break-all;
+  text-align: center;
+}
+
+.waybill-ship {
+  border: 1px solid #000;
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.waybill-field {
+  display: flex;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.waybill-field .waybill-label {
+  min-width: 56px;
+  flex: 0 0 auto;
+}
+
+.waybill-bottom-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.waybill-instructions,
+.waybill-cod {
+  border: 1px solid #000;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.waybill-instructions-text {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #111;
+  white-space: pre-wrap;
+}
+
+.waybill-cod-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.95rem;
+  font-weight: 700;
+  padding: 2px 0;
+}
+
+.waybill-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid #000;
+  padding-top: 12px;
+}
+
+.waybill-signature-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.waybill-signature-label {
+  color: #111;
+}
+
+.waybill-signature-line {
+  display: inline-block;
+  width: 180px;
+  height: 0;
+  border-bottom: 1px solid #000;
+}
+
+/* Arabic legal text: RTL with a font stack that renders Arabic cleanly */
+.waybill-arabic {
+  direction: rtl;
+  unicode-bidi: embed;
+  text-align: center;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  margin: 0;
+  font-family: Arial, "Segoe UI", Tahoma, "Noto Naskh Arabic", sans-serif;
+}
+
 @media print {
+  /* Force exact color rendering so every border/background prints cleanly */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Make the Tailwind page-break-inside-avoid class actually take effect */
+  .page-break-inside-avoid {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
   /* Keep the logo header on one page — never split across a page break */
   .waybill-header,
   .waybill-logo {
@@ -72,5 +299,29 @@ body {
     height: 56px;
     max-width: 56px;
     max-height: 56px;
+  }
+
+  /* ── Waybill card: never split a single waybill across physical pages ── */
+  .waybill-card {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    box-shadow: none !important;
+    border-radius: 0;
+    margin-bottom: 16px;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Optimize for monochrome thermal printers: flat borders, no page padding */
+  #print-container {
+    padding: 0 !important;
+  }
+
+  .waybill-company-logo,
+  .waybill-merchant-logo,
+  .waybill-qr-img,
+  .waybill-qr-placeholder {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }

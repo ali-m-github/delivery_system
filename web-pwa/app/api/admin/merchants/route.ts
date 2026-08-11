@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { isImageFile, saveMerchantLogo } from "@/lib/logoUpload";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -10,10 +11,14 @@ function formString(formData: FormData, key: string): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-// GET /api/admin/merchants — Fetch all active merchants
-export async function GET() {
+// GET /api/admin/merchants — Fetch all merchants with their zone rates
+export async function GET(request: Request) {
   try {
+    const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+    if (auth instanceof Response) return auth;
+
     const merchants = await prisma.merchant.findMany({
+      include: { zoneRates: true },
       orderBy: { createdAt: "desc" },
     });
     return NextResponse.json(merchants);
@@ -29,6 +34,9 @@ export async function GET() {
 // Accepts both `application/json` and `multipart/form-data` (for logo upload).
 export async function POST(request: Request) {
   try {
+    const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+    if (auth instanceof Response) return auth;
+
     const contentType = request.headers.get("content-type") || "";
     const isMultipart = contentType.includes("multipart/form-data");
 
@@ -101,6 +109,67 @@ export async function POST(request: Request) {
     return NextResponse.json(newMerchant, { status: 201 });
   } catch (error: any) {
     console.error("Create Merchant Error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+// PATCH /api/admin/merchants — Upsert custom zone rates for a merchant
+export async function PATCH(request: Request) {
+  try {
+    const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+    if (auth instanceof Response) return auth;
+
+    const body = await request.json();
+    const { merchantId, rates } = body;
+
+    if (!merchantId || !rates || !Array.isArray(rates)) {
+      return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+    }
+
+    await Promise.all(
+      rates.map((r: any) =>
+        prisma.merchantZoneRate.upsert({
+          where: { merchantId_zoneId: { merchantId, zoneId: r.zoneId } },
+          update: {
+            rate: parseFloat(r.rate) || 0,
+            rateLbp: r.rateLbp !== undefined ? parseFloat(r.rateLbp) || 0 : 0,
+          },
+          create: {
+            merchantId,
+            zoneId: r.zoneId,
+            rate: parseFloat(r.rate) || 0,
+            rateLbp: r.rateLbp !== undefined ? parseFloat(r.rateLbp) || 0 : 0,
+          },
+        }),
+      ),
+    );
+
+    return NextResponse.json({ success: true }, { status: 200 });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+// DELETE /api/admin/merchants?id=<id> — Delete a merchant and its custom rates
+export async function DELETE(request: Request) {
+  try {
+    const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+    if (auth instanceof Response) return auth;
+
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get("id");
+    if (!id) {
+      return NextResponse.json(
+        { error: "Merchant ID required" },
+        { status: 400 },
+      );
+    }
+
+    await prisma.merchantZoneRate.deleteMany({ where: { merchantId: id } });
+    await prisma.merchant.delete({ where: { id } });
+
+    return NextResponse.json({ success: true }, { status: 200 });
+  } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

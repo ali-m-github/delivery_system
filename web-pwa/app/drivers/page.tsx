@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, Fragment } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import CreateDriverModal from "@/components/drivers/CreateDriverModal";
+import PermissionGuard from "@/components/PermissionGuard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,29 @@ interface DriverPayout {
     zone: { name: string };
     driverCommissionUsd?: number;
   }>;
+}
+
+interface DriverZoneRateRow {
+  id: string;
+  zoneId: string;
+  rate: number;
+  zone?: { name: string } | null;
+}
+
+interface DriverRow {
+  id: string;
+  driverId: string;
+  firstName: string;
+  lastName: string;
+  username?: string;
+  user?: { username: string } | null;
+  zoneRates?: DriverZoneRateRow[];
+}
+
+interface SellerRateRow {
+  merchantId: string;
+  merchantName: string;
+  rateUsd: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -83,7 +107,7 @@ export default function DriversDirectoryPage() {
   );
 
   // ── Drivers (registry) ──
-  const [drivers, setDrivers] = useState<any[]>([]);
+  const [drivers, setDrivers] = useState<DriverRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   // ── Payouts (ledger) ──
@@ -106,6 +130,166 @@ export default function DriversDirectoryPage() {
 
   // ── Create driver modal ──
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+
+  // ── Driver rate editor modal ──
+  const [rateModalDriver, setRateModalDriver] = useState<DriverRow | null>(
+    null,
+  );
+  const [zones, setZones] = useState<{ id: string; name: string }[]>([]);
+  const [rateDraft, setRateDraft] = useState<Record<string, string>>({});
+  const [sellerRateRows, setSellerRateRows] = useState<SellerRateRow[]>([]);
+  const [cashSellerRates, setCashSellerRates] = useState<
+    { merchantId: string; merchantName: string; rateUsd: number }[]
+  >([]);
+  const [merchants, setMerchants] = useState<
+    { id: string; merchantName: string }[]
+  >([]);
+  const [sellerAddMerchantId, setSellerAddMerchantId] = useState("");
+  const [sellerAddRate, setSellerAddRate] = useState("");
+  const [rateSaving, setRateSaving] = useState(false);
+
+  const openRateModal = async (driver: DriverRow) => {
+    // Reset drafts
+    setRateDraft({});
+    setSellerRateRows([]);
+    setCashSellerRates([]);
+    setSellerAddMerchantId("");
+    setSellerAddRate("");
+    setRateModalDriver(driver);
+    try {
+      const [driverRes, zonesRes, merchantsRes] = await Promise.all([
+        fetch(`/api/admin/drivers/${driver.driverId}`),
+        fetch("/api/admin/zones"),
+        fetch("/api/admin/merchants"),
+      ]);
+      if (driverRes.ok) {
+        const full = (await driverRes.json()) as {
+          zoneRates?: { zoneId: string; rate: number }[];
+          driverSellerRates?: {
+            merchantId: string;
+            rateUsd: number;
+            merchant?: { merchantName: string } | null;
+          }[];
+          user?: {
+            driverCashSellerRates?: {
+              merchantId: string;
+              rateUsd: number;
+              merchant?: { merchantName: string } | null;
+            }[];
+          } | null;
+        };
+        const zoneDraft: Record<string, string> = {};
+        (full.zoneRates || []).forEach((zr) => {
+          zoneDraft[zr.zoneId] = String(zr.rate ?? 0);
+        });
+        setRateDraft(zoneDraft);
+        setSellerRateRows(
+          (full.driverSellerRates || []).map((sr) => ({
+            merchantId: sr.merchantId,
+            merchantName:
+              sr.merchant?.merchantName || `Seller #${sr.merchantId}`,
+            rateUsd: String(sr.rateUsd ?? 0),
+          })),
+        );
+        setCashSellerRates(
+          (full.user?.driverCashSellerRates || []).map((cr) => ({
+            merchantId: cr.merchantId,
+            merchantName:
+              cr.merchant?.merchantName || `Seller #${cr.merchantId}`,
+            rateUsd: Number(cr.rateUsd ?? 0),
+          })),
+        );
+      }
+      if (zonesRes.ok) setZones(await zonesRes.json());
+      if (merchantsRes.ok) setMerchants(await merchantsRes.json());
+    } catch {
+      // silently fail
+    }
+  };
+
+  const closeRateModal = () => {
+    if (rateSaving) return;
+    setRateModalDriver(null);
+    setRateDraft({});
+    setSellerRateRows([]);
+    setCashSellerRates([]);
+    setSellerAddMerchantId("");
+    setSellerAddRate("");
+  };
+
+  const addSellerRateRow = () => {
+    if (!sellerAddMerchantId) return;
+    if (sellerRateRows.some((r) => r.merchantId === sellerAddMerchantId)) {
+      alert("This seller already has an exception rate.");
+      return;
+    }
+    const merchant = merchants.find((m) => m.id === sellerAddMerchantId);
+    setSellerRateRows((prev) => [
+      ...prev,
+      {
+        merchantId: sellerAddMerchantId,
+        merchantName: merchant?.merchantName || "Seller",
+        rateUsd: sellerAddRate,
+      },
+    ]);
+    setSellerAddMerchantId("");
+    setSellerAddRate("");
+  };
+
+  const updateSellerRateRow = (index: number, rateUsd: string) => {
+    setSellerRateRows((prev) =>
+      prev.map((row, i) => (i === index ? { ...row, rateUsd } : row)),
+    );
+  };
+
+  const removeSellerRateRow = (index: number) => {
+    setSellerRateRows((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const saveRates = async () => {
+    if (!rateModalDriver) return;
+    const zoneRates = Object.entries(rateDraft)
+      .map(([zoneId, rateStr]) => ({ zoneId, rate: parseFloat(rateStr) }))
+      .filter((r) => !isNaN(r.rate) && r.rate >= 0);
+    const sellerRates = sellerRateRows
+      .map((row) => ({
+        merchantId: row.merchantId,
+        rateUsd: parseFloat(row.rateUsd),
+      }))
+      .filter((r) => r.merchantId && !isNaN(r.rateUsd) && r.rateUsd >= 0);
+    setRateSaving(true);
+    try {
+      const results = await Promise.all([
+        fetch(`/api/admin/drivers/${rateModalDriver.driverId}/zone-rates`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rates: zoneRates }),
+        }),
+        fetch(`/api/admin/drivers/${rateModalDriver.driverId}/seller-rates`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sellerRates }),
+        }),
+      ]);
+      for (const res of results) {
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || "Failed to save driver rates");
+        }
+      }
+      setRateModalDriver(null);
+      setRateDraft({});
+      setSellerRateRows([]);
+      setCashSellerRates([]);
+      // Refresh the drivers list to reflect the new rates
+      const dataRes = await fetch("/api/admin/drivers");
+      if (dataRes.ok) setDrivers(await dataRes.json());
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Error saving driver rates");
+    } finally {
+      setRateSaving(false);
+    }
+  };
 
   const togglePayoutSelection = (id: string) => {
     setSelectedPayouts((prev) =>
@@ -460,16 +644,27 @@ export default function DriversDirectoryPage() {
                             </span>
                           </td>
                           <td className="px-6 py-4 text-right">
-                            <button
-                              onClick={() =>
-                                router.push(
-                                  `/drivers/${driver.driverId.toLowerCase()}`,
-                                )
-                              }
-                              className="bg-white/5 hover:bg-white/10 border border-white/10 text-white px-3 py-1.5 rounded text-xs font-semibold transition-colors"
-                            >
-                              View Profile
-                            </button>
+                            <div className="flex items-center justify-end gap-2">
+                              <PermissionGuard requires="ACTION_DRIVER_RATE_EDIT">
+                                <button
+                                  onClick={() => openRateModal(driver)}
+                                  className="bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-400 px-3 py-1.5 rounded text-xs font-semibold transition-colors"
+                                  title="Change this driver's commission rates"
+                                >
+                                  Set Rate
+                                </button>
+                              </PermissionGuard>
+                              <button
+                                onClick={() =>
+                                  router.push(
+                                    `/drivers/${driver.driverId.toLowerCase()}`,
+                                  )
+                                }
+                                className="bg-white/5 hover:bg-white/10 border border-white/10 text-white px-3 py-1.5 rounded text-xs font-semibold transition-colors"
+                              >
+                                View Profile
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -977,6 +1172,234 @@ export default function DriversDirectoryPage() {
               </div>
             </div>
           </>
+        )}
+
+        {/* ── Driver Rate Editor Modal ── */}
+        {rateModalDriver && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+            <div className="bg-[#121824] border border-white/10 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+                <div>
+                  <h3 className="text-white font-bold text-sm">
+                    Edit Driver Rates
+                  </h3>
+                  <p className="text-gray-500 text-xs mt-0.5">
+                    {capitalizeName(rateModalDriver.firstName)}{" "}
+                    {capitalizeName(rateModalDriver.lastName)} (
+                    {rateModalDriver.driverId})
+                  </p>
+                </div>
+                <button
+                  onClick={closeRateModal}
+                  disabled={rateSaving}
+                  className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-colors disabled:opacity-50"
+                >
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="px-6 py-5 max-h-[65vh] overflow-y-auto">
+                <p className="text-gray-400 text-xs mb-4 leading-relaxed">
+                  View and change the commission rates for this driver. Zone
+                  rates apply per delivery in each zone; seller exception rates
+                  override zone rates for specific sellers.
+                </p>
+
+                {/* ── Zone Rates ── */}
+                <h4 className="text-white font-semibold text-sm mb-2">
+                  Zone Rates
+                </h4>
+                {zones.length === 0 ? (
+                  <p className="text-gray-500 text-sm py-4 italic">
+                    No zones available.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {zones.map((zone) => (
+                      <div
+                        key={zone.id}
+                        className="flex items-center justify-between gap-4 px-4 py-2.5 rounded-lg bg-[#0B0F17] border border-white/5"
+                      >
+                        <span className="text-sm text-gray-300 min-w-0 truncate">
+                          {zone.name}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-500 text-xs">$</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="—"
+                            value={rateDraft[zone.id] ?? ""}
+                            onChange={(e) =>
+                              setRateDraft((prev) => ({
+                                ...prev,
+                                [zone.id]: e.target.value,
+                              }))
+                            }
+                            className="w-28 px-3 py-1.5 rounded-lg bg-slate-950 text-white text-sm border border-gray-700 outline-none focus:border-cyan-500"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── Seller Exception Rates ── */}
+                <div className="mt-6">
+                  <h4 className="text-white font-semibold text-sm mb-1">
+                    Seller Exception Rates
+                  </h4>
+                  <p className="text-gray-500 text-xs mb-3">
+                    Custom flat rates that override zone rates for specific
+                    sellers.
+                  </p>
+
+                  {sellerRateRows.length === 0 ? (
+                    <p className="text-gray-500 text-xs italic mb-3">
+                      No seller exceptions configured.
+                    </p>
+                  ) : (
+                    <div className="space-y-2 mb-3">
+                      {sellerRateRows.map((row, index) => (
+                        <div
+                          key={row.merchantId}
+                          className="flex items-center justify-between gap-3 px-4 py-2 rounded-lg bg-[#0B0F17] border border-white/5"
+                        >
+                          <span className="text-sm text-gray-300 min-w-0 truncate flex-1">
+                            {row.merchantName}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-500 text-xs">$</span>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={row.rateUsd}
+                              onChange={(e) =>
+                                updateSellerRateRow(index, e.target.value)
+                              }
+                              className="w-24 px-3 py-1.5 rounded-lg bg-slate-950 text-white text-sm border border-gray-700 outline-none focus:border-cyan-500"
+                            />
+                            <button
+                              onClick={() => removeSellerRateRow(index)}
+                              className="text-red-400 hover:text-red-300 text-sm px-1"
+                              title="Remove exception"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Add exception */}
+                  <div className="flex items-end gap-2">
+                    <div className="flex-1 min-w-0">
+                      <select
+                        value={sellerAddMerchantId}
+                        onChange={(e) => setSellerAddMerchantId(e.target.value)}
+                        className="w-full px-3 py-2 rounded-lg bg-slate-800 text-white text-sm border border-slate-700 outline-none focus:border-cyan-500"
+                      >
+                        <option value="">Select seller…</option>
+                        {merchants
+                          .filter(
+                            (m) =>
+                              !sellerRateRows.some(
+                                (r) => r.merchantId === m.id,
+                              ),
+                          )
+                          .map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.merchantName}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    <div className="w-24">
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="$"
+                        value={sellerAddRate}
+                        onChange={(e) => setSellerAddRate(e.target.value)}
+                        className="w-full px-3 py-2 rounded-lg bg-slate-950 text-white text-sm border border-gray-700 outline-none focus:border-cyan-500"
+                      />
+                    </div>
+                    <button
+                      onClick={addSellerRateRow}
+                      disabled={!sellerAddMerchantId || sellerAddRate === ""}
+                      className="px-4 py-2 rounded-lg text-xs font-bold text-white bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+
+                {/* ── Cash Seller Rates (read-only) ── */}
+                {cashSellerRates.length > 0 && (
+                  <div className="mt-6">
+                    <h4 className="text-white font-semibold text-sm mb-1">
+                      Cash Seller Rates
+                    </h4>
+                    <p className="text-gray-500 text-xs mb-3">
+                      These take precedence for cash sellers and are managed
+                      from the seller workspace.
+                    </p>
+                    <div className="space-y-1.5">
+                      {cashSellerRates.map((cr) => (
+                        <div
+                          key={cr.merchantId}
+                          className="flex items-center justify-between px-4 py-2 rounded-lg bg-[#0B0F17] border border-white/5 opacity-80"
+                        >
+                          <span className="text-sm text-gray-300">
+                            {cr.merchantName}
+                          </span>
+                          <span className="font-mono text-cyan-300 text-sm">
+                            ${cr.rateUsd.toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center gap-3 px-6 py-4 border-t border-white/10">
+                <button
+                  onClick={closeRateModal}
+                  disabled={rateSaving}
+                  className="flex-1 py-2.5 rounded-lg font-bold text-sm text-gray-400 border border-white/10 hover:bg-white/5 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveRates}
+                  disabled={rateSaving}
+                  className="flex-1 py-2.5 rounded-lg font-bold text-sm text-white bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 disabled:text-gray-500 transition-colors shadow-lg shadow-cyan-500/20"
+                >
+                  {rateSaving ? "Saving…" : "Save Rates"}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

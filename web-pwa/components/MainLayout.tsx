@@ -19,8 +19,8 @@ export default function MainLayout({
       <main
         className={
           isTrackPage || isPrintPage
-            ? "flex-1"
-            : "flex-1 overflow-y-auto min-w-0"
+            ? "flex-1 print:m-0 print:p-0 print:w-full print:max-w-none"
+            : "flex-1 overflow-y-auto min-w-0 print:m-0 print:p-0 print:w-full print:max-w-none"
         }
       >
         <RouteGuard>{children}</RouteGuard>

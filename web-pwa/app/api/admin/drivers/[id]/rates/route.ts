@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -53,6 +54,13 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // ── Server-side RBAC: require ACTION_DRIVER_RATE_EDIT before any work ──
+  const auth = await requireServerPermission(
+    request,
+    "ACTION_DRIVER_RATE_EDIT",
+  );
+  if (auth instanceof Response) return auth;
+
   try {
     const { id: identifier } = await params;
 
@@ -122,6 +130,13 @@ export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // ── Server-side RBAC: require ACTION_DRIVER_RATE_EDIT before any work ──
+  const auth = await requireServerPermission(
+    request,
+    "ACTION_DRIVER_RATE_EDIT",
+  );
+  if (auth instanceof Response) return auth;
+
   try {
     const { id: identifier } = await params;
 
@@ -179,6 +194,13 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // ── Server-side RBAC: require ACTION_DRIVER_RATE_EDIT before any work ──
+  const auth = await requireServerPermission(
+    request,
+    "ACTION_DRIVER_RATE_EDIT",
+  );
+  if (auth instanceof Response) return auth;
+
   try {
     const { id: identifier } = await params;
 

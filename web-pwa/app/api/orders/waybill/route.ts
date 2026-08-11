@@ -80,7 +80,7 @@ export async function POST(request: Request) {
               const order = await prisma.order.findUnique({
                 where: { orderId: match },
                 include: {
-                  merchant: { select: { logoUrl: true } },
+                  merchant: { select: { merchantName: true, logoUrl: true } },
                 },
               });
 
@@ -146,7 +146,7 @@ export async function POST(request: Request) {
               const orderExists = await prisma.order.findUnique({
                 where: { orderId: match },
                 include: {
-                  merchant: { select: { logoUrl: true } },
+                  merchant: { select: { merchantName: true, logoUrl: true } },
                 },
               });
 

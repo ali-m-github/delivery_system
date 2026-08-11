@@ -19,6 +19,7 @@ interface User {
 const ROUTE_PERMISSIONS: { prefix: string; permission: string }[] = [
   { prefix: "/admin/drivers", permission: "MANAGE_DRIVERS" },
   { prefix: "/admin", permission: "MANAGE_USERS" },
+  { prefix: "/merchants", permission: "MANAGE_MERCHANTS" },
 ];
 
 function requiredPermissionForPath(pathname: string): string | null {
@@ -73,15 +74,22 @@ export default function RouteGuard({
             return;
           }
 
-          // MERCHANT guard: must only access /merchant
-          if (user?.role === "MERCHANT" && !pathname.startsWith("/merchant")) {
+          // Merchant portal = the SINGULAR /merchant route only. It must NOT use
+          // startsWith("/merchant") because that also matches the ADMIN /merchants
+          // management list (prefix collision), which bounced an ADMIN viewing the
+          // merchants list to /login and then /orders — the reported redirect loop.
+          const isMerchantPortal =
+            pathname === "/merchant" || pathname.startsWith("/merchant/");
+
+          // MERCHANT guard: must only access the /merchant portal
+          if (user?.role === "MERCHANT" && !isMerchantPortal) {
             setStatus("redirecting");
             router.replace("/merchant");
             return;
           }
 
-          // Non-MERCHANT users trying to access /merchant → login
-          if (user?.role !== "MERCHANT" && pathname.startsWith("/merchant")) {
+          // Non-MERCHANT users trying to access the /merchant portal → login
+          if (user?.role !== "MERCHANT" && isMerchantPortal) {
             setStatus("redirecting");
             router.replace("/login");
             return;

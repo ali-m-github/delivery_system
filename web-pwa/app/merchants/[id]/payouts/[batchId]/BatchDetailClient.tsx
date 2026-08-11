@@ -197,7 +197,7 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
         <div className="flex justify-between items-start mb-6 border-b border-white/10 pb-6">
           <div>
             <button
-              onClick={() => router.push(`/sellers/${batch.merchant.id}`)}
+              onClick={() => router.push(`/merchants/${batch.merchant.id}`)}
               className="text-gray-500 hover:text-gray-300 text-xs mb-2 transition-colors"
             >
               ← Back to Seller Profile
@@ -220,7 +220,7 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
             <button
               onClick={() =>
                 window.open(
-                  `/print/sellers/${batch.merchant.id}/payouts/${batch.id}`,
+                  `/print/merchants/${batch.merchant.id}/payouts/${batch.id}`,
                   "_blank",
                 )
               }

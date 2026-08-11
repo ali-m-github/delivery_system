@@ -22,6 +22,11 @@ export const SYSTEM_PERMISSIONS = [
   // ── Granular Treasury / Cashbox RBAC ──
   "PAGE_ADMIN_TREASURY",
   "ACTION_TREASURY_TRANSACT",
+  // ── Granular Driver Rate RBAC ──
+  // Grants the ability to edit a driver's commission rates from the /drivers
+  // directory page (zone-based rates). Assignable to employees via Permission
+  // Groups or per-user Custom Permissions in the Admin Panel.
+  "ACTION_DRIVER_RATE_EDIT",
 ] as const;
 
 export type SystemPermission = (typeof SYSTEM_PERMISSIONS)[number];

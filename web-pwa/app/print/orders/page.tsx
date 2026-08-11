@@ -7,6 +7,8 @@ const prisma = new PrismaClient();
 interface EnrichedOrder {
   id: string;
   orderId: string;
+  seller: string;
+  dateReceived: string;
   customerName: string;
   customerPhone: string;
   customerAddress: string;
@@ -17,13 +19,29 @@ interface EnrichedOrder {
   profit: number;
 }
 
+// ─── Helper ────────────────────────────────────────────────────────────────────
+function formatDate(value: Date | string): string {
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  });
+}
+
 // ─── Server Component ─────────────────────────────────────────────────────────
 export default async function PrintOrdersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ ids?: string; driverId?: string; payoutId?: string }>;
+  searchParams: Promise<{
+    ids?: string;
+    driverId?: string;
+    payoutId?: string;
+    simple?: string;
+  }>;
 }) {
-  const { ids, driverId, payoutId } = await searchParams;
+  const { ids, driverId, payoutId, simple } = await searchParams;
 
   if (!ids) {
     return (
@@ -145,6 +163,9 @@ export default async function PrintOrdersPage({
     return {
       id: order.id,
       orderId: order.orderId,
+      seller:
+        order.merchant?.merchantName || order.merchant?.contactName || "—",
+      dateReceived: formatDate(order.createdAt),
       customerName: order.customerName,
       customerPhone: order.customerPhone,
       customerAddress: order.customerAddress,
@@ -156,8 +177,13 @@ export default async function PrintOrdersPage({
     };
   });
 
+  // ── "simple" mode: used from the Orders page — hides financial columns ──
+  const isSimple = simple === "true";
+
   // ── Determine if any order belongs to a cash seller (for Profit column visibility) ──
-  const showProfit = orders.some((o) => o.merchant?.isCashSeller);
+  const showProfit = isSimple
+    ? false
+    : orders.some((o) => o.merchant?.isCashSeller);
 
   // ── Totals ───────────────────────────────────────────────────────────────
   const totals = enrichedOrders.reduce(
@@ -177,7 +203,11 @@ export default async function PrintOrdersPage({
       {/* Print-only header */}
       <div className="mb-4">
         <h1 className="text-xl font-bold text-black">
-          {isDriverMode ? "Driver Orders Export" : "Orders Export"}
+          {isSimple
+            ? "Orders Summary"
+            : isDriverMode
+              ? "Driver Orders Export"
+              : "Orders Export"}
         </h1>
         <p className="text-xs text-gray-500 mt-1">
           {enrichedOrders.length} order
@@ -196,6 +226,16 @@ export default async function PrintOrdersPage({
             <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-center">
               Order ID
             </th>
+            {isSimple && (
+              <>
+                <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-center">
+                  Seller
+                </th>
+                <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-center">
+                  Date Received
+                </th>
+              </>
+            )}
             <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-center">
               Customer Name
             </th>
@@ -208,16 +248,20 @@ export default async function PrintOrdersPage({
             <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-right">
               Order Amount
             </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-right">
-              {isDriverMode ? "Commission" : "Shipping Rate"}
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-right">
-              Net Payout
-            </th>
-            {showProfit && (
-              <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-right">
-                Profit
-              </th>
+            {!isSimple && (
+              <>
+                <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-right">
+                  {isDriverMode ? "Commission" : "Shipping Rate"}
+                </th>
+                <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-right">
+                  Net Payout
+                </th>
+                {showProfit && (
+                  <th className="border-2 border-gray-800 bg-gray-200 text-black p-1.5 font-bold text-right">
+                    Profit
+                  </th>
+                )}
+              </>
             )}
           </tr>
         </thead>
@@ -227,6 +271,16 @@ export default async function PrintOrdersPage({
               <td className="border border-gray-800 p-1.5 text-center text-black font-mono">
                 {o.orderId}
               </td>
+              {isSimple && (
+                <>
+                  <td className="border border-gray-800 p-1.5 text-center text-black">
+                    {o.seller}
+                  </td>
+                  <td className="border border-gray-800 p-1.5 text-center text-black">
+                    {o.dateReceived}
+                  </td>
+                </>
+              )}
               <td className="border border-gray-800 p-1.5 text-center text-black">
                 {o.customerName || "—"}
               </td>
@@ -239,19 +293,23 @@ export default async function PrintOrdersPage({
               <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
                 ${o.price.toFixed(2)}
               </td>
-              <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
-                $
-                {isDriverMode
-                  ? o.driverCommission.toFixed(2)
-                  : o.shippingRate.toFixed(2)}
-              </td>
-              <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
-                ${o.netPayout.toFixed(2)}
-              </td>
-              {showProfit && (
-                <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
-                  ${o.profit.toFixed(2)}
-                </td>
+              {!isSimple && (
+                <>
+                  <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
+                    $
+                    {isDriverMode
+                      ? o.driverCommission.toFixed(2)
+                      : o.shippingRate.toFixed(2)}
+                  </td>
+                  <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
+                    ${o.netPayout.toFixed(2)}
+                  </td>
+                  {showProfit && (
+                    <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
+                      ${o.profit.toFixed(2)}
+                    </td>
+                  )}
+                </>
               )}
             </tr>
           ))}
@@ -260,7 +318,7 @@ export default async function PrintOrdersPage({
         <tfoot>
           <tr className="bg-gray-100 font-bold">
             <td
-              colSpan={4}
+              colSpan={isSimple ? 6 : 4}
               className="border-2 border-gray-800 p-1.5 text-right text-black"
             >
               Totals ({enrichedOrders.length} orders):
@@ -268,19 +326,23 @@ export default async function PrintOrdersPage({
             <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
               ${totals.price.toFixed(2)}
             </td>
-            <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
-              $
-              {isDriverMode
-                ? totals.driverCommission.toFixed(2)
-                : totals.shippingRate.toFixed(2)}
-            </td>
-            <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
-              ${totals.netPayout.toFixed(2)}
-            </td>
-            {showProfit && (
-              <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
-                ${totals.profit.toFixed(2)}
-              </td>
+            {!isSimple && (
+              <>
+                <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
+                  $
+                  {isDriverMode
+                    ? totals.driverCommission.toFixed(2)
+                    : totals.shippingRate.toFixed(2)}
+                </td>
+                <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
+                  ${totals.netPayout.toFixed(2)}
+                </td>
+                {showProfit && (
+                  <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
+                    ${totals.profit.toFixed(2)}
+                  </td>
+                )}
+              </>
             )}
           </tr>
           {/* Conditional Debt Row */}

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
+import { WaybillQRCode } from "@/components/WaybillQRCode";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Order {
@@ -14,26 +15,105 @@ interface Order {
   location: string;
   amountUsd: number;
   amountLbp: number;
+  notes: string | null;
+  packages: number;
   merchant: {
-    ownerFirstName: string;
-    ownerLastName: string;
-    merchantName: string;
+    merchantName: string | null;
+    phone: string | null;
     logoUrl: string | null;
   } | null;
   createdAt: string;
 }
 
 // ─── Helper ────────────────────────────────────────────────────────────────────
-function shortDate(iso: string): string {
+function formatDate(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleDateString("en-US", {
     month: "2-digit",
     day: "2-digit",
-    year: "2-digit",
+    year: "numeric",
   });
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// ─── Waybill card (one per order) ─────────────────────────────────────────────
+function WaybillCard({ order }: { order: Order }) {
+  const merchantName = order.merchant?.merchantName || "—";
+  const merchantPhone = order.merchant?.phone || "—";
+  const codUsd = Number(order.amountUsd) || 0;
+  const codLbp = Number(order.amountLbp) || 0;
+  const packages = Number(order.packages) || 1;
+
+  return (
+    <div className="w-full max-w-3xl mx-auto border-2 border-black text-sm bg-white mb-8 page-break-inside-avoid print:m-0 print:shadow-none">
+      {/* ── ROW 1: Header — empty company logo placeholder ── */}
+      <div className="flex justify-between items-center p-4 border-b-2 border-black">
+        <div className="w-40 h-12 border-2 border-dashed border-gray-400"></div>
+      </div>
+
+      {/* ── ROW 2: Order info + seller + QR ── */}
+      <div className="flex justify-between p-4 border-b-2 border-black">
+        {/* Left col: Order */}
+        <div className="flex flex-col gap-1">
+          <div className="font-bold">Order ID: {order.orderId}</div>
+          <div>Date: {formatDate(order.createdAt)}</div>
+          <div>Packages: {packages}</div>
+        </div>
+        {/* Middle col: Seller */}
+        <div className="flex flex-col gap-1">
+          <span className="font-bold">SELLER / MERCHANT</span>
+          <span>Name: {merchantName}</span>
+          <span>Phone: {merchantPhone}</span>
+          {order.merchant?.logoUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={order.merchant.logoUrl}
+              alt="Merchant Logo"
+              className="object-contain mt-1"
+              style={{ maxHeight: "60px", maxWidth: "150px" }}
+            />
+          )}
+        </div>
+        {/* Right col: QR */}
+        <div className="w-24 h-24 flex-shrink-0">
+          <WaybillQRCode value={order.orderId} size={96} />
+        </div>
+      </div>
+
+      {/* ── ROW 3: Ship to (receiver) ── */}
+      <div className="p-4 border-b-2 border-black flex flex-col gap-1">
+        <div className="font-bold text-lg">SHIP TO (RECEIVER)</div>
+        <div>Name: {order.customerName || "—"}</div>
+        <div>Phone: {order.customerPhone || "—"}</div>
+        <div>Address: {order.customerAddress || "—"}</div>
+      </div>
+
+      {/* ── ROW 4: Special instructions + COD due ── */}
+      <div className="grid grid-cols-2">
+        <div className="p-4 border-r-2 border-black flex flex-col">
+          <div className="font-bold">SPECIAL INSTRUCTIONS</div>
+          <p className="whitespace-pre-wrap">{order.notes?.trim() || "—"}</p>
+        </div>
+        <div className="p-4 flex flex-col bg-gray-50 print:bg-transparent">
+          <div className="font-bold text-lg">TOTAL C.O.D. DUE</div>
+          <div className="font-bold text-xl">USD: {codUsd.toFixed(2)}</div>
+          <div className="font-bold text-xl">
+            LBP: {codLbp.toLocaleString()}
+          </div>
+        </div>
+      </div>
+
+      {/* ── ROW 5: Footer — Arabic legal statement + signature ── */}
+      <div className="flex justify-between items-end p-4 border-t-2 border-black text-xs">
+        <p dir="rtl" lang="ar" className="max-w-[60%] leading-relaxed">
+          يؤكد المرسل أن هذا الطرد لا يحتوي على أية مواد خطرة أو ممنوعة قانوناً.
+        </p>
+        <div className="flex-shrink-0">Signature: ___________________</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Print page ───────────────────────────────────────────────────────────────
 export default function PrintPage() {
   const searchParams = useSearchParams();
   const [orders, setOrders] = useState<Order[]>([]);
@@ -41,18 +121,27 @@ export default function PrintPage() {
 
   useEffect(() => {
     const idsParam = searchParams.get("ids");
-    const pdfParam = searchParams.get("pdf");
 
     if (!idsParam) {
+      // Guard: no IDs selected — resolve the loading state synchronously.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(false);
       return;
     }
 
     const ids = idsParam.split(",").filter(Boolean);
 
-    fetch("/api/orders")
+    // Fetch with the maximum server-side take so selected orders are found
+    // regardless of age, and normalize both the legacy array format and the
+    // current { data, meta } response shape returned by GET /api/orders.
+    // The GET handler includes the `merchant` relation (merchantName + logoUrl)
+    // plus `notes` and `packages`, so each card renders fully.
+    fetch("/api/orders?take=5000")
       .then((res) => res.json())
-      .then((allOrders: Order[]) => {
+      .then((result) => {
+        const allOrders: Order[] = Array.isArray(result)
+          ? result
+          : (result.data ?? []);
         const filtered = allOrders.filter((o: Order) => ids.includes(o.id));
         setOrders(filtered);
         setLoading(false);
@@ -67,14 +156,14 @@ export default function PrintPage() {
         const element = document.getElementById("print-container");
         if (!element) return;
         const opt = {
-          margin: 0.5,
-          filename: "Orders_Export.pdf",
+          margin: 0.4,
+          filename: "Waybills.pdf",
           image: { type: "jpeg" as const, quality: 0.98 },
           html2canvas: { scale: 2 },
           jsPDF: {
             unit: "in" as const,
             format: "letter" as const,
-            orientation: "landscape" as const,
+            orientation: "portrait" as const,
           },
         };
         html2pdf
@@ -95,116 +184,23 @@ export default function PrintPage() {
     return <div className="bg-white text-black p-8">No orders selected.</div>;
   }
 
-  const sellerName = (o: Order) =>
-    o.merchant?.ownerFirstName || o.merchant?.merchantName || "—";
-
-  // ── Waybill header branding: merchant logo + name ───────────────────────
-  const headerMerchant =
-    orders.find((o) => o.merchant?.logoUrl)?.merchant ||
-    orders[0]?.merchant ||
-    null;
-
   return (
-    <div id="print-container" className="bg-white text-black p-8">
-      {headerMerchant && (
-        <div className="waybill-header mb-4 flex items-center gap-3 border-b-2 border-gray-800 pb-3">
-          {headerMerchant.logoUrl && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={headerMerchant.logoUrl}
-              alt={headerMerchant.merchantName || "Merchant logo"}
-              className="waybill-logo"
-            />
-          )}
-          <div>
-            <h1 className="text-xl font-bold text-black">
-              {headerMerchant.merchantName ||
-                headerMerchant.ownerFirstName ||
-                "Waybill"}
-            </h1>
-            <p className="text-xs text-gray-500">
-              {orders.length} order{orders.length !== 1 ? "s" : ""} · Generated{" "}
-              {new Date().toLocaleDateString("en-US", {
-                year: "numeric",
-                month: "short",
-                day: "numeric",
-              })}
-            </p>
-          </div>
-        </div>
-      )}
-      <table className="w-full border-collapse border-2 border-gray-800 text-sm">
-        <thead>
-          <tr>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              Order ID
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              Date
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              Seller
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              Customer
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              Phone
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              Address
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              City
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              Amount $
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              Amount LL
-            </th>
-            <th className="border-2 border-gray-800 bg-gray-200 text-black p-2 font-bold text-center">
-              Location
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {orders.map((o) => (
-            <tr key={o.id}>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                {o.orderId}
-              </td>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                {shortDate(o.createdAt)}
-              </td>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                {sellerName(o)}
-              </td>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                {o.customerName}
-              </td>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                {o.customerPhone}
-              </td>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                {o.customerAddress}
-              </td>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                {o.city || "—"}
-              </td>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                ${o.amountUsd.toFixed(2)}
-              </td>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                {o.amountLbp.toLocaleString()}
-              </td>
-              <td className="border border-gray-800 p-2 text-center text-black">
-                {o.location}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <>
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
+        @media print {
+          @page { margin: 0.5cm; }
+          body { background-color: white; }
+        }
+      `,
+        }}
+      />
+      <div id="print-container" className="bg-white text-black p-6">
+        {orders.map((o) => (
+          <WaybillCard key={o.id} order={o} />
+        ))}
+      </div>
+    </>
   );
 }
