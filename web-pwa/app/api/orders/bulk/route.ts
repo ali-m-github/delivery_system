@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
+import { createExchangeOrderFromDelivered } from "@/lib/exchange";
 
 // ─── PATCH /api/orders/bulk ───────────────────────────────────────────────────
 export async function PATCH(request: Request) {
@@ -163,6 +164,17 @@ export async function PATCH(request: Request) {
             },
           },
         });
+
+        // ── Exchange orders ──────────────────────────────────────────
+        // When a bulk-delivered exchange order (hasExchange) is delivered,
+        // create the "<orderId>-Exchange" proof order (idempotent).
+        if (
+          newLocation === "DELIVERED" &&
+          existing.hasExchange &&
+          actionUserId
+        ) {
+          await createExchangeOrderFromDelivered(existing, actionUserId);
+        }
 
         results.push({
           id,

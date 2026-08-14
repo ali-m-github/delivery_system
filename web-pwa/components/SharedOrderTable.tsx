@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
+import PermissionGuard from "@/components/PermissionGuard";
 
 const LOCATION_LABELS: Record<string, string> = {
   WAREHOUSE: "Warehouse",
@@ -124,6 +125,8 @@ interface SharedOrderTableProps {
   onUpdateOrder?: (id: string, payload: any) => void;
   currentUser?: any;
   onCopyLink?: (orderId: string) => void;
+  /** Called with a DELIVERED (WO/WD) order to return it to the warehouse. */
+  onReturnDelivered?: (order: any) => void;
 }
 
 export default function SharedOrderTable({
@@ -136,6 +139,7 @@ export default function SharedOrderTable({
   onUpdateOrder,
   currentUser,
   onCopyLink,
+  onReturnDelivered,
 }: SharedOrderTableProps) {
   const [historyModalOrder, setHistoryModalOrder] = useState<{
     id: string;
@@ -477,6 +481,26 @@ export default function SharedOrderTable({
             </button>
           </td>
         )}
+
+        {onReturnDelivered && (
+          <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
+            <span className="lg:hidden font-bold text-gray-400">Actions:</span>
+            {order.location === "DELIVERED" &&
+            ["WO", "WD"].includes(order.financialStatus) ? (
+              <PermissionGuard requires="ACTION_ORDER_RETURN">
+                <button
+                  onClick={() => onReturnDelivered(order)}
+                  className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-orange-500/10 text-orange-400 border border-orange-500/30 hover:bg-orange-500/20 transition-all duration-150"
+                  title="Return this delivered order to the warehouse (Returned / Re)"
+                >
+                  ⤺ Return to Warehouse
+                </button>
+              </PermissionGuard>
+            ) : (
+              <span className="text-gray-700">—</span>
+            )}
+          </td>
+        )}
       </tr>
     );
 
@@ -627,6 +651,9 @@ export default function SharedOrderTable({
               <th className="px-0.5 py-2 whitespace-nowrap">DOC</th>
               {onCopyLink && (
                 <th className="px-0.5 py-2 whitespace-nowrap">LINK</th>
+              )}
+              {onReturnDelivered && (
+                <th className="px-0.5 py-2 whitespace-nowrap">ACTIONS</th>
               )}
             </tr>
           </thead>

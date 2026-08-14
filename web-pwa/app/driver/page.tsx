@@ -117,6 +117,26 @@ export default async function DriverPage() {
     );
   }
 
+  // ── Merge cash-seller rate exceptions into the driver's seller rates ──
+  // Cash-seller rates (keyed by the driver's User) override any standard
+  // DriverSellerRate for the same merchant, and a $0 exception is a valid
+  // override. This keeps the driver's payout preview in sync with the
+  // server-side commission calculation.
+  const cashSellerRates = await prisma.driverCashSellerRate.findMany({
+    where: { driverId: userId },
+    select: { merchantId: true, rateUsd: true },
+  });
+  const sellerRateMap = new Map<string, number>();
+  for (const sr of driver.driverSellerRates) {
+    sellerRateMap.set(sr.merchantId, sr.rateUsd);
+  }
+  for (const cr of cashSellerRates) {
+    sellerRateMap.set(cr.merchantId, cr.rateUsd);
+  }
+  (driver as any).driverSellerRates = Array.from(sellerRateMap.entries()).map(
+    ([merchantId, rateUsd]) => ({ merchantId, rateUsd }),
+  );
+
   // ── Serialize for client component ────────────────────────────────────
   const plainDriver = JSON.parse(JSON.stringify(driver));
   const plainWarehouseOrders = JSON.parse(JSON.stringify(warehouseOrders));

@@ -37,3 +37,17 @@ export async function verifySessionToken(token: string) {
     return null;
   }
 }
+
+// Extracts the authenticated user's id from the `session` cookie on a raw
+// Request. Used by routes that create records but don't gate on a permission
+// (e.g. payout creation) so they can attribute the record to the actor.
+export async function getSessionUserId(
+  request: Request,
+): Promise<string | null> {
+  const cookieHeader = request.headers.get("cookie");
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(/(?:^|;\s*)session=([^;]+)/);
+  if (!match) return null;
+  const payload = await verifySessionToken(decodeURIComponent(match[1]));
+  return payload?.id ?? null;
+}

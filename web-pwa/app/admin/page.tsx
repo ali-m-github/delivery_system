@@ -39,6 +39,7 @@ const PERMISSION_MAP: Record<string, string[]> = {
     "ORDERS_EDIT",
     "ORDERS_DISPATCH",
     "ORDERS_FINANCIAL",
+    "ACTION_ORDER_RETURN",
   ],
   "Drivers Module": ["DRIVERS_VIEW", "DRIVERS_CREATE", "DRIVERS_PAYOUT"],
   "Admin Functions": ["ZONES_MANAGE", "MERCHANTS_MANAGE", "USERS_MANAGE"],
@@ -60,6 +61,10 @@ const PERMISSION_TAXONOMY = {
     { id: "ACTION_PAYOUT_INITIATE", label: "Initiate Payout" },
     { id: "ACTION_PAYOUT_APPROVE", label: "Approve Payout" },
     { id: "ACTION_ORDER_EDIT", label: "Edit Orders" },
+    {
+      id: "ACTION_ORDER_RETURN",
+      label: "Return Delivered Orders (WO/WD) to Warehouse",
+    },
     { id: "ACTION_DRIVER_CREATE", label: "Create Drivers" },
     {
       id: "ACTION_DRIVER_RATE_EDIT",

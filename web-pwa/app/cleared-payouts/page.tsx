@@ -44,6 +44,11 @@ interface DriverPayout {
   remainingLbp: number;
   createdAt: string;
   clearedAt: string | null;
+  createdBy?: {
+    id: string;
+    username: string;
+    email: string;
+  } | null;
   driver: {
     id: string;
     driverId: string;
@@ -238,6 +243,11 @@ export default function ClearedPayoutsPage() {
               title={beirutDateTime(payout.createdAt)}
             >
               {beirutDate(payout.createdAt)}
+              {payout.createdBy?.username && (
+                <span className="block text-gray-600">
+                  by {payout.createdBy.username}
+                </span>
+              )}
             </td>
             <td className="px-4 py-3 text-green-400 text-sm text-right font-mono font-bold">
               ${payout.netUsd.toFixed(2)}
@@ -330,6 +340,11 @@ export default function ClearedPayoutsPage() {
               title={beirutDateTime(payout.clearedAt || payout.createdAt)}
             >
               {beirutDate(payout.clearedAt || payout.createdAt)}
+              {payout.createdBy?.username && (
+                <span className="block text-gray-600">
+                  by {payout.createdBy.username}
+                </span>
+              )}
             </td>
             <td className="px-4 py-3 text-green-400 text-sm text-right font-mono font-bold">
               ${payout.netUsd.toFixed(2)}

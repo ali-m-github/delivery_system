@@ -108,6 +108,10 @@ export default function MerchantClient({
   // ── Interactive filtering with multi-keyword search ─────────────────────
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
+      // Exchange proof orders ("-Exchange") are hidden from the merchant's page
+      if (String(order.orderId).toLowerCase().endsWith("-exchange")) {
+        return false;
+      }
       // Box Filter Logic
       if (boxFilter === "DELIVERED" && order.location !== "DELIVERED")
         return false;
@@ -154,16 +158,22 @@ export default function MerchantClient({
 
   // ── Stat summaries (computed from full dataset) ─────────────────────────
   const stats = useMemo(() => {
-    const total = orders.length;
-    const delivered = orders.filter((o) => o.location === "DELIVERED").length;
-    const inTransit = orders.filter(
+    // Exchange proof orders ("-Exchange") are hidden from the merchant's page
+    const visible = orders.filter(
+      (o) => !String(o.orderId).toLowerCase().endsWith("-exchange"),
+    );
+    const total = visible.length;
+    const delivered = visible.filter((o) => o.location === "DELIVERED").length;
+    const inTransit = visible.filter(
       (o) => o.location === "WITH_DRIVER" || o.location === "ASSIGNED",
     ).length;
-    const warehouse = orders.filter((o) => o.location === "WAREHOUSE").length;
-    const paidCount = orders.filter((o) => o.financialStatus === "PS").length;
-    const unpaidCount = orders.filter((o) => o.financialStatus !== "PS").length;
-    const totalUsd = orders.reduce((s, o) => s + (o.amountUsd ?? 0), 0);
-    const totalLbp = orders.reduce((s, o) => s + (o.amountLbp ?? 0), 0);
+    const warehouse = visible.filter((o) => o.location === "WAREHOUSE").length;
+    const paidCount = visible.filter((o) => o.financialStatus === "PS").length;
+    const unpaidCount = visible.filter(
+      (o) => o.financialStatus !== "PS",
+    ).length;
+    const totalUsd = visible.reduce((s, o) => s + (o.amountUsd ?? 0), 0);
+    const totalLbp = visible.reduce((s, o) => s + (o.amountLbp ?? 0), 0);
     return {
       total,
       delivered,

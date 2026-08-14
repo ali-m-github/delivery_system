@@ -104,8 +104,9 @@ export async function POST(
         : [];
 
       const sellerExceptionMap = new Map<string, number>();
+      // A $0 seller exception is still a valid override of the zonal rate.
       for (const sr of sellerRates) {
-        if (sr.rateUsd > 0) sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+        sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
       }
 
       const newCommissionUsd = remainingOrders.reduce((sum, o) => {

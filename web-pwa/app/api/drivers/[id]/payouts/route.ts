@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { DEFAULT_DRIVER_USD } from "@/lib/commission";
+import { getSessionUserId } from "@/helpers/auth";
 
 const prisma = new PrismaClient();
 
@@ -36,16 +37,64 @@ export async function GET(
         status: "PENDING",
       },
       include: {
+        createdBy: {
+          select: { id: true, username: true, email: true },
+        },
         orders: {
           include: {
-            merchant: true,
+            merchant: {
+              select: { merchantName: true },
+            },
+            zone: {
+              select: { name: true },
+            },
           },
         },
       },
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json(payouts, { status: 200 });
+    // Enrich each order with its per-order driver commission (3-tier logic),
+    // honoring $0 seller exceptions.
+    const driverProfileRef = await prisma.driverProfile.findUnique({
+      where: { id: driverId },
+      select: { userId: true },
+    });
+    const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
+      prisma.driverZoneRate.findMany({ where: { driverId } }),
+      prisma.driverSellerRate.findMany({ where: { driverId } }),
+      driverProfileRef?.userId
+        ? prisma.driverCashSellerRate.findMany({
+            where: { driverId: driverProfileRef.userId },
+          })
+        : Promise.resolve([]),
+    ]);
+    const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
+    const sellerExceptionMap = new Map<string, number>();
+    for (const sr of sellerRates) {
+      sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+    }
+    for (const cr of cashSellerRates) {
+      sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
+    }
+
+    const enrichedPayouts = payouts.map((payout) => ({
+      ...payout,
+      orders: payout.orders.map((order) => {
+        const orderMerchantId = String(order.merchantId ?? "");
+        const orderZoneId = String(order.zoneId);
+        const exceptionRate = orderMerchantId
+          ? sellerExceptionMap.get(orderMerchantId)
+          : undefined;
+        const driverCommissionUsd =
+          exceptionRate !== undefined
+            ? exceptionRate
+            : (zoneRateMap.get(orderZoneId) ?? DEFAULT_DRIVER_USD);
+        return { ...order, driverCommissionUsd };
+      }),
+    }));
+
+    return NextResponse.json(enrichedPayouts, { status: 200 });
   } catch (error) {
     console.error("GET /api/drivers/[id]/payouts Error:", error);
     return NextResponse.json(
@@ -80,6 +129,9 @@ export async function POST(
     }
 
     const driverId = profile.id;
+
+    // Attribute this payout to the authenticated user who created it
+    const createdById = await getSessionUserId(request);
 
     const body = await request.json();
     const { orderIds } = body;
@@ -133,19 +185,37 @@ export async function POST(
       );
     }
 
+    // Build the seller-exception map (merchantId → rateUsd), merging BOTH the
+    // DriverSellerRate exceptions AND the cash-seller exceptions
+    // (DriverCashSellerRate, keyed by the linked User). Cash-seller rates take
+    // precedence. A $0 exception is still a valid override — it must override
+    // the zonal/default rate rather than falling through to it.
+    const sellerExceptionMap = new Map<string, number>();
+    for (const sr of driver.driverSellerRates) {
+      sellerExceptionMap.set(String(sr.merchantId), Number(sr.rateUsd || 0));
+    }
+    if (driver.userId) {
+      const cashSellerRates = await prisma.driverCashSellerRate.findMany({
+        where: { driverId: driver.userId },
+      });
+      for (const cr of cashSellerRates) {
+        sellerExceptionMap.set(String(cr.merchantId), Number(cr.rateUsd || 0));
+      }
+    }
+
     let finalCommission = 0;
 
     orders.forEach((order) => {
       const orderMerchantId = String(order.merchantId ?? "");
       const orderZoneId = String(order.zoneId);
 
-      // Tier 1: Seller Exception (driverSellerRates)
-      const exception = driver.driverSellerRates.find(
-        (rate) => String(rate.merchantId) === orderMerchantId,
-      );
+      // Tier 1: Seller Exception (DriverSellerRate + DriverCashSellerRate)
+      const exception = orderMerchantId
+        ? sellerExceptionMap.get(orderMerchantId)
+        : undefined;
 
-      if (exception && (exception.rateUsd > 0 || exception.rateLbp > 0)) {
-        finalCommission += Number(exception.rateUsd || 0);
+      if (exception !== undefined) {
+        finalCommission += exception;
       } else {
         // Tier 2: Zone Rate
         const zoneRate = driver.zoneRates.find(
@@ -199,6 +269,7 @@ export async function POST(
           previousDebtUsd: carriedDebtUsd,
           previousDebtLbp: carriedDebtLbp,
           status: "PENDING",
+          createdById: createdById ?? undefined,
         },
       });
 

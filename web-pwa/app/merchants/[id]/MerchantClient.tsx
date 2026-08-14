@@ -144,6 +144,16 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
     [orders, merchant],
   );
 
+  // Exchange proof orders ("-Exchange") are hidden from the merchant's main
+  // orders tabs and only appear in the Returns/Exchange tab.
+  const nonExchangeOrders = useMemo(
+    () =>
+      normalizedOrders.filter(
+        (o: any) => !String(o.orderId).toLowerCase().endsWith("-exchange"),
+      ),
+    [normalizedOrders],
+  );
+
   // ─── Export Excel handler ─────────────────────────────────────────────────
   const handleExportExcel = useCallback(async () => {
     if (selectedOrders.length === 0) {
@@ -209,7 +219,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
     0,
   );
 
-  const deliveredWD = normalizedOrders.filter(
+  const deliveredWD = nonExchangeOrders.filter(
     (o: any) =>
       o.location === "DELIVERED" && ["WD", "PP"].includes(o.financialStatus),
   );
@@ -222,7 +232,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
     0,
   );
 
-  const deliveredWO = normalizedOrders.filter(
+  const deliveredWO = nonExchangeOrders.filter(
     (o: any) => o.location === "DELIVERED" && o.financialStatus === "WO",
   );
   const woUsd = deliveredWO.reduce(
@@ -237,19 +247,19 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
   // ─── Tab Filters ────────────────────────────────────────────────────────
   const tabFilters: Record<TabKey, any[]> = useMemo(
     () => ({
-      ALL: normalizedOrders,
-      WAREHOUSE: normalizedOrders.filter(
+      ALL: nonExchangeOrders,
+      WAREHOUSE: nonExchangeOrders.filter(
         (o: any) => o.location === "WAREHOUSE",
       ),
-      ASSIGNED: normalizedOrders.filter((o: any) => o.location === "ASSIGNED"),
+      ASSIGNED: nonExchangeOrders.filter((o: any) => o.location === "ASSIGNED"),
       WD: deliveredWD,
       WO: deliveredWO,
       RETURN: normalizedOrders.filter((o: any) => o.location === "RETURN"),
-      PS: normalizedOrders.filter(
+      PS: nonExchangeOrders.filter(
         (o: any) => o.location === "DELIVERED" && o.financialStatus === "PS",
       ),
     }),
-    [normalizedOrders, deliveredWD, deliveredWO],
+    [normalizedOrders, nonExchangeOrders, deliveredWD, deliveredWO],
   );
 
   const filteredOrders = tabFilters[activeTab];
@@ -411,7 +421,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
     { key: "ASSIGNED", label: "Dr (Assigned)" },
     { key: "WD", label: "WD (With Driver)" },
     { key: "WO", label: "WO (With Office)" },
-    { key: "RETURN", label: "Returns" },
+    { key: "RETURN", label: "Returns/Exchange" },
     { key: "PS", label: "PS (Paid to Seller)" },
   ];
 

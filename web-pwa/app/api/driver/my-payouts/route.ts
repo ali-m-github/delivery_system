@@ -78,6 +78,9 @@ export async function GET(request: Request) {
     const payouts = await prisma.driverPayout.findMany({
       where,
       include: {
+        createdBy: {
+          select: { id: true, username: true, email: true },
+        },
         orders: {
           include: {
             zone: {
@@ -92,16 +95,21 @@ export async function GET(request: Request) {
       orderBy,
     });
 
-    // Calculate per-order driver commission using the same 3-tier logic
-    const [zoneRates, sellerRates] = await Promise.all([
+    // Calculate per-order driver commission using the same 3-tier logic.
+    // A $0 seller exception is still a valid override of the zonal rate.
+    const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
       prisma.driverZoneRate.findMany({ where: { driverId } }),
       prisma.driverSellerRate.findMany({ where: { driverId } }),
+      prisma.driverCashSellerRate.findMany({ where: { driverId: userId } }),
     ]);
 
     const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
     const sellerExceptionMap = new Map<string, number>();
     for (const sr of sellerRates) {
-      if (sr.rateUsd > 0) sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+      sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+    }
+    for (const cr of cashSellerRates) {
+      sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
     }
 
     const enrichedPayouts = payouts.map((payout) => {

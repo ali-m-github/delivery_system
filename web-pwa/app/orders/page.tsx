@@ -164,6 +164,8 @@ const LOCATION_LABELS: Record<string, string> = {
   RETURN: "Returned",
   Re: "Returned",
   RTS: "Returned to Seller",
+  EWD: "Exchange w/ Driver",
+  EX: "Exchange (Warehouse)",
 };
 
 const LOCATION_COLORS: Record<string, string> = {
@@ -173,6 +175,8 @@ const LOCATION_COLORS: Record<string, string> = {
   RETURN: "text-red-400 bg-red-500/10 border-red-500/30",
   Re: "text-red-400 bg-red-500/10 border-red-500/30",
   RTS: "text-purple-400 bg-purple-500/10 border-purple-500/30",
+  EWD: "text-orange-400 bg-orange-500/10 border-orange-500/30",
+  EX: "text-orange-400 bg-orange-500/10 border-orange-500/30",
 };
 
 const ZONE_BADGE_COLORS = [
@@ -496,17 +500,14 @@ function OrdersPageInner() {
     const headers = rows[0];
     const mapping = mapHeaders(headers);
 
-    // Validate that essential headers were found
-    const hasCustomer = mapping.customer !== undefined;
+    // Validate that essential headers were found (customer name is optional)
     const hasPhone = mapping.phone !== undefined;
     const hasAddress = mapping.address !== undefined;
     const hasUsd = mapping.usd !== undefined;
     const hasLbp = mapping.lbp !== undefined;
 
-    if (!hasCustomer || !hasPhone || !hasAddress) {
-      alert(
-        "Missing required headers. Expected headers for: customer, phone, address.",
-      );
+    if (!hasPhone || !hasAddress) {
+      alert("Missing required headers. Expected headers for: phone, address.");
       setCsvUploading(false);
       e.target.value = "";
       return;
@@ -588,10 +589,10 @@ function OrdersPageInner() {
         }
       }
 
-      // Validate required fields
-      if (!customer || !phone || !address) {
+      // Validate required fields (customer name is optional and defaults to "Unknown")
+      if (!phone || !address) {
         failCount++;
-        errors.push(`Row ${i + 2}: Missing customer, phone, or address.`);
+        errors.push(`Row ${i + 2}: Missing phone or address.`);
         if (errors.length > 10) errors.push("... (truncated)");
         continue;
       }
@@ -638,7 +639,7 @@ function OrdersPageInner() {
           body: JSON.stringify({
             orderId: orderId || undefined,
             merchantId: finalSellerId,
-            customerName: customer,
+            customerName: customer || "Unknown",
             customerPhone: phone,
             customerAddress: address,
             zoneId: finalZoneId,
@@ -861,9 +862,13 @@ function OrdersPageInner() {
   // When called without params on the "All" tab, reuses current pagination state
   const fetchOrders = async (params?: Record<string, string>) => {
     if (!params && currentTab === "all") {
+      // For comma-separated (multi-order) searches, fetch ALL orders (up to API max)
+      // so the client-side filter can match orders across all pages. This keeps the
+      // searched results visible after refetches (e.g. status changes) too.
+      const isCommaSearch = searchTerm.includes(",");
       params = {
-        skip: String((allPage - 1) * allItemsPerPage),
-        take: String(allItemsPerPage),
+        skip: isCommaSearch ? "0" : String((allPage - 1) * allItemsPerPage),
+        take: isCommaSearch ? "5000" : String(allItemsPerPage),
       };
       // Skip server-side search for comma-separated queries
       if (searchTerm.trim() && !searchTerm.includes(",")) {
@@ -980,12 +985,12 @@ function OrdersPageInner() {
       if (dateFilter) params.dateFrom = dateFilter;
       fetchOrders(params);
     } else if (currentTab === "rwd") {
-      // RWD tab: filter server-side to avoid missing orders beyond the fetch limit
+      // RWD/EWD tab: filter server-side to avoid missing orders beyond the fetch limit
       fetchOrders({
         skip: "0",
         take: "5000",
         location: "RETURN",
-        financialStatus: "RWD",
+        financialStatus: "RWD,EWD",
       });
     } else if (currentTab === "returns") {
       // Returns tab: filter server-side by location to avoid missing
@@ -1530,7 +1535,9 @@ function OrdersPageInner() {
     let list = orders.filter((o) => {
       const loc = String(o.location).toUpperCase();
       const fin = String(o.financialStatus).toUpperCase();
-      return loc === "RETURN" && (fin === "RE" || fin === "RTS");
+      return (
+        loc === "RETURN" && (fin === "RE" || fin === "RTS" || fin === "EX")
+      );
     });
 
     if (returnDate) {
@@ -1579,12 +1586,12 @@ function OrdersPageInner() {
     return Array.from(sellers).sort();
   }, [orders]);
 
-  // ── RWD (Return With Driver) orders ──
+  // ── RWD (Return With Driver) / EWD (Exchange With Driver) orders ──
   const rwdOrders = useMemo(() => {
     return orders.filter((o) => {
       const loc = String(o.location).toUpperCase();
       const fin = String(o.financialStatus).toUpperCase();
-      return loc === "RETURN" && fin === "RWD";
+      return loc === "RETURN" && (fin === "RWD" || fin === "EWD");
     });
   }, [orders]);
 
@@ -1706,6 +1713,155 @@ function OrdersPageInner() {
   const handleReturn = (id: string) =>
     patchOrder(id, { location: "RETURN", status: "Re" });
 
+  // ── Return Delivered (WO/WD) to Warehouse ──
+  // Calls the permission-gated /api/admin/orders/return endpoint (requires
+  // ACTION_ORDER_RETURN) so delivered orders can be rolled back into the
+  // returns pipeline even when they're WO (cleared payout) or WD.
+  const handleReturnDelivered = async () => {
+    const deliveredIds = orders
+      .filter(
+        (o) =>
+          selectedOrderIds.includes(o.id) &&
+          o.location === "DELIVERED" &&
+          ["WO", "WD"].includes(o.financialStatus),
+      )
+      .map((o) => o.id);
+
+    if (deliveredIds.length === 0) {
+      alert(
+        "No delivered (WO/WD) orders selected to return. Select delivered orders first.",
+      );
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `Return ${deliveredIds.length} delivered order(s) to the warehouse (Returned / Re)?\n\nThis unlinks them from any payout and clears collected amounts.`,
+      )
+    )
+      return;
+
+    try {
+      const res = await fetch("/api/admin/orders/return", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderIds: deliveredIds,
+          location: "RETURN",
+          financialStatus: "Re",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Failed to return delivered orders.");
+        return;
+      }
+      alert(
+        `Returned ${data.count} delivered order(s) to the warehouse (Returned / Re).`,
+      );
+      setSelectedOrderIds([]);
+      await fetchOrders();
+    } catch (error) {
+      console.error("Return delivered failed", error);
+      alert("Failed to return delivered orders.");
+    }
+  };
+
+  // ── Shared helper: call the permission-gated return endpoint ─────────────
+  // Handles delivered WO/WD orders only — unlinks payouts, clears collected
+  // amounts, and recalculates/deletes the affected pending payout.
+  const returnDeliveredViaApi = async (
+    orderIds: string[],
+    location: string,
+    financialStatus: string,
+  ) => {
+    const res = await fetch("/api/admin/orders/return", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderIds, location, financialStatus }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to return delivered orders");
+    }
+    return data;
+  };
+
+  // ── Return a single delivered order to the warehouse (per-row action) ──
+  const handleReturnOrderToWarehouse = async (order: Order) => {
+    if (
+      !window.confirm(
+        `Return order ${order.orderId} (${order.financialStatus}) to the warehouse (Returned / Re)?\n\nThis unlinks it from any payout and clears collected amounts.`,
+      )
+    )
+      return;
+    try {
+      const data = await returnDeliveredViaApi([order.id], "RETURN", "Re");
+      alert(`Returned ${data.count} delivered order(s) to the warehouse.`);
+      setSelectedOrderIds((prev) => prev.filter((id) => id !== order.id));
+      await fetchOrders();
+    } catch (error: any) {
+      alert(error.message || "Failed to return the order to warehouse.");
+    }
+  };
+
+  // ── Bulk "Warehouse" — routes delivered (WO/WD) orders through the new
+  // permission-gated endpoint (which unlinks + recalculates payouts) and keeps
+  // the legacy PATCH behavior for all other selected orders. ──
+  const handleBulkMoveToWarehouse = async () => {
+    if (selectedOrderIds.length === 0) return;
+    if (
+      !window.confirm(
+        `Move ${selectedOrderIds.length} order(s) to the warehouse?`,
+      )
+    )
+      return;
+
+    const selectedById = new Map(
+      orders
+        .filter((o) => selectedOrderIds.includes(o.id))
+        .map((o) => [o.id, o]),
+    );
+    const deliveredIds = selectedOrderIds.filter((id) => {
+      const o = selectedById.get(id);
+      return (
+        o?.location === "DELIVERED" && ["WO", "WD"].includes(o.financialStatus)
+      );
+    });
+    const otherIds = selectedOrderIds.filter(
+      (id) => !deliveredIds.includes(id),
+    );
+
+    try {
+      if (deliveredIds.length > 0) {
+        await returnDeliveredViaApi(deliveredIds, "WAREHOUSE", "UD");
+      }
+      if (otherIds.length > 0) {
+        await Promise.all(
+          otherIds.map((id) =>
+            fetch("/api/orders", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                id,
+                location: "WAREHOUSE",
+                financialStatus: "UD",
+                driverId: null,
+                isArchived: false,
+                collectedUsd: 0,
+                collectedLbp: 0,
+              }),
+            }),
+          ),
+        );
+      }
+      setSelectedOrderIds([]);
+      await fetchOrders();
+    } catch (error: any) {
+      alert(error.message || "Failed to move orders to warehouse.");
+    }
+  };
+
   // ── Generic Bulk Action Handler ──
   const handleBulkAction = async (
     actionName: string,
@@ -1817,11 +1973,11 @@ function OrdersPageInner() {
     }
   };
 
-  // ── Clear Returns Handler (Re -> RTS) ──
+  // ── Clear Returns Handler (Re/EX -> RTS) ──
   const handleClearReturns = async (sellerName: string, orderIds: string[]) => {
     if (
       !window.confirm(
-        `Mark ${orderIds.length} returned orders as "Returned to Seller" for ${sellerName}?\nThis changes their status from Re (Warehouse) to RTS (Returned to Seller).`,
+        `Mark ${orderIds.length} returned/exchange orders as "Returned to Seller" for ${sellerName}?\nThis changes their status to RTS (Returned to Seller).`,
       )
     )
       return;
@@ -1841,18 +1997,22 @@ function OrdersPageInner() {
     }
   };
 
-  // ── Bulk Returned to Seller Handler (Re -> RTS) ──
+  // ── Bulk Returned to Seller Handler (Re/EX -> RTS) ──
   const [rtsUpdating, setRtsUpdating] = useState(false);
   const [rwdUpdating, setRwdUpdating] = useState(false);
   const handleBulkRTS = async () => {
     if (selectedOrderIds.length === 0) return;
-    // Validate: all selected must have financialStatus === "Re"
+    // Validate: all selected must have financialStatus "Re" or "EX" (warehouse)
     const selectedOrders = orders.filter((o) =>
       selectedOrderIds.includes(o.id),
     );
-    const allRe = selectedOrders.every((o) => o.financialStatus === "Re");
-    if (!allRe) {
-      alert("All selected orders must have financial status 'Re' (Warehouse).");
+    const allWarehouse = selectedOrders.every((o) =>
+      ["Re", "EX"].includes(o.financialStatus),
+    );
+    if (!allWarehouse) {
+      alert(
+        "All selected orders must have financial status 'Re' (Warehouse) or 'EX' (Exchange at Warehouse).",
+      );
       return;
     }
     if (
@@ -1881,16 +2041,18 @@ function OrdersPageInner() {
     }
   };
 
-  // ── Bulk RWD to Warehouse Handler (RWD -> Re) ──
+  // ── Bulk RWD/EWD to Warehouse Handler (RWD -> Re, EWD -> EX) ──
   const handleBulkRWDToWarehouse = async () => {
     if (selectedOrderIds.length === 0) return;
     const selectedOrders = orders.filter((o) =>
       selectedOrderIds.includes(o.id),
     );
-    const allRwd = selectedOrders.every((o) => o.financialStatus === "RWD");
-    if (!allRwd) {
+    const allWithDriver = selectedOrders.every((o) =>
+      ["RWD", "EWD"].includes(o.financialStatus),
+    );
+    if (!allWithDriver) {
       alert(
-        "All selected orders must have financial status 'RWD' (Return with Driver).",
+        "All selected orders must have financial status 'RWD' (Return with Driver) or 'EWD' (Exchange with Driver).",
       );
       return;
     }
@@ -2060,7 +2222,7 @@ function OrdersPageInner() {
               key: "rwd" as Tab,
               label: `Return w/ Driver (${rwdOrders.length})`,
             },
-            { key: "returns" as Tab, label: "Returns" },
+            { key: "returns" as Tab, label: "Returns & Exchange" },
             ...(hasPermission("ORDERS_CREATE")
               ? [{ key: "order-entry" as Tab, label: "Order Entry" }]
               : []),
@@ -2170,16 +2332,7 @@ function OrdersPageInner() {
                     📷 Scan to Assign
                   </button>
                   <button
-                    onClick={() =>
-                      handleBulkAction("move to Warehouse", {
-                        location: "WAREHOUSE",
-                        financialStatus: "UD",
-                        driverId: null,
-                        isArchived: false,
-                        collectedUsd: 0,
-                        collectedLbp: 0,
-                      })
-                    }
+                    onClick={handleBulkMoveToWarehouse}
                     disabled={selectedOrderIds.length === 0}
                     className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
                                bg-yellow-500/20 text-yellow-400 border border-yellow-500/30
@@ -2221,6 +2374,23 @@ function OrdersPageInner() {
                   >
                     Return
                   </button>
+
+                  {/* ── Return Delivered (WO/WD) to Warehouse — permission-gated ── */}
+                  <PermissionGuard requires="ACTION_ORDER_RETURN">
+                    <button
+                      onClick={handleReturnDelivered}
+                      disabled={selectedOrderIds.length === 0}
+                      className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
+                                 bg-orange-500/20 text-orange-400 border border-orange-500/30
+                                 hover:bg-orange-500/30 hover:shadow-[0_0_12px_rgba(249,115,22,0.3)]
+                                 disabled:opacity-30 disabled:cursor-not-allowed
+                                 transition-all duration-200"
+                      title="Return selected delivered (WO/WD) orders to the warehouse (Returned / Re)"
+                    >
+                      Return Delivered
+                    </button>
+                  </PermissionGuard>
+
                   {currentUser?.role === "ADMIN" && (
                     <button
                       onClick={() =>
@@ -2503,6 +2673,7 @@ function OrdersPageInner() {
                       onUpdateOrder={updateOrder}
                       currentUser={currentUser}
                       onCopyLink={handleCopyLink}
+                      onReturnDelivered={handleReturnOrderToWarehouse}
                     />
                     {allTotalPages > 1 && (
                       <div className="flex items-center justify-between mt-4 px-2">
@@ -3688,6 +3859,9 @@ function OrdersPageInner() {
                 <option value="Re" className="bg-slate-950 text-white">
                   Warehouse (Re)
                 </option>
+                <option value="EX" className="bg-slate-950 text-white">
+                  Exchange (EX)
+                </option>
                 <option value="RTS" className="bg-slate-950 text-white">
                   Returned to Seller (RTS)
                 </option>
@@ -3701,12 +3875,12 @@ function OrdersPageInner() {
                     rtsUpdating ||
                     !orders
                       .filter((o) => selectedOrderIds.includes(o.id))
-                      .every((o) => o.financialStatus === "Re")
+                      .every((o) => ["Re", "EX"].includes(o.financialStatus))
                   }
                   className={`px-4 py-2.5 text-sm font-bold rounded-xl transition-all duration-200 shadow-lg ${
                     orders
                       .filter((o) => selectedOrderIds.includes(o.id))
-                      .every((o) => o.financialStatus === "Re")
+                      .every((o) => ["Re", "EX"].includes(o.financialStatus))
                       ? "bg-purple-600 hover:bg-purple-500 text-white shadow-purple-500/20"
                       : "bg-gray-700 text-gray-500 cursor-not-allowed"
                   } ${rtsUpdating ? "opacity-50" : ""}`}
@@ -3813,13 +3987,17 @@ function OrdersPageInner() {
                         selectedOrderIds.length === 0 ||
                         !returnsOrders
                           .filter((o) => selectedOrderIds.includes(o.id))
-                          .every((o) => o.financialStatus === "Re")
+                          .every((o) =>
+                            ["Re", "EX"].includes(o.financialStatus),
+                          )
                       }
                       className={`px-3 py-1.5 text-xs font-bold rounded transition-all shadow-sm ${
                         selectedOrderIds.length > 0 &&
                         returnsOrders
                           .filter((o) => selectedOrderIds.includes(o.id))
-                          .every((o) => o.financialStatus === "Re")
+                          .every((o) =>
+                            ["Re", "EX"].includes(o.financialStatus),
+                          )
                           ? "bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30"
                           : "bg-gray-700 text-gray-500 cursor-not-allowed border border-gray-600"
                       } ${rtsUpdating ? "opacity-50" : ""}`}
@@ -3954,15 +4132,23 @@ function OrdersPageInner() {
                                 className={`px-1.5 py-0.5 text-[10px] font-semibold rounded-full border ${
                                   order.financialStatus === "Re"
                                     ? "text-red-400 bg-red-500/10 border-red-500/30"
-                                    : "text-purple-400 bg-purple-500/10 border-purple-500/30"
+                                    : order.financialStatus === "EX"
+                                      ? "text-orange-400 bg-orange-500/10 border-orange-500/30"
+                                      : "text-purple-400 bg-purple-500/10 border-purple-500/30"
                                 }`}
                                 title={
                                   order.financialStatus === "Re"
                                     ? "Returned (at warehouse)"
-                                    : "Returned to Seller"
+                                    : order.financialStatus === "EX"
+                                      ? "Exchange (at warehouse)"
+                                      : "Returned to Seller"
                                 }
                               >
-                                {order.financialStatus === "Re" ? "Re" : "RTS"}
+                                {order.financialStatus === "Re"
+                                  ? "Re"
+                                  : order.financialStatus === "EX"
+                                    ? "EX"
+                                    : "RTS"}
                               </span>
                             </td>
                             <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap text-right">

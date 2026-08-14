@@ -27,6 +27,11 @@ export const SYSTEM_PERMISSIONS = [
   // directory page (zone-based rates). Assignable to employees via Permission
   // Groups or per-user Custom Permissions in the Admin Panel.
   "ACTION_DRIVER_RATE_EDIT",
+  // ── Granular Delivered-Order Returns RBAC ──
+  // Grants the ability to return a DELIVERED order (financialStatus WO or WD)
+  // to the warehouse (RETURN/Re) or to any other status. Only assignable to
+  // staff who should be allowed to roll back already-delivered orders.
+  "ACTION_ORDER_RETURN",
 ] as const;
 
 export type SystemPermission = (typeof SYSTEM_PERMISSIONS)[number];

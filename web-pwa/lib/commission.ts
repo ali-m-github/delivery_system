@@ -29,15 +29,15 @@ export async function getDriverCommission(
   merchantId: string | null | undefined,
   zoneId: string,
 ): Promise<DriverCommissionResult> {
-  // Tier 1: Check for Seller-Specific Flat Rate Exception
+  // Tier 1: Check for Seller-Specific Flat Rate Exception.
+  // NOTE: A $0 exception is still a valid override — the mere existence of a
+  // driver↔seller rate takes precedence over any zonal/system-default rate,
+  // so we must NOT filter out zero-valued exceptions here.
   if (merchantId) {
     const sellerException = await prisma.driverSellerRate.findUnique({
       where: { driverId_merchantId: { driverId, merchantId } },
     });
-    if (
-      sellerException &&
-      (sellerException.rateUsd > 0 || sellerException.rateLbp > 0)
-    ) {
+    if (sellerException) {
       return {
         usd: sellerException.rateUsd,
         lbp: sellerException.rateLbp,

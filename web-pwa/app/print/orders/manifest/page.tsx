@@ -76,15 +76,20 @@ export default async function PrintRtsManifestPage({
 
   // ── Build manifest rows ──
   // Seller delivery rate: order-specific override → merchant default → 0.
-  // For cash sellers, the amount required from the seller per order is the
-  // order value minus the seller's delivery rate (shown as a negative amount,
-  // i.e. money owed to the delivery company).
+  // For cash sellers the effective per-order fee is the SELLER RATE + COMPANY
+  // PROFIT (defaultSellerRate + defaultProfitRate) — see lib/profit.ts. The
+  // amount required from the seller per order is the order value minus that
+  // fee (shown as a negative amount, i.e. money owed to the delivery company).
   const rows: ManifestRow[] = orders.map((order) => {
     const isCashSeller = order.merchant?.isCashSeller ?? false;
-    const sellerRate =
+    const baseSellerRate =
       order.extraShipping && order.extraShipping > 0
         ? order.extraShipping
         : (order.merchant?.defaultSellerRate ?? 0);
+    // Cash sellers are charged the full fee (seller rate + profit rate).
+    const sellerRate = isCashSeller
+      ? baseSellerRate + (order.merchant?.defaultProfitRate ?? 0)
+      : baseSellerRate;
     const amountUsd = order.amountUsd ?? 0;
     const moneyRequiredUsd = isCashSeller ? amountUsd - sellerRate : 0;
 

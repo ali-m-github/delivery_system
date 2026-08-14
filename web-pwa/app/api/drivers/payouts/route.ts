@@ -96,6 +96,13 @@ export async function GET(request: Request) {
             userId: true,
           },
         },
+        createdBy: {
+          select: {
+            id: true,
+            username: true,
+            email: true,
+          },
+        },
         orders: {
           include: {
             zone: {
@@ -141,11 +148,13 @@ export async function GET(request: Request) {
           zoneRates.map((zr) => [zr.zoneId, zr.rate]),
         );
         const sellerExceptionMap = new Map<string, number>();
+        // A $0 seller exception is still a valid override — it must override
+        // the zonal/default rate rather than falling through to it.
         for (const sr of sellerRates) {
-          if (sr.rateUsd > 0) sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+          sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
         }
         for (const cr of cashSellerRates) {
-          if (cr.rateUsd > 0) sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
+          sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
         }
 
         const ordersWithCommission = payout.orders.map((order) => {

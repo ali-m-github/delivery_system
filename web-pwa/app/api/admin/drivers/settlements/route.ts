@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
-
-const prisma = new PrismaClient();
 
 // Enrich orders with per-order driver commission (3-tier logic)
 async function enrichOrdersWithCommission(payouts: any[]) {
@@ -25,11 +23,13 @@ async function enrichOrdersWithCommission(payouts: any[]) {
         zoneRates.map((zr: any) => [zr.zoneId, zr.rate]),
       );
       const sellerExceptionMap = new Map<string, number>();
+      // A $0 seller exception is still a valid override — it must override
+      // the zonal/default rate rather than falling through to it.
       for (const sr of sellerRates) {
-        if (sr.rateUsd > 0) sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+        sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
       }
       for (const cr of cashSellerRates) {
-        if (cr.rateUsd > 0) sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
+        sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
       }
 
       const ordersWithCommission = (payout.orders || []).map((order: any) => {
@@ -90,11 +90,21 @@ export async function GET() {
             userId: true,
           },
         },
+        createdBy: {
+          select: {
+            id: true,
+            username: true,
+            email: true,
+          },
+        },
         orders: {
           select: {
             id: true,
             orderId: true,
             customerName: true,
+            customerPhone: true,
+            customerAddress: true,
+            location: true,
             createdAt: true,
             amountUsd: true,
             amountLbp: true,
@@ -130,6 +140,7 @@ export async function GET() {
         driverId: p.driverId,
         driverName: `${p.driver.firstName} ${p.driver.lastName}`,
         driverInternalId: p.driver.driverId,
+        createdBy: p.createdBy || null,
         sequentialIndex: p.sequentialIndex,
         orderCount: p.orders.length,
         totalUsd: p.totalUsd,
@@ -218,9 +229,11 @@ export async function POST(request: Request) {
 
     const statementIds = statementSelections.map((s) => s.id);
 
-    if (safeAmountPaidUsd <= 0 && safeAmountPaidLbp <= 0) {
+    // Allow $0 payments (e.g., a payout whose net is $0) to still be settled
+    // into the treasury box, but never allow a negative amount.
+    if (safeAmountPaidUsd < 0 || safeAmountPaidLbp < 0) {
       return NextResponse.json(
-        { error: "Amount paid must be greater than 0" },
+        { error: "Amount paid cannot be negative" },
         { status: 400 },
       );
     }

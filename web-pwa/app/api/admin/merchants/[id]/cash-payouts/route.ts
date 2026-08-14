@@ -67,14 +67,15 @@ export async function GET(
       sellerRate: defaultFee,
     }));
 
-    // 2. Pending Unresolved Returns (not yet deducted, location RETURN, fin status Re only)
-    // Exclude RTS (Returned to Seller) — those are already resolved.
+    // 2. Pending Unresolved Returns/Exchanges (not yet deducted, location RETURN,
+    //    fin status Re for returns and EX for exchanges).
+    //    Exclude RTS (Returned to Seller) — those are already resolved.
     const pendingReturns = await prisma.order.findMany({
       where: {
         merchantId,
         returnDeductionBatchId: null,
         location: "RETURN",
-        financialStatus: "Re",
+        financialStatus: { in: ["Re", "EX"] },
       },
       select: {
         id: true,

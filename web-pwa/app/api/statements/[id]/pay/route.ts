@@ -49,9 +49,11 @@ export async function POST(
     const safeAmountUsd = parseFloat(String(amountUsd ?? 0)) || 0;
     const safeAmountLbp = parseFloat(String(amountLbp ?? 0)) || 0;
 
-    if (safeAmountUsd <= 0 && safeAmountLbp <= 0) {
+    // Allow $0 payments into a cashbox (e.g., a fully waived/net-zero payout)
+    // but never allow a negative amount.
+    if (safeAmountUsd < 0 || safeAmountLbp < 0) {
       return NextResponse.json(
-        { error: "Amount paid must be greater than 0" },
+        { error: "Amount paid cannot be negative" },
         { status: 400 },
       );
     }

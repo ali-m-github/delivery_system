@@ -6,9 +6,11 @@ import { jwtVerify } from "jose";
 const prisma = new PrismaClient();
 
 // ─── PATCH /api/admin/orders/returns ────────────────────────────────────────
-// Bulk transition for the Return Lifecycle State Machine:
-//   RWD -> Re  (Driver returns to warehouse)
-//   Re  -> RTS (Warehouse returns to seller)
+// Bulk transition for the Return/Exchange Lifecycle State Machine:
+//   RWD -> Re  (Return with Driver moves to warehouse)
+//   EWD -> EX  (Exchange with Driver moves to warehouse)
+//   Re  -> RTS (Warehouse return returns to seller)
+//   EX  -> RTS (Warehouse exchange returns to seller)
 export async function PATCH(request: Request) {
   try {
     // ── Auth guard ──────────────────────────────────────────────────────────
@@ -52,68 +54,65 @@ export async function PATCH(request: Request) {
     }
 
     // ── Validate state transitions ──────────────────────────────────────────
-    // Fetch existing orders to validate before updating
+    // Fetch existing orders to validate before updating. The warehouse move
+    // (Re) accepts both RWD (returns) and EWD (exchanges); the return-to-seller
+    // (RTS) accepts both Re (returns) and EX (exchanges).
     const existingOrders = await prisma.order.findMany({
       where: { id: { in: orderIds } },
       select: { id: true, financialStatus: true, location: true },
     });
 
-    if (newStatus === "Re") {
-      // RWD -> Re: Only orders with financialStatus "RWD" can transition
-      const invalidOrders = existingOrders.filter(
-        (o) => o.financialStatus !== "RWD",
+    const allowedSources = newStatus === "Re" ? ["RWD", "EWD"] : ["Re", "EX"];
+
+    const invalidOrders = existingOrders.filter(
+      (o) => !allowedSources.includes(o.financialStatus),
+    );
+    if (invalidOrders.length > 0) {
+      return NextResponse.json(
+        {
+          error: `${
+            invalidOrders.length
+          } order(s) are not eligible for transition to "${newStatus}". Found: ${invalidOrders
+            .map((o) => o.financialStatus)
+            .join(", ")}`,
+        },
+        { status: 400 },
       );
-      if (invalidOrders.length > 0) {
-        return NextResponse.json(
-          {
-            error: `${
-              invalidOrders.length
-            } order(s) are not in RWD status. Found: ${invalidOrders
-              .map((o) => o.financialStatus)
-              .join(", ")}`,
-          },
-          { status: 400 },
-        );
-      }
     }
 
-    if (newStatus === "RTS") {
-      // Re -> RTS: Only orders with financialStatus "Re" can transition
-      const invalidOrders = existingOrders.filter(
-        (o) => o.financialStatus !== "Re",
-      );
-      if (invalidOrders.length > 0) {
-        return NextResponse.json(
-          {
-            error: `${
-              invalidOrders.length
-            } order(s) are not in Re status. Found: ${invalidOrders
-              .map((o) => o.financialStatus)
-              .join(", ")}`,
-          },
-          { status: 400 },
-        );
-      }
-    }
-
-    // ── Perform bulk update ─────────────────────────────────────────────────
-    await prisma.order.updateMany({
-      where: { id: { in: orderIds } },
-      data: { financialStatus: newStatus },
+    // ── Derive per-order target status ──────────────────────────────────────
+    // RWD -> Re, EWD -> EX on warehouse move; Re/EX -> RTS on return-to-seller
+    const updates = existingOrders.map((o) => {
+      const from = o.financialStatus;
+      const target =
+        newStatus === "Re" ? (from === "EWD" ? "EX" : "Re") : "RTS";
+      return { id: o.id, from, target };
     });
 
-    // ── Log history for each order ──────────────────────────────────────────
-    const historyLabel =
-      newStatus === "Re"
-        ? "Return to Warehouse: RWD → Re"
-        : "Returned to Seller: Re → RTS";
-
+    // ── Perform bulk update ─────────────────────────────────────────────────
     await Promise.all(
-      orderIds.map((orderId) =>
+      updates.map((u) =>
+        prisma.order.update({
+          where: { id: u.id },
+          data: { financialStatus: u.target },
+        }),
+      ),
+    );
+
+    // ── Log history for each order ──────────────────────────────────────────
+    await Promise.all(
+      updates.map((u) =>
         prisma.orderHistory.create({
           data: {
-            orderId,
-            action: historyLabel,
+            orderId: u.id,
+            action:
+              newStatus === "Re"
+                ? u.target === "EX"
+                  ? "Exchange to Warehouse: EWD → EX"
+                  : "Return to Warehouse: RWD → Re"
+                : u.from === "EX"
+                  ? "Exchange to Seller: EX → RTS"
+                  : "Returned to Seller: Re → RTS",
             location: "RETURN",
             userId: actionUserId,
           },

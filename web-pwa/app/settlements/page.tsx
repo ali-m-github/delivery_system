@@ -44,6 +44,11 @@ interface DriverPayout {
   remainingLbp: number;
   createdAt: string;
   clearedAt: string | null;
+  createdBy?: {
+    id: string;
+    username: string;
+    email: string;
+  } | null;
   driver: {
     id: string;
     driverId: string;
@@ -164,6 +169,7 @@ export default function DriverConsignmentsPage() {
           remainingLbp: p.remainingLbp,
           createdAt: p.createdAt || "",
           clearedAt: p.clearedAt,
+          createdBy: p.createdBy || null,
           driver: {
             id: p.driverId,
             driverId: p.driverInternalId,
@@ -176,12 +182,14 @@ export default function DriverConsignmentsPage() {
             id: o.id,
             orderId: o.orderId,
             customerName: o.customerName || "",
+            customerPhone: o.customerPhone || "",
+            customerAddress: o.customerAddress || "",
             amountUsd: o.amountUsd,
             amountLbp: o.amountLbp,
             collectedUsd: o.collectedUsd,
             collectedLbp: o.collectedLbp,
             financialStatus: o.financialStatus || "",
-            location: "",
+            location: o.location || "",
             createdAt: o.createdAt || "",
             zone: o.zone || { name: "" },
             merchant: o.merchant || null,
@@ -490,6 +498,11 @@ export default function DriverConsignmentsPage() {
                               title={beirutDateTime(payout.createdAt)}
                             >
                               {beirutDate(payout.createdAt)}
+                              {payout.createdBy?.username && (
+                                <span className="block text-gray-600">
+                                  by {payout.createdBy.username}
+                                </span>
+                              )}
                             </td>
                             <td className="px-4 py-3 text-blue-400 text-sm text-right font-mono font-bold">
                               ${payout.totalCollected.toFixed(2)}
@@ -566,7 +579,19 @@ export default function DriverConsignmentsPage() {
                                             Customer
                                           </th>
                                           <th className="px-4 py-2 font-semibold">
+                                            Phone
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold">
                                             Address
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold">
+                                            Zone
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold">
+                                            Fin. Status
+                                          </th>
+                                          <th className="px-4 py-2 font-semibold">
+                                            Location
                                           </th>
                                           <th className="px-4 py-2 font-semibold">
                                             Date Received
@@ -625,8 +650,22 @@ export default function DriverConsignmentsPage() {
                                               <td className="px-4 py-2 text-gray-300 text-sm">
                                                 {order.customerName || "—"}
                                               </td>
+                                              <td className="px-4 py-2 text-gray-400 text-xs font-mono whitespace-nowrap">
+                                                {order.customerPhone || "—"}
+                                              </td>
                                               <td className="px-4 py-2 text-gray-500 text-xs max-w-[160px] truncate">
                                                 {order.customerAddress || "—"}
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-500 text-xs">
+                                                {order.zone?.name || "—"}
+                                              </td>
+                                              <td className="px-4 py-2">
+                                                <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-white/5 border border-white/10">
+                                                  {order.financialStatus || "—"}
+                                                </span>
+                                              </td>
+                                              <td className="px-4 py-2 text-gray-500 text-xs">
+                                                {order.location || "—"}
                                               </td>
                                               <td className="px-4 py-2 text-gray-500 text-xs">
                                                 {beirutDate(order.createdAt)}
@@ -737,6 +776,9 @@ export default function DriverConsignmentsPage() {
                   {beirutDateTime(
                     modalPayout.clearedAt || modalPayout.createdAt,
                   )}
+                  {modalPayout.createdBy?.username && (
+                    <> · by {modalPayout.createdBy.username}</>
+                  )}
                   {" · "}
                   {modalPayout.orders.length} orders
                 </p>
@@ -808,8 +850,11 @@ export default function DriverConsignmentsPage() {
                       <th className="px-4 py-2 font-semibold">Order ID</th>
                       <th className="px-4 py-2 font-semibold">Date Received</th>
                       <th className="px-4 py-2 font-semibold">Customer</th>
+                      <th className="px-4 py-2 font-semibold">Phone</th>
                       <th className="px-4 py-2 font-semibold">Address</th>
                       <th className="px-4 py-2 font-semibold">Zone</th>
+                      <th className="px-4 py-2 font-semibold">Fin. Status</th>
+                      <th className="px-4 py-2 font-semibold">Location</th>
                       <th className="px-4 py-2 font-semibold">Seller</th>
                       <th className="px-4 py-2 font-semibold text-right">
                         Amount USD
@@ -860,11 +905,22 @@ export default function DriverConsignmentsPage() {
                           <td className="px-4 py-2 text-gray-300 text-sm">
                             {order.customerName}
                           </td>
+                          <td className="px-4 py-2 text-gray-400 text-xs font-mono whitespace-nowrap">
+                            {order.customerPhone || "—"}
+                          </td>
                           <td className="px-4 py-2 text-gray-500 text-xs max-w-[160px] truncate">
                             {order.customerAddress || "—"}
                           </td>
                           <td className="px-4 py-2 text-gray-500 text-xs">
                             {order.zone?.name || "—"}
+                          </td>
+                          <td className="px-4 py-2">
+                            <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-white/5 border border-white/10">
+                              {order.financialStatus || "—"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2 text-gray-500 text-xs">
+                            {order.location || "—"}
                           </td>
                           <td className="px-4 py-2 text-gray-400 text-xs">
                             {order.merchant?.merchantName || "—"}

@@ -117,8 +117,9 @@ export default async function PrintOrdersPage({
       const exception = driverRates.driverSellerRates.find(
         (r) => r.merchantId === order.merchantId,
       );
-      if (exception && Number(exception.rateUsd || 0) > 0) {
-        driverCommission = Number(exception.rateUsd);
+      // A $0 seller exception is still a valid override of the zonal rate.
+      if (exception) {
+        driverCommission = Number(exception.rateUsd || 0);
       } else {
         // Tier 2: Zone-based rate
         const zoneRate = driverRates.zoneRates.find(
@@ -135,8 +136,9 @@ export default async function PrintOrdersPage({
         const sellerException = order.driver.driverSellerRates.find(
           (r) => r.merchantId === order.merchantId,
         );
-        if (sellerException && sellerException.rateUsd > 0) {
-          driverCommission = sellerException.rateUsd;
+        // A $0 seller exception is still a valid override of the zonal rate.
+        if (sellerException) {
+          driverCommission = Number(sellerException.rateUsd || 0);
         }
       }
 

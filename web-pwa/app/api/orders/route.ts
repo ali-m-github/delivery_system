@@ -3,6 +3,7 @@ import prisma from "@/lib/prisma";
 import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
 import { notifyCustomerStatusChange } from "@/lib/notifications";
+import { createExchangeOrderFromDelivered } from "@/lib/exchange";
 
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
 export async function GET(request: NextRequest) {
@@ -27,7 +28,18 @@ export async function GET(request: NextRequest) {
     // Build where clause from filters
     const where: Record<string, unknown> = {};
     if (location) where.location = location;
-    if (financialStatus) where.financialStatus = financialStatus;
+    if (financialStatus) {
+      // Support comma-separated statuses (e.g. "RWD,EWD") for combined views
+      const statuses = financialStatus
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (statuses.length === 1) {
+        where.financialStatus = statuses[0];
+      } else if (statuses.length > 1) {
+        where.financialStatus = { in: statuses };
+      }
+    }
     if (zoneId) where.zoneId = zoneId;
     if (dateFrom || dateTo) {
       const createdAt: Record<string, Date> = {};
@@ -456,9 +468,9 @@ export async function PATCH(request: Request) {
             : [];
 
           const sellerExceptionMap = new Map<string, number>();
+          // A $0 seller exception is still a valid override of the zonal rate.
           for (const sr of sellerRates) {
-            if (sr.rateUsd > 0)
-              sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+            sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
           }
 
           const newCommissionUsd = remainingOrders.reduce((sum, o) => {
@@ -563,6 +575,15 @@ export async function PATCH(request: Request) {
     });
 
     const newLocation = updateData.location || existing.location;
+
+    // ── Exchange orders ──────────────────────────────────────────────
+    // When an exchange order (hasExchange) is delivered, create the
+    // "<orderId>-Exchange" proof order (idempotent) so it shows up in the
+    // driver's Returns/Exchange tab and can be moved to the returns warehouse.
+    if (newLocation === "DELIVERED" && existing.hasExchange && actionUserId) {
+      await createExchangeOrderFromDelivered(existing, actionUserId);
+    }
+
     notifyCustomerStatusChange(
       updatedOrder.orderId,
       newLocation,

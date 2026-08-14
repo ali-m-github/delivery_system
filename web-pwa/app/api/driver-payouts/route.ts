@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { getSessionUserId } from "@/helpers/auth";
 
 // POST /api/driver-payouts — Clear WD orders to WO (With Office)
 export async function POST(request: Request) {
@@ -42,6 +43,9 @@ export async function POST(request: Request) {
     }
 
     const driverId = profile.id;
+
+    // Attribute this payout to the authenticated user who created it
+    const createdById = await getSessionUserId(request);
 
     // Validate orders belong to the driver, are delivered, and in WD status
     const orders = await prisma.order.findMany({
@@ -89,11 +93,13 @@ export async function POST(request: Request) {
 
     const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
     const sellerExceptionMap = new Map<string, number>();
+    // A $0 seller exception is still a valid override — it must override
+    // the zonal/default rate rather than falling through to it.
     for (const sr of sellerRates) {
-      if (sr.rateUsd > 0) sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
+      sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
     }
     for (const cr of cashSellerRates) {
-      if (cr.rateUsd > 0) sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
+      sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
     }
 
     const dbCommission = orders.reduce((sum, o) => {
@@ -143,6 +149,7 @@ export async function POST(request: Request) {
           totalCollected: safeTotalUsd,
           status: "CLEARED",
           clearedAt: new Date(),
+          createdById: createdById ?? undefined,
         },
       });
 

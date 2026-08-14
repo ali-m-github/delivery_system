@@ -642,7 +642,7 @@ export default function CashSellerWorkspace({
                 Unresolved Returns to Deduct
               </h3>
               <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded">
-                {pendingReturns.length} returns
+                {pendingReturns.length} returns/exchanges
               </span>
             </div>
             <p className="text-gray-600 text-[10px] mt-1 leading-tight">

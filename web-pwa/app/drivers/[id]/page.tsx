@@ -6,6 +6,7 @@ import { DEFAULT_DRIVER_USD } from "@/lib/commission";
 import SellerRateForm from "@/components/drivers/SellerRateForm";
 import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
+import PermissionGuard from "@/components/PermissionGuard";
 import * as XLSX from "xlsx";
 
 type Tab = "assigned" | "delivered" | "returns" | "payouts" | "rates";
@@ -242,7 +243,11 @@ export default function DriverProfilePage() {
       deliveries.filter((o: any) => {
         const loc = String(o.location).toUpperCase();
         const fin = String(o.financialStatus).toUpperCase();
-        return (loc === "RETURN" || loc === "RETURNED") && fin === "RWD";
+        // Returns (RWD) and exchanges (EWD) both live in this tab
+        return (
+          (loc === "RETURN" || loc === "RETURNED") &&
+          (fin === "RWD" || fin === "EWD")
+        );
       }),
     [deliveries],
   );
@@ -310,19 +315,17 @@ export default function DriverProfilePage() {
   // DriverCashSellerRate takes precedence for cash sellers.
   const sellerExceptionMap = useMemo(() => {
     const map = new Map<string, number>();
-    // First: DriverSellerRate (from "Seller Rate Exceptions" tab)
+    // First: DriverSellerRate (from "Seller Rate Exceptions" tab).
+    // A $0 exception is still a valid override — it must override the zonal
+    // rate rather than falling through to it.
     const safeSellerRates = sellerRates || [];
     for (const sr of safeSellerRates) {
-      if (sr.rateUsd > 0) {
-        map.set(sr.merchantId, sr.rateUsd);
-      }
+      map.set(sr.merchantId, sr.rateUsd);
     }
     // Second: DriverCashSellerRate (from driver.user, overrides for cash sellers)
     const cashRates = driver?.user?.driverCashSellerRates || [];
     for (const cr of cashRates) {
-      if (cr.rateUsd > 0) {
-        map.set(cr.merchantId, cr.rateUsd);
-      }
+      map.set(cr.merchantId, cr.rateUsd);
     }
     console.log(
       "[Payout Pipeline] Seller Exception Map (merchantId → rateUsd):",
@@ -455,6 +458,51 @@ export default function DriverProfilePage() {
       }
     } finally {
       setClearing(false);
+    }
+  };
+
+  // ─── Return Delivered to Assigned / Warehouse (permission-gated) ─────────
+  // Bulk action for the Delivered tab. Reuses the ACTION_ORDER_RETURN-gated
+  // endpoint so delivered WO/WD orders can be rolled back to the driver's
+  // assigned list (ASSIGNED/UD) or to the returns warehouse (RETURN/Re).
+  const [returningDelivered, setReturningDelivered] = useState(false);
+  const returnDeliveredOrders = async (
+    targetLocation: "ASSIGNED" | "RETURN",
+  ) => {
+    if (selectedWdOrders.length === 0) return;
+    const targetFinancialStatus = targetLocation === "ASSIGNED" ? "UD" : "Re";
+    if (
+      !window.confirm(
+        `Return ${selectedWdOrders.length} delivered order(s) to ${
+          targetLocation === "ASSIGNED"
+            ? "the driver's assigned list"
+            : "the warehouse (Returned / Re)"
+        }?\n\nThis unlinks them from any payout and clears collected amounts.`,
+      )
+    )
+      return;
+    setReturningDelivered(true);
+    try {
+      const orderIds = selectedWdOrders.map((o: any) => o.id);
+      const res = await fetch("/api/admin/orders/return", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderIds,
+          location: targetLocation,
+          financialStatus: targetFinancialStatus,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to return delivered orders");
+      }
+      setSelectedOrders([]);
+      await refreshData();
+    } catch (e: any) {
+      alert(e.message || "Error returning delivered orders");
+    } finally {
+      setReturningDelivered(false);
     }
   };
 
@@ -784,7 +832,7 @@ export default function DriverProfilePage() {
             [
               ["assigned", "Assigned"],
               ["delivered", "Delivered"],
-              ["returns", "Returns"],
+              ["returns", "Returns/Exchange"],
               ["payouts", `Pending Payouts (${payouts.length})`],
               ["rates", `Seller Rates (${sellerRates.length})`],
             ] as [Tab, string][]
@@ -1271,6 +1319,35 @@ export default function DriverProfilePage() {
                 >
                   {clearing ? "Clearing…" : "✓ Clear With Office"}
                 </button>
+
+                {/* ── Return selected delivered orders (permission-gated) ── */}
+                {/* Both return actions are grouped together so they read as a
+                    cohesive pair: Return to Assigned right next to Return to
+                    Warehouse. */}
+                <PermissionGuard requires="ACTION_ORDER_RETURN">
+                  <div className="flex items-center gap-1.5 border-l border-white/10 pl-3 ml-2">
+                    <button
+                      onClick={() => returnDeliveredOrders("ASSIGNED")}
+                      disabled={!hasValidClearSelection || returningDelivered}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 transition-colors ${!hasValidClearSelection || returningDelivered ? "opacity-40 cursor-not-allowed" : ""}`}
+                      title="Return selected delivered orders to the driver's assigned list"
+                    >
+                      {returningDelivered
+                        ? "Updating…"
+                        : "↩ Return to Assigned"}
+                    </button>
+                    <button
+                      onClick={() => returnDeliveredOrders("RETURN")}
+                      disabled={!hasValidClearSelection || returningDelivered}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold text-orange-300 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 transition-colors ${!hasValidClearSelection || returningDelivered ? "opacity-40 cursor-not-allowed" : ""}`}
+                      title="Return selected delivered (WO/WD) orders to the warehouse (Returned / Re)"
+                    >
+                      {returningDelivered
+                        ? "Updating…"
+                        : "📦 Return to Warehouse"}
+                    </button>
+                  </div>
+                </PermissionGuard>
               </div>
 
               {/* Pagination Controls - Delivered */}
@@ -1685,7 +1762,7 @@ export default function DriverProfilePage() {
                           </td>
                           <td className="px-5 py-3.5">
                             <span className="px-2 py-1 text-[10px] font-bold rounded bg-orange-500/10 text-orange-400 border border-orange-500/20">
-                              RWD
+                              {order.financialStatus === "EWD" ? "EWD" : "RWD"}
                             </span>
                           </td>
                           <td className="px-5 py-3.5 text-right text-red-400 font-mono text-sm">
@@ -1823,6 +1900,11 @@ export default function DriverProfilePage() {
                                 dateStyle: "medium",
                                 timeStyle: "short",
                               },
+                            )}
+                            {payout.createdBy?.username && (
+                              <span className="block text-gray-600 text-xs">
+                                by {payout.createdBy.username}
+                              </span>
                             )}
                           </td>
                           <td className="px-5 py-3.5">
@@ -2106,7 +2188,7 @@ export default function DriverProfilePage() {
         {/* ── View Payout Details Modal ───────────────────────────────── */}
         {selectedPayout && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-            <div className="bg-[#121824] border border-white/10 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 mx-4">
+            <div className="bg-[#121824] border border-white/10 rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-y-auto p-6 mx-4">
               <div className="flex justify-between items-start mb-4">
                 <div>
                   <h2 className="text-xl font-bold text-white">
@@ -2126,6 +2208,9 @@ export default function DriverProfilePage() {
                         dateStyle: "medium",
                         timeStyle: "short",
                       },
+                    )}
+                    {selectedPayout.createdBy?.username && (
+                      <> · by {selectedPayout.createdBy.username}</>
                     )}
                   </p>
                 </div>
@@ -2197,12 +2282,22 @@ export default function DriverProfilePage() {
                       </th>
                       <th className="px-4 py-2.5 font-semibold">Seller</th>
                       <th className="px-4 py-2.5 font-semibold">Customer</th>
+                      <th className="px-4 py-2.5 font-semibold">Phone</th>
                       <th className="px-4 py-2.5 font-semibold">Address</th>
+                      <th className="px-4 py-2.5 font-semibold">Zone</th>
+                      <th className="px-4 py-2.5 font-semibold">Fin. Status</th>
+                      <th className="px-4 py-2.5 font-semibold">Location</th>
                       <th className="px-4 py-2.5 font-semibold text-right">
                         $ Amt
                       </th>
                       <th className="px-4 py-2.5 font-semibold text-right">
+                        LL Amt
+                      </th>
+                      <th className="px-4 py-2.5 font-semibold text-right">
                         $ Collected
+                      </th>
+                      <th className="px-4 py-2.5 font-semibold text-right">
+                        Commission
                       </th>
                       <th className="px-4 py-2.5 font-semibold text-right">
                         Actions
@@ -2253,14 +2348,34 @@ export default function DriverProfilePage() {
                             <td className="px-4 py-2.5 text-white">
                               {order.customerName}
                             </td>
+                            <td className="px-4 py-2.5 text-gray-400 text-xs font-mono whitespace-nowrap">
+                              {order.customerPhone || "—"}
+                            </td>
                             <td className="px-4 py-2.5 text-gray-400 text-xs max-w-[160px] truncate">
                               {order.customerAddress || "—"}
+                            </td>
+                            <td className="px-4 py-2.5 text-gray-400 text-xs">
+                              {order.zone?.name || "—"}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-white/5 border border-white/10">
+                                {order.financialStatus || "—"}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 text-gray-400 text-xs">
+                              {order.location || "—"}
                             </td>
                             <td className="px-4 py-2.5 text-right text-green-400 font-mono">
                               ${(order.amountUsd ?? 0).toFixed(2)}
                             </td>
+                            <td className="px-4 py-2.5 text-right text-yellow-400/80 font-mono">
+                              {(order.amountLbp ?? 0).toLocaleString()}
+                            </td>
                             <td className="px-4 py-2.5 text-right text-green-300 font-mono">
                               ${actualCollectedUsd.toFixed(2)}
+                            </td>
+                            <td className="px-4 py-2.5 text-right text-purple-400 font-mono">
+                              ${(order.driverCommissionUsd ?? 0).toFixed(2)}
                             </td>
                             <td className="px-4 py-2.5 text-right">
                               <div className="flex gap-1.5 justify-end">

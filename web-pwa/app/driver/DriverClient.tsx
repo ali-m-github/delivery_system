@@ -108,6 +108,11 @@ type DriverPayoutItem = {
   remainingLbp: number;
   createdAt: string;
   clearedAt: string | null;
+  createdBy?: {
+    id: string;
+    username: string;
+    email: string;
+  } | null;
   orders: PayoutOrder[];
 };
 
@@ -403,6 +408,8 @@ export default function DriverClient({
       deliveries.filter((o) => {
         const loc = String(o.location).toUpperCase();
         const fin = String(o.financialStatus).toUpperCase();
+        // Exchange proof orders ("-Exchange") never impact financials / driver payouts
+        if (String(o.orderId).toLowerCase().endsWith("-exchange")) return false;
         const isDelivered = loc === "DELIVERED";
         const isReturned = loc === "RETURNED" || loc === "RETURN";
         const isUnpaid = !o.driverPayoutId; // Relational: not yet linked to a payout batch
@@ -1919,6 +1926,11 @@ export default function DriverClient({
                                 {beirutDate(
                                   payout.clearedAt || payout.createdAt,
                                 )}
+                                {payout.createdBy?.username && (
+                                  <span className="block text-gray-600">
+                                    by {payout.createdBy.username}
+                                  </span>
+                                )}
                               </td>
                               <td className="px-4 py-3 text-green-400 text-sm text-right font-mono font-bold">
                                 ${payout.netUsd.toFixed(2)}
@@ -2033,7 +2045,13 @@ export default function DriverClient({
                                               Zone
                                             </th>
                                             <th className="px-4 py-2 font-semibold">
+                                              Fin. Status
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold">
                                               Seller
+                                            </th>
+                                            <th className="px-4 py-2 font-semibold">
+                                              Location
                                             </th>
                                             <th className="px-4 py-2 font-semibold text-right">
                                               Amount USD
@@ -2094,9 +2112,18 @@ export default function DriverClient({
                                                 <td className="px-4 py-2 text-gray-400">
                                                   {order.zone?.name || "—"}
                                                 </td>
+                                                <td className="px-4 py-2">
+                                                  <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-white/5 border border-white/10">
+                                                    {order.financialStatus ||
+                                                      "—"}
+                                                  </span>
+                                                </td>
                                                 <td className="px-4 py-2 text-gray-400">
                                                   {order.merchant
                                                     ?.merchantName || "—"}
+                                                </td>
+                                                <td className="px-4 py-2 text-gray-500 text-xs">
+                                                  {order.location || "—"}
                                                 </td>
                                                 <td className="px-4 py-2 text-green-400 text-right font-mono">
                                                   $
