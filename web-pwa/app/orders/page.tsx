@@ -155,10 +155,18 @@ interface Order {
   } | null;
 }
 
-type Tab = "all" | "warehouse" | "reports" | "order-entry" | "returns" | "rwd";
+type Tab =
+  | "all"
+  | "warehouse"
+  | "cp"
+  | "reports"
+  | "order-entry"
+  | "returns"
+  | "rwd";
 
 const LOCATION_LABELS: Record<string, string> = {
   WAREHOUSE: "Warehouse",
+  CP: "CP (Pickup)",
   WITH_DRIVER: "With Driver",
   DELIVERED: "Delivered",
   RETURN: "Returned",
@@ -170,6 +178,7 @@ const LOCATION_LABELS: Record<string, string> = {
 
 const LOCATION_COLORS: Record<string, string> = {
   WAREHOUSE: "text-yellow-400 bg-yellow-500/10 border-yellow-500/30",
+  CP: "text-purple-400 bg-purple-500/10 border-purple-500/30",
   WITH_DRIVER: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30",
   DELIVERED: "text-green-400 bg-green-500/10 border-green-500/30",
   RETURN: "text-red-400 bg-red-500/10 border-red-500/30",
@@ -190,6 +199,7 @@ const ZONE_BADGE_COLORS = [
 
 const LOCATION_FILTERS = [
   { key: "WAREHOUSE", label: "Warehouse" },
+  { key: "CP", label: "CP (Pickup)" },
   { key: "WITH_DRIVER", label: "With Driver" },
   { key: "DELIVERED", label: "Delivered" },
   { key: "RETURN", label: "Returned" },
@@ -999,6 +1009,9 @@ function OrdersPageInner() {
         location: "RETURN",
         financialStatus: "RWD,EWD",
       });
+    } else if (currentTab === "cp") {
+      // CP tab: only merchant orders staged in the CP pickup warehouse
+      fetchOrders({ skip: "0", take: "5000", location: "CP" });
     } else if (currentTab === "returns") {
       // Returns tab: filter server-side by location to avoid missing
       // older return orders beyond the default fetch limit
@@ -1528,6 +1541,12 @@ function OrdersPageInner() {
     () => orders.filter((o) => o.location === "WAREHOUSE"),
     [orders],
   );
+
+  // ── CP (customer pickup) warehouse — merchant orders awaiting transfer ──
+  const cpOrders = useMemo(
+    () => orders.filter((o) => o.location === "CP"),
+    [orders],
+  );
   const warehouseByZone = useMemo(() => {
     const map: Record<string, Order[]> = {};
     for (const o of warehouseOrders) {
@@ -1867,6 +1886,47 @@ function OrdersPageInner() {
       await fetchOrders();
     } catch (error: any) {
       alert(error.message || "Failed to move orders to warehouse.");
+    }
+  };
+
+  // ── Move selected CP orders into the main warehouse ───────────────────
+  // Each order is matched to its delivery zone from the cities database and
+  // unknown addresses fall back to zone "99". Only CP orders are affected.
+  const [movingFromCp, setMovingFromCp] = useState(false);
+  const handleMoveFromCpToWarehouse = async () => {
+    const cpIds = selectedOrderIds.filter((id) => {
+      const o = orders.find((ord) => ord.id === id);
+      return o?.location === "CP";
+    });
+    if (cpIds.length === 0) {
+      alert("Select CP (pickup) orders to move to the warehouse first.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Move ${cpIds.length} CP order(s) to the warehouse?\n\nZones will be auto-assigned from the cities database (unknown addresses go to zone 99).`,
+      )
+    )
+      return;
+
+    setMovingFromCp(true);
+    try {
+      const res = await fetch("/api/admin/orders/move-from-cp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds: cpIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to move orders from CP");
+      }
+      alert(`Moved ${data.movedCount} order(s) to the warehouse.`);
+      setSelectedOrderIds([]);
+      await fetchOrders();
+    } catch (error: any) {
+      alert(error.message || "Failed to move orders from CP.");
+    } finally {
+      setMovingFromCp(false);
     }
   };
 
@@ -2225,6 +2285,10 @@ function OrdersPageInner() {
           {[
             { key: "all" as Tab, label: "All Orders" },
             { key: "warehouse" as Tab, label: "Warehouse" },
+            {
+              key: "cp" as Tab,
+              label: `CP (Pickup) (${cpOrders.length})`,
+            },
             { key: "reports" as Tab, label: "Reports" },
             {
               key: "rwd" as Tab,
@@ -2349,6 +2413,18 @@ function OrdersPageInner() {
                                transition-all duration-200"
                   >
                     Warehouse
+                  </button>
+                  <button
+                    onClick={handleMoveFromCpToWarehouse}
+                    disabled={selectedOrderIds.length === 0 || movingFromCp}
+                    className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
+                               bg-purple-500/20 text-purple-300 border border-purple-500/30
+                               hover:bg-purple-500/30 hover:shadow-[0_0_12px_rgba(168,85,247,0.3)]
+                               disabled:opacity-30 disabled:cursor-not-allowed
+                               transition-all duration-200"
+                    title="Move selected CP (pickup) orders to the warehouse with auto-assigned zones"
+                  >
+                    {movingFromCp ? "Moving..." : "Move from CP to Warehouse"}
                   </button>
                   <button
                     onClick={() =>
@@ -3229,6 +3305,121 @@ function OrdersPageInner() {
                     </p>
                   </div>
                 )}
+              </>
+            )}
+          </>
+        )}
+
+        {/* ════════════════════════════════ */}
+        {/* CP (PICKUP) WAREHOUSE TAB        */}
+        {/* ════════════════════════════════ */}
+        {currentTab === "cp" && (
+          <>
+            {/* Header + Move to Warehouse action */}
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 mb-4">
+              <div>
+                <h2 className="text-sm font-bold text-gray-200">
+                  CP (Customer Pickup) — Merchant Orders
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Orders created by merchants are staged here. Select orders and
+                  move them to the warehouse — zones are auto-assigned from the
+                  cities database (unknown addresses go to zone 99).
+                </p>
+              </div>
+              <button
+                onClick={handleMoveFromCpToWarehouse}
+                disabled={selectedOrderIds.length === 0 || movingFromCp}
+                className="px-4 py-2 text-xs font-bold rounded-lg
+                           bg-purple-500/20 text-purple-300 border border-purple-500/30
+                           hover:bg-purple-500/30 hover:shadow-[0_0_12px_rgba(168,85,247,0.3)]
+                           disabled:opacity-30 disabled:cursor-not-allowed
+                           transition-all duration-200 whitespace-nowrap"
+              >
+                {movingFromCp
+                  ? "Moving..."
+                  : `🚚 Move to Warehouse (${
+                      selectedOrderIds.filter((id) => {
+                        const o = orders.find((ord) => ord.id === id);
+                        return o?.location === "CP";
+                      }).length
+                    } selected)`}
+              </button>
+            </div>
+
+            {loading ? (
+              <div className="flex items-center justify-center py-20">
+                <svg
+                  className="animate-spin h-8 w-8 text-cyan-400"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                  />
+                </svg>
+              </div>
+            ) : cpOrders.length === 0 ? (
+              <div className="text-center py-20">
+                <p className="text-gray-500 text-sm">
+                  No orders in the CP (pickup) warehouse.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs text-gray-500">
+                    {cpOrders.length} CP order(s)
+                  </span>
+                  <button
+                    onClick={() => {
+                      if (selectedOrderIds.length === cpOrders.length) {
+                        setSelectedOrderIds([]);
+                      } else {
+                        setSelectedOrderIds(cpOrders.map((o) => o.id));
+                      }
+                    }}
+                    className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
+                               bg-white/5 text-gray-300 border border-white/10
+                               hover:bg-white/10 transition-colors"
+                  >
+                    {selectedOrderIds.length === cpOrders.length &&
+                    cpOrders.length > 0
+                      ? "Deselect All"
+                      : "Select All"}
+                  </button>
+                </div>
+                <SharedOrderTable
+                  orders={cpOrders}
+                  selectedOrderIds={selectedOrderIds}
+                  onToggleSelectOrder={toggleSelectOrder}
+                  onToggleSelectAll={() => {
+                    if (selectedOrderIds.length === cpOrders.length) {
+                      setSelectedOrderIds([]);
+                    } else {
+                      setSelectedOrderIds(cpOrders.map((o) => o.id));
+                    }
+                  }}
+                  isAllSelected={
+                    selectedOrderIds.length === cpOrders.length &&
+                    cpOrders.length > 0
+                  }
+                  availableDrivers={availableDrivers}
+                  onUpdateOrder={updateOrder}
+                  currentUser={currentUser}
+                  onCopyLink={handleCopyLink}
+                  onReturnDelivered={handleReturnOrderToWarehouse}
+                />
               </>
             )}
           </>

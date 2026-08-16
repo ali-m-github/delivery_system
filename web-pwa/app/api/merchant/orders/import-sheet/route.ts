@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
 import { PrismaClient } from "@prisma/client";
 import Papa from "papaparse";
+import { ensureFallbackZone } from "@/lib/zoneMatcher";
 
 const prisma = new PrismaClient();
 
@@ -157,24 +158,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // ── Step 3: Resolve default zone (Zone 99, else explicit, else first) ─
-    let defaultZoneId = body.zoneId;
-    if (!defaultZoneId) {
-      const zone99 = await prisma.zone.findFirst({
-        where: { name: { contains: "99" } },
-      });
-      defaultZoneId = zone99?.id || (await prisma.zone.findFirst())?.id;
-    }
-
-    if (!defaultZoneId) {
-      return NextResponse.json(
-        {
-          error:
-            "No zone found in the system. Please create a zone first or provide zoneId.",
-        },
-        { status: 400 },
-      );
-    }
+    // ── Step 3: Default zone for merchant imports ─────────────────────────
+    // Merchants never pick a zone. All imported orders are staged in the CP
+    // (customer pickup) warehouse under the fallback zone "99"; the correct
+    // delivery zone is auto-assigned when staff move them to the warehouse.
+    const defaultZoneId = await ensureFallbackZone();
 
     // ── Step 4: Map & sanitize rows ─────────────────────────────────────
     const mappedOrders = dataRows.map((row) => {
@@ -208,6 +196,9 @@ export async function POST(request: Request) {
         collectedLbp: 0,
         packages: finalPackages,
         zoneId: defaultZoneId,
+        // Merchant-imported orders are staged in the CP warehouse just like
+        // manually entered merchant orders.
+        location: "CP",
         creatorId: payload.id, // the merchant's own user account
         merchantId: merchant.id, // the merchant's cuid (session-scoped)
         createdAt: customDate,

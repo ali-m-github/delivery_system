@@ -27,8 +27,7 @@ function normalizeSheetImportConfig(
 // ─── Server Component: Merchant Portal ────────────────────────────────────────
 // 1. Authenticates via JWT session cookie
 // 2. Scoped query: only the merchant's own orders
-// 3. Fetches zones for the order form dropdown
-// 4. Fetches payout statements (non-cash sellers) / cash payout batches
+// 3. Fetches payout statements (non-cash sellers) / cash payout batches
 export default async function MerchantPage() {
   // ── Authenticate ────────────────────────────────────────────────────────
   const cookieStore = await cookies();
@@ -89,18 +88,36 @@ export default async function MerchantPage() {
             select: {
               id: true,
               orderId: true,
+              customerName: true,
+              customerPhone: true,
+              customerAddress: true,
               amountUsd: true,
+              amountLbp: true,
               collectedUsd: true,
+              collectedLbp: true,
               location: true,
+              financialStatus: true,
               createdAt: true,
+              zone: { select: { id: true, name: true } },
+              driver: { select: { id: true, firstName: true, lastName: true } },
             },
           },
           resolvedReturns: {
             select: {
               id: true,
               orderId: true,
+              customerName: true,
+              customerPhone: true,
+              customerAddress: true,
               amountUsd: true,
+              amountLbp: true,
+              collectedUsd: true,
+              collectedLbp: true,
+              location: true,
+              financialStatus: true,
               createdAt: true,
+              zone: { select: { id: true, name: true } },
+              driver: { select: { id: true, firstName: true, lastName: true } },
             },
           },
         },
@@ -129,12 +146,6 @@ export default async function MerchantPage() {
       </div>
     );
   }
-
-  // ── Zones for the Destination Zone dropdown ─────────────────────────────
-  const zones = await prisma.zone.findMany({
-    select: { id: true, name: true },
-    orderBy: { name: "asc" },
-  });
 
   // ── Serialize: convert Date objects to ISO strings for client component ─
   const serializedMerchant = {
@@ -201,7 +212,6 @@ export default async function MerchantPage() {
   return (
     <MerchantClient
       merchant={serializedMerchant}
-      zones={zones}
       payouts={serializedPayouts}
       cashBatches={serializedCashBatches}
     />

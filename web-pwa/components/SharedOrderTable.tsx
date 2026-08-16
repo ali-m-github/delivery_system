@@ -6,6 +6,7 @@ import PermissionGuard from "@/components/PermissionGuard";
 
 const LOCATION_LABELS: Record<string, string> = {
   WAREHOUSE: "Warehouse",
+  CP: "CP (Pickup)",
   WITH_DRIVER: "With Driver",
   DELIVERED: "Delivered",
   RETURN: "Returned",
@@ -14,6 +15,7 @@ const LOCATION_LABELS: Record<string, string> = {
 
 const LOCATION_COLORS: Record<string, string> = {
   WAREHOUSE: "text-yellow-400 bg-yellow-500/10 border-yellow-500/30",
+  CP: "text-purple-400 bg-purple-500/10 border-purple-500/30",
   WITH_DRIVER: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30",
   DELIVERED: "text-green-400 bg-green-500/10 border-green-500/30",
   RETURN: "text-red-400 bg-red-500/10 border-red-500/30",
