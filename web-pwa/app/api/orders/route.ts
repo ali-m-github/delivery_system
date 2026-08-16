@@ -24,10 +24,15 @@ export async function GET(request: NextRequest) {
     const dateTo = searchParams.get("dateTo");
     const zoneId = searchParams.get("zoneId");
     const financialStatus = searchParams.get("financialStatus");
+    const isArchived = searchParams.get("isArchived");
 
     // Build where clause from filters
     const where: Record<string, unknown> = {};
     if (location) where.location = location;
+    // Archive filter: only include the currently-viewed set (active vs archived)
+    if (isArchived === "true" || isArchived === "false") {
+      where.isArchived = isArchived === "true";
+    }
     if (financialStatus) {
       // Support comma-separated statuses (e.g. "RWD,EWD") for combined views
       const statuses = financialStatus

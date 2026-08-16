@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback, Fragment } from "react";
+import Image from "next/image";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
+import ImportGoogleSheetsModal from "@/components/orders/ImportGoogleSheetsModal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Zone {
@@ -23,6 +25,10 @@ interface Order {
   location: string;
   financialStatus: string;
   notes: string | null;
+  // Cash-seller payout linkage (present for every order).
+  cashPayoutBatchId: number | null;
+  returnDeductionBatchId: number | null;
+  cashPayoutExcluded: boolean;
   createdAt: string;
 }
 
@@ -39,6 +45,26 @@ interface MerchantPayout {
   createdAt: string;
 }
 
+interface CashPayoutBatchOrder {
+  id: string;
+  orderId: string;
+  amountUsd: number;
+  collectedUsd?: number;
+  location?: string;
+  createdAt: string;
+}
+
+interface CashPayoutBatch {
+  id: number;
+  batchReference: string;
+  grossAdvance: number;
+  deductedReturns: number;
+  netPaid: number;
+  createdAt: string;
+  orders: CashPayoutBatchOrder[];
+  resolvedReturns: CashPayoutBatchOrder[];
+}
+
 interface ZoneRate {
   id: string;
   zoneId: string;
@@ -53,6 +79,12 @@ interface MerchantData {
   contactName: string | null;
   phone: string | null;
   address: string | null;
+  logoUrl: string | null;
+  isCashSeller: boolean;
+  sheetImportConfig: {
+    startRow?: number;
+    colMapping?: Record<string, number>;
+  } | null;
   zoneRates: ZoneRate[];
   orders: Order[];
 }
@@ -61,6 +93,7 @@ interface MerchantClientProps {
   merchant: MerchantData;
   zones: Zone[];
   payouts: MerchantPayout[];
+  cashBatches: CashPayoutBatch[];
 }
 
 type TabKey = "deliveries" | "newOrder" | "statements";
@@ -70,9 +103,13 @@ export default function MerchantClient({
   merchant,
   zones,
   payouts,
+  cashBatches,
 }: MerchantClientProps) {
+  const isCashSeller = merchant.isCashSeller === true;
+
   const [activeTab, setActiveTab] = useState<TabKey>("deliveries");
   const [selectedStatement, setSelectedStatement] = useState<any | null>(null);
+  const [expandedBatchId, setExpandedBatchId] = useState<number | null>(null);
   const [historyModalOrder, setHistoryModalOrder] = useState<{
     id: string;
     history: any[];
@@ -95,6 +132,9 @@ export default function MerchantClient({
     price: "",
     amountLbp: "",
     notes: "",
+    extraShipping: "",
+    packages: "1",
+    hasExchange: false,
   });
   const [submitting, setSubmitting] = useState(false);
   const [formMessage, setFormMessage] = useState<{
@@ -104,6 +144,36 @@ export default function MerchantClient({
 
   // ── Orders state ────────────────────────────────────────────────────────
   const [orders, setOrders] = useState<Order[]>(merchant.orders || []);
+
+  // ── Cash-seller aware Paid/Unpaid semantics ─────────────────────────────
+  // For cash sellers, "Paid" means the advance has already been paid to them
+  // (the order was claimed by a cash payout batch). For standard sellers,
+  // "Paid" means the delivery company has paid them (financialStatus PS).
+  const isPaidOrder = useCallback(
+    (order: Order) =>
+      isCashSeller
+        ? order.cashPayoutBatchId != null
+        : order.financialStatus === "PS",
+    [isCashSeller],
+  );
+
+  const isUnpaidOrder = useCallback(
+    (order: Order) =>
+      isCashSeller
+        ? order.cashPayoutBatchId == null &&
+          order.returnDeductionBatchId == null &&
+          !order.cashPayoutExcluded
+        : order.financialStatus !== "PS",
+    [isCashSeller],
+  );
+
+  // ── Client-side pagination ──────────────────────────────────────────────
+  const PAGE_SIZES = [50, 100, 200, 500, 1000, 5000];
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  // ── Google Sheets import modal ──────────────────────────────────────────
+  const [sheetModalOpen, setSheetModalOpen] = useState(false);
 
   // ── Interactive filtering with multi-keyword search ─────────────────────
   const filteredOrders = useMemo(() => {
@@ -125,9 +195,8 @@ export default function MerchantClient({
         return false;
       if (boxFilter === "RETURNED" && order.location !== "RETURNED")
         return false;
-      if (boxFilter === "PAID" && order.financialStatus !== "PS") return false;
-      if (boxFilter === "UNPAID" && order.financialStatus === "PS")
-        return false;
+      if (boxFilter === "PAID" && !isPaidOrder(order)) return false;
+      if (boxFilter === "UNPAID" && !isUnpaidOrder(order)) return false;
 
       // Dropdown Filters
       if (locationFilter && order.location !== locationFilter) return false;
@@ -154,8 +223,12 @@ export default function MerchantClient({
 
       return true;
     });
-  }, [orders, boxFilter, locationFilter, dateFilter, searchTerm]);
+  }, [orders, boxFilter, locationFilter, dateFilter, searchTerm, isPaidOrder, isUnpaidOrder]);
 
+  // ── Current page slice ──────────────────────────────────────────────────
+  const paginatedOrders = useMemo(() => {
+    return filteredOrders.slice((page - 1) * pageSize, page * pageSize);
+  }, [filteredOrders, page, pageSize]);
   // ── Stat summaries (computed from full dataset) ─────────────────────────
   const stats = useMemo(() => {
     // Exchange proof orders ("-Exchange") are hidden from the merchant's page
@@ -168,10 +241,8 @@ export default function MerchantClient({
       (o) => o.location === "WITH_DRIVER" || o.location === "ASSIGNED",
     ).length;
     const warehouse = visible.filter((o) => o.location === "WAREHOUSE").length;
-    const paidCount = visible.filter((o) => o.financialStatus === "PS").length;
-    const unpaidCount = visible.filter(
-      (o) => o.financialStatus !== "PS",
-    ).length;
+    const paidCount = visible.filter((o) => isPaidOrder(o)).length;
+    const unpaidCount = visible.filter((o) => isUnpaidOrder(o)).length;
     const totalUsd = visible.reduce((s, o) => s + (o.amountUsd ?? 0), 0);
     const totalLbp = visible.reduce((s, o) => s + (o.amountLbp ?? 0), 0);
     return {
@@ -184,7 +255,7 @@ export default function MerchantClient({
       totalUsd,
       totalLbp,
     };
-  }, [orders]);
+  }, [orders, isPaidOrder, isUnpaidOrder]);
 
   // ── Submit new order ────────────────────────────────────────────────────
   const handleCreateOrder = async (e: React.FormEvent) => {
@@ -205,6 +276,9 @@ export default function MerchantClient({
           price: formData.price,
           amountLbp: formData.amountLbp ?? "0",
           notes: formData.notes,
+          extraShipping: formData.extraShipping,
+          packages: formData.packages,
+          hasExchange: formData.hasExchange,
         }),
       });
 
@@ -224,6 +298,9 @@ export default function MerchantClient({
         price: "",
         amountLbp: "",
         notes: "",
+        extraShipping: "",
+        packages: "1",
+        hasExchange: false,
       });
       setFormMessage({ type: "success", text: "Order created successfully!" });
     } catch (error: any) {
@@ -368,12 +445,12 @@ export default function MerchantClient({
   // ── Master checkbox toggle ──────────────────────────────────────────────
   const toggleAllFiltered = () => {
     if (
-      selectedOrders.length === filteredOrders.length &&
-      filteredOrders.length > 0
+      selectedOrders.length === paginatedOrders.length &&
+      paginatedOrders.length > 0
     ) {
       setSelectedOrders([]);
     } else {
-      setSelectedOrders(filteredOrders.map((o) => o.id));
+      setSelectedOrders(paginatedOrders.map((o) => o.id));
     }
   };
 
@@ -444,13 +521,24 @@ export default function MerchantClient({
         <div className="max-w-[1400px] mx-auto">
           {/* ── Header ── */}
           <div className="mb-8 flex flex-col gap-2">
-            <div className="flex items-end gap-4">
-              <h1 className="text-3xl font-bold text-cyan-400">
-                {merchant.merchantName}
-              </h1>
-              <span className="px-2 py-1 text-xs font-bold bg-cyan-500/10 text-cyan-500 rounded border border-cyan-500/20">
-                Seller #{merchant.merchantId}
-              </span>
+            <div className="flex items-center gap-4">
+              {merchant.logoUrl && (
+                <Image
+                  src={merchant.logoUrl}
+                  alt={`${merchant.merchantName} logo`}
+                  width={64}
+                  height={64}
+                  className="w-16 h-16 rounded-full object-cover border border-white/10 bg-[#121824]"
+                />
+              )}
+              <div className="flex items-end gap-4">
+                <h1 className="text-3xl font-bold text-cyan-400">
+                  {merchant.merchantName}
+                </h1>
+                <span className="px-2 py-1 text-xs font-bold bg-cyan-500/10 text-cyan-500 rounded border border-cyan-500/20">
+                  Seller #{merchant.merchantId}
+                </span>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-4 text-sm text-gray-400 mt-2">
@@ -493,42 +581,60 @@ export default function MerchantClient({
               value={stats.total}
               color="slate"
               isSelected={boxFilter === null}
-              onClick={() => setBoxFilter(null)}
+              onClick={() => {
+                setBoxFilter(null);
+                setPage(1);
+              }}
             />
             <StatCard
               label="In Transit"
               value={stats.inTransit}
               color="amber"
               isSelected={boxFilter === "IN_TRANSIT"}
-              onClick={() => setBoxFilter("IN_TRANSIT")}
+              onClick={() => {
+                setBoxFilter("IN_TRANSIT");
+                setPage(1);
+              }}
             />
             <StatCard
               label="Delivered"
               value={stats.delivered}
               color="green"
               isSelected={boxFilter === "DELIVERED"}
-              onClick={() => setBoxFilter("DELIVERED")}
+              onClick={() => {
+                setBoxFilter("DELIVERED");
+                setPage(1);
+              }}
             />
             <StatCard
               label="Warehouse"
               value={stats.warehouse}
               color="purple"
               isSelected={boxFilter === "WAREHOUSE"}
-              onClick={() => setBoxFilter("WAREHOUSE")}
+              onClick={() => {
+                setBoxFilter("WAREHOUSE");
+                setPage(1);
+              }}
             />
             <StatCard
               label="Unpaid"
               value={stats.unpaidCount}
               color="red"
               isSelected={boxFilter === "UNPAID"}
-              onClick={() => setBoxFilter("UNPAID")}
+              onClick={() => {
+                setBoxFilter("UNPAID");
+                setPage(1);
+              }}
             />
             <StatCard
               label="Paid"
               value={stats.paidCount}
               color="green"
               isSelected={boxFilter === "PAID"}
-              onClick={() => setBoxFilter("PAID")}
+              onClick={() => {
+                setBoxFilter("PAID");
+                setPage(1);
+              }}
             />
           </div>
 
@@ -581,7 +687,8 @@ export default function MerchantClient({
                   : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
               }`}
             >
-              My Statements ({payouts.length})
+              {isCashSeller ? "My Payout Batches" : "My Statements"} (
+              {isCashSeller ? cashBatches.length : payouts.length})
             </button>
           </div>
 
@@ -599,7 +706,10 @@ export default function MerchantClient({
                   <input
                     type="text"
                     value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
+                    onChange={(e) => {
+                      setSearchTerm(e.target.value);
+                      setPage(1);
+                    }}
                     placeholder="ID, name, phone, address..."
                     className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-xs focus:border-cyan-500 outline-none transition-colors"
                   />
@@ -611,7 +721,10 @@ export default function MerchantClient({
                   <input
                     type="date"
                     value={dateFilter}
-                    onChange={(e) => setDateFilter(e.target.value)}
+                    onChange={(e) => {
+                      setDateFilter(e.target.value);
+                      setPage(1);
+                    }}
                     className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-xs focus:border-cyan-500 outline-none transition-colors [color-scheme:dark]"
                   />
                 </div>
@@ -621,7 +734,10 @@ export default function MerchantClient({
                   </label>
                   <select
                     value={locationFilter}
-                    onChange={(e) => setLocationFilter(e.target.value)}
+                    onChange={(e) => {
+                      setLocationFilter(e.target.value);
+                      setPage(1);
+                    }}
                     className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-xs focus:border-cyan-500 outline-none transition-colors [&>option]:bg-slate-950 [&>option]:text-white"
                   >
                     <option value="">All</option>
@@ -633,6 +749,35 @@ export default function MerchantClient({
                   </select>
                 </div>
                 <div className="flex-1" />
+                {/* ── Rows per page (right-aligned with the search box) ── */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-gray-500 uppercase tracking-wider">
+                    Rows per page
+                  </label>
+                  <select
+                    value={PAGE_SIZES.includes(pageSize) ? pageSize : "all"}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setPageSize(val === "all" ? 5000 : Number(val));
+                      setPage(1);
+                    }}
+                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-xs focus:border-cyan-500 outline-none transition-colors [&>option]:bg-slate-950 [&>option]:text-white"
+                  >
+                    {PAGE_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size === 5000 ? "5000 (max)" : size}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-gray-500 uppercase tracking-wider">
+                    Showing
+                  </label>
+                  <span className="text-xs text-gray-400 py-2 whitespace-nowrap">
+                    {paginatedOrders.length} of {filteredOrders.length} order(s)
+                  </span>
+                </div>
                 {selectedOrders.length > 0 && (
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-400 mr-1">
@@ -680,6 +825,7 @@ export default function MerchantClient({
                   </p>
                 </div>
               ) : (
+                <>
                 <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
@@ -689,8 +835,8 @@ export default function MerchantClient({
                             <input
                               type="checkbox"
                               checked={
-                                filteredOrders.length > 0 &&
-                                selectedOrders.length === filteredOrders.length
+                                paginatedOrders.length > 0 &&
+                                selectedOrders.length === paginatedOrders.length
                               }
                               onChange={toggleAllFiltered}
                               className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
@@ -726,7 +872,7 @@ export default function MerchantClient({
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredOrders.map((order) => (
+                        {paginatedOrders.map((order) => (
                           <tr
                             key={order.id}
                             className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
@@ -831,6 +977,61 @@ export default function MerchantClient({
                     </table>
                   </div>
                 </div>
+
+                {/* ── Pagination Controls ── */}
+                <div className="flex flex-wrap items-center justify-end gap-3 px-4 py-3 border-t border-white/10">
+                  {(() => {
+                    const totalPages = Math.max(
+                      1,
+                      Math.ceil(filteredOrders.length / pageSize),
+                    );
+                    if (totalPages <= 1) return null;
+                    return (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setPage((p) => Math.max(1, p - 1))}
+                          disabled={page === 1}
+                          className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Prev
+                        </button>
+                        {(() => {
+                          const pages: number[] = [];
+                          const visible = [1, totalPages];
+                          if (page > 1) pages.push(page - 1);
+                          pages.push(page);
+                          if (page < totalPages) pages.push(page + 1);
+                          const sorted = [...new Set([...pages, ...visible])].sort(
+                            (a, b) => a - b,
+                          );
+                          return sorted.map((p) => (
+                            <button
+                              key={p}
+                              onClick={() => setPage(p)}
+                              className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                                page === p
+                                  ? "bg-cyan-600 border-cyan-500 text-white"
+                                  : "border-white/10 bg-white/5 text-gray-400 hover:bg-white/10"
+                              }`}
+                            >
+                              {p}
+                            </button>
+                          ));
+                        })()}
+                        <button
+                          onClick={() =>
+                            setPage((p) => Math.min(totalPages, p + 1))
+                          }
+                          disabled={page === totalPages}
+                          className="px-3 py-1 text-xs rounded border border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    );
+                  })()}
+                </div>
+                </>
               )}
             </>
           )}
@@ -839,180 +1040,270 @@ export default function MerchantClient({
           {/* TAB 2: NEW ORDER REQUEST        */}
           {/* ════════════════════════════════ */}
           {activeTab === "newOrder" && (
-            <div className="max-w-lg mx-auto bg-[#121824] border border-white/5 rounded-xl p-5">
-              <h2 className="text-lg font-bold text-white mb-4 border-b border-white/10 pb-2">
-                New Delivery Request
-              </h2>
-
-              {formMessage && (
-                <div
-                  className={`mb-4 px-3 py-2 rounded-lg text-sm ${
-                    formMessage.type === "success"
-                      ? "bg-green-500/10 border border-green-500/30 text-green-400"
-                      : "bg-red-500/10 border border-red-500/30 text-red-400"
-                  }`}
-                >
-                  {formMessage.text}
-                </div>
-              )}
-
-              <form onSubmit={handleCreateOrder} className="space-y-4">
-                {/* Order ID */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-mono uppercase">
-                    Tracking ID
-                  </label>
-                  <input
-                    required
-                    value={formData.orderId}
-                    onChange={(e) =>
-                      setFormData({ ...formData, orderId: e.target.value })
-                    }
-                    placeholder="e.g. M-1001"
-                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
-                  />
-                </div>
-
-                {/* Customer Name */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-mono uppercase">
-                    Customer Name
-                  </label>
-                  <input
-                    required
-                    value={formData.customerName}
-                    onChange={(e) =>
-                      setFormData({ ...formData, customerName: e.target.value })
-                    }
-                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
-                  />
-                </div>
-
-                {/* Customer Phone */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-mono uppercase">
-                    Phone
-                  </label>
-                  <input
-                    required
-                    value={formData.customerPhone}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        customerPhone: e.target.value,
-                      })
-                    }
-                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
-                  />
-                </div>
-
-                {/* Customer Address */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-mono uppercase">
-                    Address
-                  </label>
-                  <input
-                    required
-                    value={formData.customerAddress}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        customerAddress: e.target.value,
-                      })
-                    }
-                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
-                  />
-                </div>
-
-                {/* Destination Zone (lookup dropdown) */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-mono uppercase">
-                    Destination Zone
-                  </label>
-                  <select
-                    required
-                    value={formData.zoneId}
-                    onChange={(e) =>
-                      setFormData({ ...formData, zoneId: e.target.value })
-                    }
-                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors [&>option]:bg-slate-950 [&>option]:text-white"
-                  >
-                    <option
-                      value=""
-                      disabled
-                      className="bg-slate-950 text-gray-500"
-                    >
-                      — Select Zone —
-                    </option>
-                    {zones.map((z) => (
-                      <option
-                        key={z.id}
-                        value={z.id}
-                        className="bg-slate-950 text-white"
-                      >
-                        {z.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Price USD */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-mono uppercase">
-                    Price (USD)
-                  </label>
-                  <input
-                    required
-                    type="number"
-                    step="0.01"
-                    value={formData.price}
-                    onChange={(e) =>
-                      setFormData({ ...formData, price: e.target.value })
-                    }
-                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
-                  />
-                </div>
-
-                {/* Price LBP */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-mono uppercase">
-                    Price (LBP)
-                  </label>
-                  <input
-                    type="number"
-                    step="1"
-                    value={formData.amountLbp}
-                    onChange={(e) =>
-                      setFormData({ ...formData, amountLbp: e.target.value })
-                    }
-                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors"
-                  />
-                </div>
-
-                {/* Notes */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-mono uppercase">
-                    Notes
-                  </label>
-                  <textarea
-                    value={formData.notes}
-                    onChange={(e) =>
-                      setFormData({ ...formData, notes: e.target.value })
-                    }
-                    rows={2}
-                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-sm focus:border-cyan-500 outline-none transition-colors resize-none"
-                  />
-                </div>
-
+            <>
+              {/* ── Header Row: Import button ── */}
+              <div className="mb-3 flex items-center gap-2">
                 <button
-                  type="submit"
-                  disabled={submitting}
-                  className="w-full bg-cyan-600 hover:bg-cyan-500 text-white py-2.5 rounded-lg font-bold transition-all shadow-[0_0_15px_rgba(6,182,212,0.3)] disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => setSheetModalOpen(true)}
+                  className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/20 hover:shadow-[0_0_16px_rgba(6,182,212,0.3)] transition-all duration-200"
                 >
-                  {submitting ? "Submitting..." : "Submit Delivery Request"}
+                  📄 Import Orders from Google Sheets
                 </button>
-              </form>
-            </div>
+                <span className="text-[10px] text-gray-500 font-mono">
+                  {merchant.sheetImportConfig
+                    ? "Saved template loaded for this seller"
+                    : "No saved template — defaults will be used"}
+                </span>
+              </div>
+
+              <div className="bg-[#121824] border border-white/5 rounded-xl p-4 shadow-2xl">
+                <div className="flex items-center gap-3 mb-3">
+                  <h2 className="text-sm font-bold text-white uppercase tracking-wider">
+                    Order Entry
+                  </h2>
+                  <span className="text-[10px] text-gray-500 font-mono">
+                    Fields auto-clear on save &middot; Press Enter to submit
+                  </span>
+                </div>
+
+                {formMessage && (
+                  <div
+                    className={`mb-3 px-3 py-2 rounded-lg text-sm ${
+                      formMessage.type === "success"
+                        ? "bg-green-500/10 border border-green-500/30 text-green-400"
+                        : "bg-red-500/10 border border-red-500/30 text-red-400"
+                    }`}
+                  >
+                    {formMessage.text}
+                  </div>
+                )}
+
+                <form onSubmit={handleCreateOrder}>
+                  <div className="flex flex-nowrap gap-2 items-end overflow-x-auto pb-1">
+                    {/* Order ID */}
+                    <div className="flex flex-col gap-1 min-w-[90px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Order ID
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.orderId}
+                        onChange={(e) =>
+                          setFormData({ ...formData, orderId: e.target.value })
+                        }
+                        placeholder="ORD-001"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Customer */}
+                    <div className="flex flex-col gap-1 min-w-[120px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Customer
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.customerName}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            customerName: e.target.value,
+                          })
+                        }
+                        placeholder="John Doe"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Phone */}
+                    <div className="flex flex-col gap-1 min-w-[120px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Phone
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.customerPhone}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            customerPhone: e.target.value,
+                          })
+                        }
+                        placeholder="+1 555 123 4567"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Address */}
+                    <div className="flex flex-col gap-1 min-w-[200px] flex-1">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Address
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.customerAddress}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            customerAddress: e.target.value,
+                          })
+                        }
+                        placeholder="123 Main St, City"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Zone */}
+                    <div className="flex flex-col gap-1 min-w-[120px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Zone
+                      </label>
+                      <select
+                        required
+                        value={formData.zoneId}
+                        onChange={(e) =>
+                          setFormData({ ...formData, zoneId: e.target.value })
+                        }
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white focus:border-cyan-500 outline-none transition-colors [&>option]:bg-slate-950 [&>option]:text-white"
+                      >
+                        <option value="" disabled>
+                          — Select —
+                        </option>
+                        {zones.map((z) => (
+                          <option key={z.id} value={z.id}>
+                            {z.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* USD */}
+                    <div className="flex flex-col gap-1 min-w-[80px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        USD
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        value={formData.price}
+                        onChange={(e) =>
+                          setFormData({ ...formData, price: e.target.value })
+                        }
+                        placeholder="0.00"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* LBP */}
+                    <div className="flex flex-col gap-1 min-w-[80px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        LBP
+                      </label>
+                      <input
+                        type="number"
+                        step="1"
+                        value={formData.amountLbp}
+                        onChange={(e) =>
+                          setFormData({ ...formData, amountLbp: e.target.value })
+                        }
+                        placeholder="0"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Ex Ship */}
+                    <div className="flex flex-col gap-1 min-w-[80px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Ex Ship
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={formData.extraShipping}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            extraShipping: e.target.value,
+                          })
+                        }
+                        placeholder="0.00"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Pckgs */}
+                    <div className="flex flex-col gap-1 min-w-[60px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Pckgs
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={formData.packages}
+                        onChange={(e) =>
+                          setFormData({ ...formData, packages: e.target.value })
+                        }
+                        placeholder="1"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Exch */}
+                    <div className="flex flex-col gap-1 min-w-[50px] items-center">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Exch
+                      </label>
+                      <label className="flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={formData.hasExchange}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              hasExchange: e.target.checked,
+                            })
+                          }
+                          className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                        />
+                      </label>
+                    </div>
+
+                    {/* Notes */}
+                    <div className="flex flex-col gap-1 min-w-[120px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Notes
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.notes}
+                        onChange={(e) =>
+                          setFormData({ ...formData, notes: e.target.value })
+                        }
+                        placeholder="Optional"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Save */}
+                    <div className="flex flex-col gap-1 min-w-[80px]">
+                      <div className="h-[10px]" />
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        className="w-full px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {submitting ? "..." : "Save"}
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </>
           )}
 
           {/* ════════════════════════════════ */}
@@ -1020,91 +1311,246 @@ export default function MerchantClient({
           {/* ════════════════════════════════ */}
           {activeTab === "statements" && (
             <>
-              {payouts.length === 0 ? (
-                <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-12 text-center">
-                  <p className="text-gray-500 text-sm">
-                    No statements have been generated yet.
-                  </p>
-                </div>
-              ) : (
-                <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[11px] uppercase tracking-wider">
-                          <th className="px-4 py-3 text-left font-medium">
-                            Statement #
-                          </th>
-                          <th className="px-4 py-3 text-left font-medium">
-                            Date generated
-                          </th>
-                          <th className="px-4 py-3 text-right font-medium">
-                            Gross Cash Collected
-                          </th>
-                          <th className="px-4 py-3 text-right font-medium">
-                            Shipping Costs Deducted
-                          </th>
-                          <th className="px-4 py-3 text-right font-medium">
-                            Net Cash Disbursed
-                          </th>
-                          <th className="px-4 py-3 text-right font-medium">
-                            Action
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {payouts.map((p) => (
-                          <tr
-                            key={p.id}
-                            className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
-                          >
-                            <td className="px-4 py-3 text-xs font-mono text-cyan-400">
-                              #{p.sequentialIndex}
-                            </td>
-                            <td className="px-4 py-3 text-xs text-gray-400">
-                              {formatDate(p.createdAt)}
-                            </td>
-                            <td className="px-4 py-3 text-xs text-right">
-                              <span className="text-green-400 font-mono">
-                                ${formatCurrency(p.totalUsd)}
-                              </span>
-                              <span className="text-gray-600 mx-1">|</span>
-                              <span className="text-yellow-400 font-mono">
-                                {p.totalLbp.toLocaleString()} LL
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-xs text-right">
-                              <span className="text-red-400 font-mono">
-                                -${formatCurrency(p.shippingUsd)}
-                              </span>
-                              <span className="text-gray-600 mx-1">|</span>
-                              <span className="text-red-400 font-mono">
-                                -{p.shippingLbp.toLocaleString()} LL
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-xs text-right">
-                              <span className="text-green-300 font-mono font-bold">
-                                ${formatCurrency(p.netUsd)}
-                              </span>
-                              <span className="text-gray-600 mx-1">|</span>
-                              <span className="text-yellow-300 font-mono font-bold">
-                                {p.netLbp.toLocaleString()} LL
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              <button
-                                onClick={() => fetchStatementDetail(p)}
-                                className="px-3 py-1.5 text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded hover:bg-cyan-500/20"
-                              >
-                                View Details
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              {isCashSeller ? (
+                /* ── CASH SELLER: PAID CASH PAYOUT BATCHES ──
+                   Cash sellers are paid in advance, so instead of statements
+                   they review the money they were paid. The company-only
+                   profit figure is never shown here. */
+                cashBatches.length === 0 ? (
+                  <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-12 text-center">
+                    <p className="text-gray-500 text-sm">
+                      No cash payout batches have been generated yet.
+                    </p>
                   </div>
-                </div>
+                ) : (
+                  <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[11px] uppercase tracking-wider">
+                            <th className="px-4 py-3 text-left font-medium w-8" />
+                            <th className="px-4 py-3 text-left font-medium">
+                              Batch Ref
+                            </th>
+                            <th className="px-4 py-3 text-left font-medium">
+                              Date
+                            </th>
+                            <th className="px-4 py-3 text-right font-medium">
+                              Gross Advance
+                            </th>
+                            <th className="px-4 py-3 text-right font-medium">
+                              Deducted Returns
+                            </th>
+                            <th className="px-4 py-3 text-right font-medium">
+                              Net Paid
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {cashBatches.map((batch) => {
+                            const isExpanded = expandedBatchId === batch.id;
+                            return (
+                              <Fragment key={batch.id}>
+                                <tr
+                                  onClick={() =>
+                                    setExpandedBatchId(
+                                      isExpanded ? null : batch.id,
+                                    )
+                                  }
+                                  className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors cursor-pointer"
+                                >
+                                  <td className="px-4 py-3">
+                                    <span
+                                      className={`text-gray-500 text-xs transition-transform inline-block ${
+                                        isExpanded ? "rotate-90" : ""
+                                      }`}
+                                    >
+                                      ▶
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-xs font-mono text-cyan-400">
+                                    {batch.batchReference}
+                                  </td>
+                                  <td className="px-4 py-3 text-xs text-gray-400">
+                                    {formatDate(batch.createdAt)}
+                                  </td>
+                                  <td className="px-4 py-3 text-xs text-right">
+                                    <span className="text-green-400 font-mono">
+                                      ${formatCurrency(batch.grossAdvance)}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-xs text-right">
+                                    <span className="text-red-400 font-mono">
+                                      -${formatCurrency(batch.deductedReturns)}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-xs text-right">
+                                    <span className="text-green-300 font-mono font-bold">
+                                      ${formatCurrency(batch.netPaid)}
+                                    </span>
+                                  </td>
+                                </tr>
+                                {isExpanded && (
+                                  <tr>
+                                    <td
+                                      colSpan={6}
+                                      className="px-4 py-3 bg-[#0B0F17]/50"
+                                    >
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                          <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold mb-2">
+                                            Advance Orders ({batch.orders.length})
+                                          </p>
+                                          {batch.orders.length === 0 ? (
+                                            <p className="text-gray-600 text-xs">
+                                              None
+                                            </p>
+                                          ) : (
+                                            <div className="space-y-1">
+                                              {batch.orders.map((o) => (
+                                                <div
+                                                  key={o.id}
+                                                  className="flex justify-between text-xs bg-white/[0.02] rounded px-2 py-1"
+                                                >
+                                                  <span className="font-mono text-gray-300">
+                                                    {o.orderId}
+                                                  </span>
+                                                  <span className="font-mono text-green-400">
+                                                    ${o.amountUsd.toFixed(2)}
+                                                  </span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+                                        <div>
+                                          <p className="text-gray-500 text-[10px] uppercase tracking-wider font-bold mb-2">
+                                            Deducted Returns (
+                                            {batch.resolvedReturns.length})
+                                          </p>
+                                          {batch.resolvedReturns.length === 0 ? (
+                                            <p className="text-gray-600 text-xs">
+                                              None
+                                            </p>
+                                          ) : (
+                                            <div className="space-y-1">
+                                              {batch.resolvedReturns.map((r) => (
+                                                <div
+                                                  key={r.id}
+                                                  className="flex justify-between text-xs bg-white/[0.02] rounded px-2 py-1"
+                                                >
+                                                  <span className="font-mono text-gray-300">
+                                                    {r.orderId}
+                                                  </span>
+                                                  <span className="font-mono text-orange-400">
+                                                    -${r.amountUsd.toFixed(2)}
+                                                  </span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <>
+                  {payouts.length === 0 ? (
+                    <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-12 text-center">
+                      <p className="text-gray-500 text-sm">
+                        No statements have been generated yet.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[11px] uppercase tracking-wider">
+                              <th className="px-4 py-3 text-left font-medium">
+                                Statement #
+                              </th>
+                              <th className="px-4 py-3 text-left font-medium">
+                                Date generated
+                              </th>
+                              <th className="px-4 py-3 text-right font-medium">
+                                Gross Cash Collected
+                              </th>
+                              <th className="px-4 py-3 text-right font-medium">
+                                Shipping Costs Deducted
+                              </th>
+                              <th className="px-4 py-3 text-right font-medium">
+                                Net Cash Disbursed
+                              </th>
+                              <th className="px-4 py-3 text-right font-medium">
+                                Action
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {payouts.map((p) => (
+                              <tr
+                                key={p.id}
+                                className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
+                              >
+                                <td className="px-4 py-3 text-xs font-mono text-cyan-400">
+                                  #{p.sequentialIndex}
+                                </td>
+                                <td className="px-4 py-3 text-xs text-gray-400">
+                                  {formatDate(p.createdAt)}
+                                </td>
+                                <td className="px-4 py-3 text-xs text-right">
+                                  <span className="text-green-400 font-mono">
+                                    ${formatCurrency(p.totalUsd)}
+                                  </span>
+                                  <span className="text-gray-600 mx-1">|</span>
+                                  <span className="text-yellow-400 font-mono">
+                                    {p.totalLbp.toLocaleString()} LL
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-xs text-right">
+                                  <span className="text-red-400 font-mono">
+                                    -${formatCurrency(p.shippingUsd)}
+                                  </span>
+                                  <span className="text-gray-600 mx-1">|</span>
+                                  <span className="text-red-400 font-mono">
+                                    -{p.shippingLbp.toLocaleString()} LL
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-xs text-right">
+                                  <span className="text-green-300 font-mono font-bold">
+                                    ${formatCurrency(p.netUsd)}
+                                  </span>
+                                  <span className="text-gray-600 mx-1">|</span>
+                                  <span className="text-yellow-300 font-mono font-bold">
+                                    {p.netLbp.toLocaleString()} LL
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  <button
+                                    onClick={() => fetchStatementDetail(p)}
+                                    className="px-3 py-1.5 text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded hover:bg-cyan-500/20"
+                                  >
+                                    View Details
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}
@@ -1321,6 +1767,21 @@ export default function MerchantClient({
           orderId={historyModalOrder.id}
           orderHistory={historyModalOrder.history}
           onClose={() => setHistoryModalOrder(null)}
+        />
+      )}
+
+      {/* ── Import Google Sheets Modal ───────────────────────────────────── */}
+      {sheetModalOpen && (
+        <ImportGoogleSheetsModal
+          merchantId={merchant.merchantId}
+          savedConfig={merchant.sheetImportConfig}
+          apiPath="/api/merchant/orders/import-sheet"
+          saveConfigPath="/api/merchant/orders/import-sheet/config"
+          onSuccess={() => {
+            setSheetModalOpen(false);
+            window.location.reload();
+          }}
+          onClose={() => setSheetModalOpen(false)}
         />
       )}
     </>

@@ -207,7 +207,12 @@ export async function POST(
               merchantId,
               cashPayoutBatchId: null,
             },
-            select: { id: true, amountUsd: true, driverId: true },
+            select: {
+              id: true,
+              amountUsd: true,
+              driverId: true,
+              createdAt: true,
+            },
           })
         : [];
 
@@ -234,7 +239,12 @@ export async function POST(
               merchantId,
               returnDeductionBatchId: null,
             },
-            select: { id: true, amountUsd: true, driverId: true },
+            select: {
+              id: true,
+              amountUsd: true,
+              driverId: true,
+              createdAt: true,
+            },
           })
         : [];
 
@@ -253,11 +263,21 @@ export async function POST(
       const netPaid = grossAdvance - deductedReturns + totalAdjustments;
 
       // 6. Generate meaningful batch reference: {merchantId}-{DDMMYYYY}
-      // Add sequence suffix if multiple payouts on same day (unique constraint)
-      const now = new Date();
-      const day = String(now.getDate()).padStart(2, "0");
-      const month = String(now.getMonth() + 1).padStart(2, "0");
-      const year = now.getFullYear();
+      // The date reflects the ORDERS' date (latest order createdAt in the
+      // batch), NOT the date the payout was recorded — so a payout created
+      // late still references the day the orders were placed.
+      // Add sequence suffix only if another payout already claims the same
+      // seller+date (unique constraint).
+      const allOrderDates = [
+        ...advanceOrders.map((o) => o.createdAt),
+        ...returnOrders.map((o) => o.createdAt),
+      ].filter((d): d is Date => d instanceof Date);
+      const batchDate = allOrderDates.length
+        ? new Date(Math.max(...allOrderDates.map((d) => d.getTime())))
+        : new Date();
+      const day = String(batchDate.getDate()).padStart(2, "0");
+      const month = String(batchDate.getMonth() + 1).padStart(2, "0");
+      const year = batchDate.getFullYear();
       const dateKey = `${merchant.merchantId}-${day}${month}${year}`;
       const existingToday = await tx.cashPayoutBatch.count({
         where: {

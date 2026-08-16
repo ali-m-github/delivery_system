@@ -877,6 +877,13 @@ function OrdersPageInner() {
       if (locationFilter !== "ALL") params.location = locationFilter;
       if (dateFilter) params.dateFrom = dateFilter;
     }
+
+    // On the "all" tab, always request the currently-viewed set (active vs
+    // archived) so the client-side isArchived filter always has data to show.
+    if (currentTab === "all") {
+      params = { ...(params || {}), isArchived: String(showArchived) };
+    }
+
     setLoading(true);
     try {
       // Build query string for pagination/filters
@@ -1013,6 +1020,7 @@ function OrdersPageInner() {
     searchTerm,
     locationFilter,
     dateFilter,
+    showArchived,
   ]);
 
   // ── Fetch auth state ──
@@ -2513,7 +2521,15 @@ function OrdersPageInner() {
                   )}
                   {currentUser?.role === "ADMIN" && (
                     <button
-                      onClick={() => setShowArchived((prev) => !prev)}
+                      onClick={() => {
+                        // Reset location/date filters when entering the archive so
+                        // the archived set isn't hidden by active-only filters.
+                        if (!showArchived) {
+                          setLocationFilter("ALL");
+                          setDateFilter("");
+                        }
+                        setShowArchived(!showArchived);
+                      }}
                       className="px-4 py-2.5 text-xs font-semibold rounded-xl
                                  bg-white/5 text-gray-400 border border-white/10
                                  hover:text-gray-200 hover:bg-white/10

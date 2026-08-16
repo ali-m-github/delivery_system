@@ -13,6 +13,11 @@ export async function middleware(request: NextRequest) {
     const secret = new TextEncoder().encode(process.env.JWT_SECRET);
     const { payload } = await jwtVerify(token, secret);
 
+    // Send logged-in users away from the root landing page to the orders page
+    if (request.nextUrl.pathname === "/") {
+      return NextResponse.redirect(new URL("/orders", request.url));
+    }
+
     if (
       request.nextUrl.pathname.startsWith("/admin") ||
       request.nextUrl.pathname.startsWith("/zones")
@@ -32,6 +37,7 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
+    "/",
     "/dashboard/:path*",
     "/orders/:path*",
     "/admin/:path*",

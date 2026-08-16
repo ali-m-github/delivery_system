@@ -3,13 +3,18 @@
 import { useState, useEffect, FormEvent } from "react";
 
 interface ImportGoogleSheetsModalProps {
-  merchantId: string;
+  merchantId: string | number;
   savedConfig?: {
     startRow?: number;
     colMapping?: Record<string, number>;
   } | null;
   onSuccess: () => void;
   onClose: () => void;
+  // Overridable endpoints: the admin flow posts to /api/admin/... and saves the
+  // template via the admin merchant PATCH. The merchant flow uses its own
+  // session-scoped routes.
+  apiPath?: string;
+  saveConfigPath?: string;
 }
 
 interface ColumnMapping {
@@ -73,6 +78,8 @@ export default function ImportGoogleSheetsModal({
   savedConfig,
   onSuccess,
   onClose,
+  apiPath = "/api/admin/orders/import-sheet",
+  saveConfigPath = `/api/admin/merchants/${merchantId}`,
 }: ImportGoogleSheetsModalProps) {
   const initial = mergeSavedConfig(savedConfig);
   const [url, setUrl] = useState("");
@@ -123,7 +130,7 @@ export default function ImportGoogleSheetsModal({
     setIsLoading(true);
 
     try {
-      const res = await fetch("/api/admin/orders/import-sheet", {
+      const res = await fetch(apiPath, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -146,7 +153,7 @@ export default function ImportGoogleSheetsModal({
       // Optionally save the template to the merchant profile
       if (saveTemplate) {
         try {
-          const saveRes = await fetch(`/api/admin/merchants/${merchantId}`, {
+          const saveRes = await fetch(saveConfigPath, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

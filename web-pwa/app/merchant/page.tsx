@@ -4,11 +4,31 @@ import { jwtVerify } from "jose";
 import prisma from "@/lib/prisma";
 import MerchantClient from "./MerchantClient";
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+// Normalize the Prisma JsonValue stored in Merchant.sheetImportConfig into a
+// plain, serializable object so the client never needs a loose `any` type.
+function normalizeSheetImportConfig(
+  raw: unknown,
+): { startRow?: number; colMapping?: Record<string, number> } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as { startRow?: unknown; colMapping?: unknown };
+  const result: { startRow?: number; colMapping?: Record<string, number> } = {};
+  if (typeof obj.startRow === "number") result.startRow = obj.startRow;
+  if (obj.colMapping && typeof obj.colMapping === "object") {
+    const mapping: Record<string, number> = {};
+    for (const [key, value] of Object.entries(obj.colMapping)) {
+      if (typeof value === "number") mapping[key] = value;
+    }
+    if (Object.keys(mapping).length > 0) result.colMapping = mapping;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
 // ─── Server Component: Merchant Portal ────────────────────────────────────────
 // 1. Authenticates via JWT session cookie
-// 2. Scoped query: only the merchant's own orders (excluding archived & PS)
+// 2. Scoped query: only the merchant's own orders
 // 3. Fetches zones for the order form dropdown
-// 4. Fetches historical payout statements
+// 4. Fetches payout statements (non-cash sellers) / cash payout batches
 export default async function MerchantPage() {
   // ── Authenticate ────────────────────────────────────────────────────────
   const cookieStore = await cookies();
@@ -43,6 +63,8 @@ export default async function MerchantPage() {
         },
         orderBy: { createdAt: "desc" },
       },
+      // Statements (MerchantPayout) are for the delivery company that pays
+      // the seller after delivery — only relevant for NON-cash sellers.
       payouts: {
         orderBy: { createdAt: "desc" },
         select: {
@@ -56,6 +78,31 @@ export default async function MerchantPage() {
           netLbp: true,
           status: true,
           createdAt: true,
+        },
+      },
+      // Cash-seller advance payout batches. The company-only `profit` field is
+      // stripped during serialization and never sent to the merchant.
+      cashPayoutBatches: {
+        orderBy: { createdAt: "desc" },
+        include: {
+          orders: {
+            select: {
+              id: true,
+              orderId: true,
+              amountUsd: true,
+              collectedUsd: true,
+              location: true,
+              createdAt: true,
+            },
+          },
+          resolvedReturns: {
+            select: {
+              id: true,
+              orderId: true,
+              amountUsd: true,
+              createdAt: true,
+            },
+          },
         },
       },
       zoneRates: {
@@ -97,6 +144,9 @@ export default async function MerchantPage() {
     contactName: merchant.contactName,
     phone: merchant.phone,
     address: merchant.address,
+    logoUrl: merchant.logoUrl,
+    isCashSeller: merchant.isCashSeller,
+    sheetImportConfig: normalizeSheetImportConfig(merchant.sheetImportConfig),
     zoneRates: merchant.zoneRates.map((zr) => ({
       id: zr.id,
       zoneId: zr.zoneId,
@@ -112,17 +162,40 @@ export default async function MerchantPage() {
     })),
   };
 
-  const serializedPayouts = merchant.payouts.map((p) => ({
-    id: p.id,
-    sequentialIndex: p.sequentialIndex,
-    totalUsd: p.totalUsd,
-    totalLbp: p.totalLbp,
-    shippingUsd: p.shippingUsd,
-    shippingLbp: p.shippingLbp,
-    netUsd: p.netUsd,
-    netLbp: p.netLbp,
-    status: p.status,
-    createdAt: p.createdAt.toISOString(),
+  // Statements are only meaningful for NON-cash sellers. Cash sellers have
+  // already been paid in advance (via cash payout batches), so they must not
+  // see these statements.
+  const serializedPayouts = merchant.isCashSeller
+    ? []
+    : merchant.payouts.map((p) => ({
+        id: p.id,
+        sequentialIndex: p.sequentialIndex,
+        totalUsd: p.totalUsd,
+        totalLbp: p.totalLbp,
+        shippingUsd: p.shippingUsd,
+        shippingLbp: p.shippingLbp,
+        netUsd: p.netUsd,
+        netLbp: p.netLbp,
+        status: p.status,
+        createdAt: p.createdAt.toISOString(),
+      }));
+
+  // Cash-seller payout batches — `profit` (company-side only) is excluded.
+  const serializedCashBatches = merchant.cashPayoutBatches.map((b) => ({
+    id: b.id,
+    batchReference: b.batchReference,
+    grossAdvance: b.grossAdvance,
+    deductedReturns: b.deductedReturns,
+    netPaid: b.netPaid,
+    createdAt: b.createdAt.toISOString(),
+    orders: b.orders.map((o) => ({
+      ...o,
+      createdAt: o.createdAt.toISOString(),
+    })),
+    resolvedReturns: b.resolvedReturns.map((r) => ({
+      ...r,
+      createdAt: r.createdAt.toISOString(),
+    })),
   }));
 
   return (
@@ -130,6 +203,7 @@ export default async function MerchantPage() {
       merchant={serializedMerchant}
       zones={zones}
       payouts={serializedPayouts}
+      cashBatches={serializedCashBatches}
     />
   );
 }
