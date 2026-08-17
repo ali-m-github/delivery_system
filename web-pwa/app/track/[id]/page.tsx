@@ -257,14 +257,9 @@ export default function TrackOrderPage() {
     return groups;
   }, [timelineEntries]);
 
-  if (loading) return <LoadingSpinner />;
-  if (error) return <ErrorState message={error} />;
-  if (!data) return <ErrorState message="Order not found." />;
-
-  const exception = isException(data.location);
-
-  // Determine current status label
+  // Determine current status label (computed unconditionally to respect Rules of Hooks)
   const currentStatus = useMemo(() => {
+    if (!data) return "";
     const loc = data.location.toUpperCase();
     if (loc === "DELIVERED") return "Delivered";
     if (loc === "WITH_DRIVER") return "On the way";
@@ -272,7 +267,13 @@ export default function TrackOrderPage() {
     if (loc === "RETURN" || loc === "Re") return "Return requested";
     if (loc === "RTS") return "Returned to sender";
     return "At warehouse";
-  }, [data.location]);
+  }, [data]);
+
+  if (loading) return <LoadingSpinner />;
+  if (error) return <ErrorState message={error} />;
+  if (!data) return <ErrorState message="Order not found." />;
+
+  const exception = isException(data.location);
 
   return (
     <div className="max-w-md mx-auto min-h-screen p-4 bg-[#0B0F17]">

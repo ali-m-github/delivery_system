@@ -81,8 +81,18 @@ export default function RouteGuard({
           const isMerchantPortal =
             pathname === "/merchant" || pathname.startsWith("/merchant/");
 
-          // MERCHANT guard: must only access the /merchant portal
-          if (user?.role === "MERCHANT" && !isMerchantPortal) {
+          // MERCHANT guard: must only access the /merchant portal, except the
+          // waybill print page (/orders/print) and the merchant invoice print
+          // pages (/print/merchant/...) which merchants use to print waybills
+          // and payout/statement invoices.
+          const isWaybillPrint = pathname.startsWith("/orders/print");
+          const isMerchantInvoicePrint = pathname.startsWith("/print/merchant");
+          if (
+            user?.role === "MERCHANT" &&
+            !isMerchantPortal &&
+            !isWaybillPrint &&
+            !isMerchantInvoicePrint
+          ) {
             setStatus("redirecting");
             router.replace("/merchant");
             return;

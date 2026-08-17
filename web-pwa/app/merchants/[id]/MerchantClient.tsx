@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import SharedOrderTable from "@/components/SharedOrderTable";
 import CashSellerWorkspace from "@/components/merchants/CashSellerWorkspace";
@@ -37,8 +37,36 @@ interface MerchantClientProps {
 }
 export default function MerchantClient({ merchant }: MerchantClientProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
-  const [activeTab, setActiveTab] = useState<TabKey>("ALL");
+  // ── URL-driven active tab ────────────────────────────────────────────────
+  // The active tab is reflected in the URL (?tab=ALL|WAREHOUSE|ASSIGNED|WD|WO|RETURN|PS)
+  // so each tab has its own shareable URL.
+  const urlTab = searchParams.get("tab");
+  const validTabs: TabKey[] = [
+    "ALL",
+    "WAREHOUSE",
+    "ASSIGNED",
+    "WD",
+    "WO",
+    "RETURN",
+    "PS",
+  ];
+  const initialTab: TabKey = validTabs.includes(urlTab as TabKey)
+    ? (urlTab as TabKey)
+    : "ALL";
+
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+
+  const handleTabChange = useCallback(
+    (tab: TabKey) => {
+      setActiveTab(tab);
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("tab", tab);
+      router.replace(`?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [isProcessing, setIsProcessing] = useState(false); // Track button loading state
   const [showImportModal, setShowImportModal] = useState(false);
@@ -716,7 +744,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
           {tabs.map(({ key, label }) => (
             <button
               key={key}
-              onClick={() => setActiveTab(key)}
+              onClick={() => handleTabChange(key)}
               className={`px-4 py-3 text-sm font-semibold rounded-t-lg transition-colors whitespace-nowrap ${
                 activeTab === key
                   ? "bg-[#121824] text-cyan-400 border border-white/10 border-b-[#121824] -mb-[1px]"
@@ -796,14 +824,14 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
             <button
               onClick={() =>
                 window.open(
-                  `/print/orders?ids=${selectedOrders.join(",")}`,
+                  `/orders/print?ids=${selectedOrders.join(",")}`,
                   "_blank",
                 )
               }
               className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
-              title="Open in new tab"
+              title="Print waybills for the selected orders"
             >
-              🔗 New Tab
+              🖨️ Print Waybill
             </button>
             <button
               onClick={handleExportExcel}

@@ -1570,11 +1570,12 @@ export default function DriverProfilePage() {
                         selectedOrders.includes(o.id),
                       );
                       const orderIds = sel.map((o: any) => o.id).join(",");
-                      window.open(`/print/orders?ids=${orderIds}`, "_blank");
+                      window.open(`/orders/print?ids=${orderIds}`, "_blank");
                     }}
+                    title="Print waybills for the selected orders"
                     className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
                   >
-                    🔗 New Tab
+                    🖨️ Print Waybill
                   </button>
                   <button
                     onClick={() => {

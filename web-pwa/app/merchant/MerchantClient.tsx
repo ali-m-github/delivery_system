@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useCallback, Fragment } from "react";
 import Image from "next/image";
+import { useSearchParams, useRouter } from "next/navigation";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import ImportGoogleSheetsModal from "@/components/orders/ImportGoogleSheetsModal";
 
@@ -20,6 +21,7 @@ interface Order {
   location: string;
   financialStatus: string;
   notes: string | null;
+  packages: number;
   // Cash-seller payout linkage (present for every order).
   cashPayoutBatchId: number | null;
   returnDeductionBatchId: number | null;
@@ -108,7 +110,29 @@ export default function MerchantClient({
 }: MerchantClientProps) {
   const isCashSeller = merchant.isCashSeller === true;
 
-  const [activeTab, setActiveTab] = useState<TabKey>("deliveries");
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // ── URL-driven active tab ────────────────────────────────────────────────
+  // The active tab is reflected in the URL (?tab=deliveries|newOrder|statements)
+  // so each tab has its own shareable URL.
+  const urlTab = searchParams.get("tab");
+  const validTabs: TabKey[] = ["deliveries", "newOrder", "statements"];
+  const initialTab: TabKey = validTabs.includes(urlTab as TabKey)
+    ? (urlTab as TabKey)
+    : "deliveries";
+
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+
+  const handleTabChange = useCallback(
+    (tab: TabKey) => {
+      setActiveTab(tab);
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("tab", tab);
+      router.replace(`?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
   const [selectedStatement, setSelectedStatement] = useState<any | null>(null);
   const [expandedBatchId, setExpandedBatchId] = useState<number | null>(null);
   const [historyModalOrder, setHistoryModalOrder] = useState<{
@@ -141,6 +165,20 @@ export default function MerchantClient({
     type: "success" | "error";
     text: string;
   } | null>(null);
+
+  // ── Inline edit state (only allowed while order location is "CP") ───────
+  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    customerName: "",
+    customerPhone: "",
+    customerAddress: "",
+    price: "",
+    amountLbp: "",
+    notes: "",
+    packages: "1",
+  });
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   // ── Orders state ────────────────────────────────────────────────────────
   const [orders, setOrders] = useState<Order[]>(merchant.orders || []);
@@ -307,6 +345,64 @@ export default function MerchantClient({
       });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // ── Inline edit: start editing an order (only allowed while location is CP) ──
+  const startEditOrder = (order: Order) => {
+    if (order.location !== "CP") return;
+    setEditingOrderId(order.id);
+    setEditError(null);
+    setEditForm({
+      customerName: order.customerName || "",
+      customerPhone: order.customerPhone || "",
+      customerAddress: order.customerAddress || "",
+      price: order.amountUsd != null ? String(order.amountUsd) : "",
+      amountLbp: order.amountLbp != null ? String(order.amountLbp) : "",
+      notes: order.notes || "",
+      packages: order.packages != null ? String(order.packages) : "1",
+    });
+  };
+
+  const cancelEditOrder = () => {
+    setEditingOrderId(null);
+    setEditError(null);
+  };
+
+  // ── Save edited order details (PATCH /api/orders) ────────────────────────
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingOrderId) return;
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      const res = await fetch("/api/orders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editingOrderId,
+          customerName: editForm.customerName,
+          customerPhone: editForm.customerPhone,
+          customerAddress: editForm.customerAddress,
+          amountUsd: parseFloat(editForm.price) || 0,
+          amountLbp: parseFloat(editForm.amountLbp) || 0,
+          notes: editForm.notes,
+          packages: parseInt(editForm.packages) || 1,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to update order");
+      }
+      const updated = await res.json();
+      setOrders((prev) =>
+        prev.map((o) => (o.id === editingOrderId ? { ...o, ...updated } : o)),
+      );
+      setEditingOrderId(null);
+    } catch (error: any) {
+      setEditError(error.message || "Failed to update order");
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -496,6 +592,152 @@ export default function MerchantClient({
 
   const formatCurrency = (val: number) => val.toFixed(2);
 
+  // ── Invoice / download helpers for the Statements tab ────────────────────
+  const escapeCSV = (value: any) => {
+    if (value == null) return "";
+    const str = String(value);
+    if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  // Open the merchant-safe printable invoice for a cash payout batch.
+  const openBatchInvoice = (batch: CashPayoutBatch) => {
+    window.open(`/print/merchant/payouts/${batch.id}`, "_blank");
+  };
+
+  // Open the merchant-safe printable invoice for a statement.
+  const openStatementInvoice = (payout: MerchantPayout) => {
+    window.open(`/print/merchant/statements/${payout.id}`, "_blank");
+  };
+
+  // Export a cash payout batch's orders to CSV.
+  const exportBatchCSV = (batch: CashPayoutBatch) => {
+    const rows = [
+      ...(batch.orders || []).map((o) => ({ ...o, _type: "advance" })),
+      ...(batch.resolvedReturns || []).map((r) => ({ ...r, _type: "return" })),
+    ];
+    if (rows.length === 0) {
+      alert("No orders in this batch to export.");
+      return;
+    }
+    const headers = [
+      "Type",
+      "Order ID",
+      "Customer",
+      "Phone",
+      "Address",
+      "Amount USD",
+      "Amount LBP",
+      "Location",
+    ];
+    const csvRows = rows.map((o) => [
+      escapeCSV(o._type),
+      escapeCSV(o.orderId),
+      escapeCSV(o.customerName),
+      escapeCSV(o.customerPhone),
+      escapeCSV(o.customerAddress),
+      (o.amountUsd ?? 0).toFixed(2),
+      (o.amountLbp ?? 0).toString(),
+      escapeCSV(o.location || ""),
+    ]);
+    const csv = [headers.join(","), ...csvRows.map((r) => r.join(","))].join(
+      "\n",
+    );
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `payout-${batch.batchReference}-orders.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Export a statement's orders to CSV.
+  const exportStatementCSV = (statement: any) => {
+    const orders = statement.orders || [];
+    if (orders.length === 0) {
+      alert("No order details available for this statement.");
+      return;
+    }
+    const zoneRates = statement.merchant?.zoneRates || [];
+    const headers = [
+      "Order ID",
+      "Customer",
+      "Phone",
+      "Address",
+      "Orig USD",
+      "Orig LBP",
+      "Collected USD",
+      "Collected LBP",
+      "Shipping USD",
+      "Shipping LBP",
+      "Net USD",
+      "Net LBP",
+    ];
+    const csvRows = orders.map((order: any) => {
+      const rate = zoneRates.find(
+        (zr: any) =>
+          String(zr.zoneId) === String(order.zoneId) ||
+          String(zr.zoneId) === String(order.zone?.name),
+      );
+      const shipUsd = rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
+      const shipLbp = rate?.rateLbp ?? 0;
+      const origUsd = order.amountUsd ?? 0;
+      const origLbp = order.amountLbp ?? 0;
+      const collUsd = order.collectedUsd ?? order.amountUsd ?? 0;
+      const collLbp = order.collectedLbp ?? order.amountLbp ?? 0;
+      return [
+        escapeCSV(order.orderId),
+        escapeCSV(order.customerName),
+        escapeCSV(order.customerPhone),
+        escapeCSV(order.customerAddress),
+        origUsd.toFixed(2),
+        origLbp.toString(),
+        collUsd.toFixed(2),
+        collLbp.toString(),
+        shipUsd.toFixed(2),
+        shipLbp.toString(),
+        (collUsd - shipUsd).toFixed(2),
+        (collLbp - shipLbp).toString(),
+      ];
+    });
+    const csv = [
+      headers.join(","),
+      ...csvRows.map((r: string[]) => r.join(",")),
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `statement-${statement.sequentialIndex}-orders.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Fetch a statement's full detail (with orders) then export it to CSV.
+  const handleExportStatementCSV = async (payout: MerchantPayout) => {
+    try {
+      const res = await fetch(`/api/statements?merchantId=${merchant.id}`);
+      if (res.ok) {
+        const all: any[] = await res.json();
+        const found = all.find((s: any) => s.id === payout.id);
+        if (found) {
+          exportStatementCSV(found);
+          return;
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch statement detail", err);
+    }
+    alert("Could not load statement details for export.");
+  };
+
   // ─── Render ──────────────────────────────────────────────────────────────
   return (
     <>
@@ -667,17 +909,17 @@ export default function MerchantClient({
           {/* ── Tabs ── */}
           <div className="flex gap-1 mb-6 p-1 rounded-xl backdrop-blur-xl bg-white/5 border border-white/10 w-fit">
             <button
-              onClick={() => setActiveTab("deliveries")}
+              onClick={() => handleTabChange("deliveries")}
               className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
                 activeTab === "deliveries"
                   ? "bg-cyan-500/20 text-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.3)]"
                   : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
               }`}
             >
-              Active Deliveries ({filteredOrders.length})
+              All Orders ({filteredOrders.length})
             </button>
             <button
-              onClick={() => setActiveTab("newOrder")}
+              onClick={() => handleTabChange("newOrder")}
               className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
                 activeTab === "newOrder"
                   ? "bg-cyan-500/20 text-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.3)]"
@@ -687,7 +929,7 @@ export default function MerchantClient({
               New Order Request
             </button>
             <button
-              onClick={() => setActiveTab("statements")}
+              onClick={() => handleTabChange("statements")}
               className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
                 activeTab === "statements"
                   ? "bg-cyan-500/20 text-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.3)]"
@@ -793,14 +1035,14 @@ export default function MerchantClient({
                     <button
                       onClick={() =>
                         window.open(
-                          `/print/orders?ids=${selectedOrders.join(",")}`,
+                          `/orders/print?ids=${selectedOrders.join(",")}`,
                           "_blank",
                         )
                       }
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
-                      title="Open in new tab"
+                      title="Print waybills for the selected orders"
                     >
-                      🔗 New Tab
+                      🖨️ Print Waybill
                     </button>
                     <button
                       onClick={() => exportSelectedOrders()}
@@ -823,6 +1065,194 @@ export default function MerchantClient({
                     </button>
                   </div>
                 )}
+              </div>
+
+              {/* ── Inline Order Entry (like the main orders page) ── */}
+              <div className="bg-[#121824] border border-white/5 rounded-xl p-4 shadow-2xl mb-4">
+                <div className="flex items-center gap-3 mb-3">
+                  <h2 className="text-sm font-bold text-white uppercase tracking-wider">
+                    Order Entry
+                  </h2>
+                  <span className="text-[10px] text-gray-500 font-mono">
+                    Fields auto-clear on save &middot; Press Enter to submit
+                  </span>
+                </div>
+
+                {formMessage && (
+                  <div
+                    className={`mb-3 px-3 py-2 rounded-lg text-sm ${
+                      formMessage.type === "success"
+                        ? "bg-green-500/10 border border-green-500/30 text-green-400"
+                        : "bg-red-500/10 border border-red-500/30 text-red-400"
+                    }`}
+                  >
+                    {formMessage.text}
+                  </div>
+                )}
+
+                <form onSubmit={handleCreateOrder}>
+                  <div className="flex flex-nowrap gap-2 items-end overflow-x-auto pb-1">
+                    {/* Customer */}
+                    <div className="flex flex-col gap-1 min-w-[120px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Customer
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.customerName}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            customerName: e.target.value,
+                          })
+                        }
+                        placeholder="John Doe"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Phone */}
+                    <div className="flex flex-col gap-1 min-w-[120px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Phone
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.customerPhone}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            customerPhone: e.target.value,
+                          })
+                        }
+                        placeholder="+1 555 123 4567"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Address */}
+                    <div className="flex flex-col gap-1 min-w-[200px] flex-1">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Address
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.customerAddress}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            customerAddress: e.target.value,
+                          })
+                        }
+                        placeholder="123 Main St, City"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* USD */}
+                    <div className="flex flex-col gap-1 min-w-[80px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        USD
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        value={formData.price}
+                        onChange={(e) =>
+                          setFormData({ ...formData, price: e.target.value })
+                        }
+                        placeholder="0.00"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* LBP */}
+                    <div className="flex flex-col gap-1 min-w-[80px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        LBP
+                      </label>
+                      <input
+                        type="number"
+                        step="1"
+                        value={formData.amountLbp}
+                        onChange={(e) =>
+                          setFormData({ ...formData, amountLbp: e.target.value })
+                        }
+                        placeholder="0"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Pckgs */}
+                    <div className="flex flex-col gap-1 min-w-[60px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Pckgs
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={formData.packages}
+                        onChange={(e) =>
+                          setFormData({ ...formData, packages: e.target.value })
+                        }
+                        placeholder="1"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Exch */}
+                    <div className="flex flex-col gap-1 min-w-[50px] items-center">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Exch
+                      </label>
+                      <label className="flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={formData.hasExchange}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              hasExchange: e.target.checked,
+                            })
+                          }
+                          className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                        />
+                      </label>
+                    </div>
+
+                    {/* Notes */}
+                    <div className="flex flex-col gap-1 min-w-[120px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Notes
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.notes}
+                        onChange={(e) =>
+                          setFormData({ ...formData, notes: e.target.value })
+                        }
+                        placeholder="Optional"
+                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                      />
+                    </div>
+
+                    {/* Save */}
+                    <div className="flex flex-col gap-1 min-w-[80px]">
+                      <div className="h-[10px]" />
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        className="w-full px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {submitting ? "..." : "Save"}
+                      </button>
+                    </div>
+                  </div>
+                </form>
               </div>
 
               {filteredOrders.length === 0 ? (
@@ -880,8 +1310,8 @@ export default function MerchantClient({
                       </thead>
                       <tbody>
                         {paginatedOrders.map((order) => (
+                          <Fragment key={order.id}>
                           <tr
-                            key={order.id}
                             className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
                           >
                             <td className="px-2 py-2.5">
@@ -975,14 +1405,184 @@ export default function MerchantClient({
                               </span>
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap text-right">
-                              <button
-                                onClick={() => handleCopyLink(order.orderId)}
-                                className="px-3 py-1.5 text-xs font-bold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded transition-colors"
-                              >
-                                🔗 Copy Link
-                              </button>
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleCopyLink(order.orderId)}
+                                  className="px-3 py-1.5 text-xs font-bold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded transition-colors"
+                                >
+                                  🔗 Copy Link
+                                </button>
+                                {order.location === "CP" ? (
+                                  <button
+                                    onClick={() => startEditOrder(order)}
+                                    className="px-3 py-1.5 text-xs font-bold text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 rounded transition-colors"
+                                  >
+                                    ✏️ Edit
+                                  </button>
+                                ) : (
+                                  <span
+                                    title="Orders can only be edited while at CP (Pickup)"
+                                    className="px-3 py-1.5 text-xs font-bold text-gray-600 bg-white/5 border border-white/10 rounded cursor-not-allowed"
+                                  >
+                                    ✏️ Edit
+                                  </span>
+                                )}
+                              </div>
                             </td>
                           </tr>
+                          {editingOrderId === order.id && (
+                            <tr className="bg-[#121824] border-b border-white/10">
+                              <td colSpan={9} className="px-4 py-3">
+                                <form onSubmit={handleSaveEdit}>
+                                  <div className="flex flex-wrap gap-2 items-end">
+                                    <div className="flex flex-col gap-1 min-w-[140px]">
+                                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                                        Customer
+                                      </label>
+                                      <input
+                                        type="text"
+                                        required
+                                        value={editForm.customerName}
+                                        onChange={(e) =>
+                                          setEditForm({
+                                            ...editForm,
+                                            customerName: e.target.value,
+                                          })
+                                        }
+                                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1 min-w-[130px]">
+                                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                                        Phone
+                                      </label>
+                                      <input
+                                        type="text"
+                                        required
+                                        value={editForm.customerPhone}
+                                        onChange={(e) =>
+                                          setEditForm({
+                                            ...editForm,
+                                            customerPhone: e.target.value,
+                                          })
+                                        }
+                                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1 min-w-[200px] flex-1">
+                                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                                        Address
+                                      </label>
+                                      <input
+                                        type="text"
+                                        required
+                                        value={editForm.customerAddress}
+                                        onChange={(e) =>
+                                          setEditForm({
+                                            ...editForm,
+                                            customerAddress: e.target.value,
+                                          })
+                                        }
+                                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1 min-w-[80px]">
+                                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                                        USD
+                                      </label>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        value={editForm.price}
+                                        onChange={(e) =>
+                                          setEditForm({
+                                            ...editForm,
+                                            price: e.target.value,
+                                          })
+                                        }
+                                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1 min-w-[80px]">
+                                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                                        LBP
+                                      </label>
+                                      <input
+                                        type="number"
+                                        step="1"
+                                        value={editForm.amountLbp}
+                                        onChange={(e) =>
+                                          setEditForm({
+                                            ...editForm,
+                                            amountLbp: e.target.value,
+                                          })
+                                        }
+                                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1 min-w-[60px]">
+                                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                                        Pckgs
+                                      </label>
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        value={editForm.packages}
+                                        onChange={(e) =>
+                                          setEditForm({
+                                            ...editForm,
+                                            packages: e.target.value,
+                                          })
+                                        }
+                                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1 min-w-[140px]">
+                                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                                        Notes
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={editForm.notes}
+                                        onChange={(e) =>
+                                          setEditForm({
+                                            ...editForm,
+                                            notes: e.target.value,
+                                          })
+                                        }
+                                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1 min-w-[120px]">
+                                      <div className="h-[10px]" />
+                                      <div className="flex items-center gap-1.5">
+                                        <button
+                                          type="submit"
+                                          disabled={editSaving}
+                                          className="px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
+                                        >
+                                          {editSaving ? "..." : "Save"}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={cancelEditOrder}
+                                          className="px-4 py-1.5 text-xs font-bold rounded bg-white/10 hover:bg-white/20 text-gray-300 transition-colors whitespace-nowrap"
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  {editError && (
+                                    <p className="mt-2 text-xs text-red-400">
+                                      {editError}
+                                    </p>
+                                  )}
+                                </form>
+                              </td>
+                            </tr>
+                          )}
+                          </Fragment>
                         ))}
                       </tbody>
                     </table>
@@ -1294,6 +1894,9 @@ export default function MerchantClient({
                             <th className="px-4 py-3 text-right font-medium">
                               Net Paid
                             </th>
+                            <th className="px-4 py-3 text-right font-medium">
+                              Action
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1339,11 +1942,32 @@ export default function MerchantClient({
                                       ${formatCurrency(batch.netPaid)}
                                     </span>
                                   </td>
+                                  <td className="px-4 py-3 whitespace-nowrap text-right">
+                                    <div
+                                      className="flex items-center justify-end gap-1.5"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <button
+                                        onClick={() => openBatchInvoice(batch)}
+                                        className="px-2.5 py-1.5 text-[11px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 rounded hover:bg-amber-500/25 transition-colors"
+                                        title="Open printable invoice"
+                                      >
+                                        📄 Invoice
+                                      </button>
+                                      <button
+                                        onClick={() => exportBatchCSV(batch)}
+                                        className="px-2.5 py-1.5 text-[11px] font-bold bg-green-500/15 text-green-400 border border-green-500/30 rounded hover:bg-green-500/25 transition-colors"
+                                        title="Export orders to CSV"
+                                      >
+                                        📊 CSV
+                                      </button>
+                                    </div>
+                                  </td>
                                 </tr>
                                 {isExpanded && (
                                   <tr>
                                     <td
-                                      colSpan={6}
+                                      colSpan={7}
                                       className="px-4 py-3 bg-[#0B0F17]/50"
                                     >
                                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1548,12 +2172,29 @@ export default function MerchantClient({
                                   </span>
                                 </td>
                                 <td className="px-4 py-3 text-right">
-                                  <button
-                                    onClick={() => fetchStatementDetail(p)}
-                                    className="px-3 py-1.5 text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded hover:bg-cyan-500/20"
-                                  >
-                                    View Details
-                                  </button>
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    <button
+                                      onClick={() => openStatementInvoice(p)}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 rounded hover:bg-amber-500/25 transition-colors"
+                                      title="Open printable invoice"
+                                    >
+                                      📄 Invoice
+                                    </button>
+                                    <button
+                                      onClick={() => handleExportStatementCSV(p)}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold bg-green-500/15 text-green-400 border border-green-500/30 rounded hover:bg-green-500/25 transition-colors"
+                                      title="Export orders to CSV"
+                                    >
+                                      📊 CSV
+                                    </button>
+                                    <button
+                                      onClick={() => fetchStatementDetail(p)}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 rounded hover:bg-cyan-500/20 transition-colors"
+                                      title="View statement details"
+                                    >
+                                      View Details
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             ))}
