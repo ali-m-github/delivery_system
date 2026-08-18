@@ -5,7 +5,14 @@ import { computeOrderProfit, buildDriverExceptionMaps } from "@/lib/profit";
 // ============================================================
 // GET /api/admin/profit
 //
-// Company profit overview per cash seller.
+// Company profit overview per cash seller, plus a per-driver
+// breakdown (the same profit, attributed to the delivering driver).
+//
+// NOTE: profit is not stored per order — it is derived from the
+// persisted records (orders + merchant rates + driver seller-rate
+// exceptions), so it can be re-computed for any date range at any
+// time. This keeps the "record" available for the admin panel
+// without an extra snapshot table.
 //
 // Profit is realized only on DELIVERED orders with financial status = PS
 // (Paid to Seller). Return orders are excluded. For each order:
@@ -65,7 +72,15 @@ export async function GET(request: Request) {
             defaultProfitRate: true,
           },
         },
-        driver: { select: { id: true, userId: true } },
+        driver: {
+          select: {
+            id: true,
+            userId: true,
+            driverId: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -88,6 +103,17 @@ export async function GET(request: Request) {
       feePerOrder: number;
     }
     const sellerMap = new Map<string, SellerRow>();
+
+    // Same profit, attributed per delivering driver (admin-only view).
+    interface DriverRow {
+      driverProfileId: string;
+      driverName: string;
+      driverCode: string;
+      orderCount: number;
+      totalCollectedUsd: number;
+      totalProfit: number;
+    }
+    const driverMap = new Map<string, DriverRow>();
 
     for (const o of orders) {
       const mid = o.merchantId ?? "";
@@ -116,9 +142,33 @@ export async function GET(request: Request) {
       row.orderCount += 1;
       row.totalCollectedUsd += o.collectedUsd ?? o.amountUsd ?? 0;
       row.totalProfit += profit;
+
+      // Per-driver attribution of the same profit.
+      const dKey = o.driverId ?? "unassigned";
+      let drow = driverMap.get(dKey);
+      if (!drow) {
+        drow = {
+          driverProfileId: o.driverId ?? "",
+          driverName: o.driver
+            ? `${o.driver.firstName} ${o.driver.lastName}`.trim()
+            : "Unassigned",
+          driverCode: o.driver?.driverId ?? "—",
+          orderCount: 0,
+          totalCollectedUsd: 0,
+          totalProfit: 0,
+        };
+        driverMap.set(dKey, drow);
+      }
+      drow.orderCount += 1;
+      drow.totalCollectedUsd += o.collectedUsd ?? o.amountUsd ?? 0;
+      drow.totalProfit += profit;
     }
 
     const sellers = Array.from(sellerMap.values()).sort(
+      (a, b) => b.totalProfit - a.totalProfit,
+    );
+
+    const drivers = Array.from(driverMap.values()).sort(
       (a, b) => b.totalProfit - a.totalProfit,
     );
 
@@ -129,11 +179,18 @@ export async function GET(request: Request) {
         acc.totalProfit += s.totalProfit;
         return acc;
       },
-      { orderCount: 0, totalCollectedUsd: 0, totalProfit: 0, sellerCount: 0 },
+      {
+        orderCount: 0,
+        totalCollectedUsd: 0,
+        totalProfit: 0,
+        sellerCount: 0,
+        driverCount: 0,
+      },
     );
     summary.sellerCount = sellers.length;
+    summary.driverCount = drivers.length;
 
-    return NextResponse.json({ summary, sellers }, { status: 200 });
+    return NextResponse.json({ summary, sellers, drivers }, { status: 200 });
   } catch (error) {
     console.error("Admin Profit GET Error:", error);
     return NextResponse.json(

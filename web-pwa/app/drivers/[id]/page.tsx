@@ -606,9 +606,31 @@ export default function DriverProfilePage() {
     XLSX.writeFile(wb, `${filename}.xlsx`);
   };
 
+  // Builds a download filename from the driver name and a tab label,
+  // e.g. "John_Doe_all_orders" or "John_Doe_delivered".
+  const driverFileName = (tabLabel: string) => {
+    const name = [driver?.firstName, driver?.lastName]
+      .filter(Boolean)
+      .join("_")
+      .replace(/\s+/g, "_");
+    return `${name || driverId}_${tabLabel}`;
+  };
+
   const openOrdersInNewTab = (orders: any[]) => {
     const orderIds = orders.map((o) => o.id).join(",");
-    window.open(`/print/orders?ids=${orderIds}`, "_blank");
+    window.open(
+      `/print/orders?ids=${orderIds}&driverId=${driverId}`,
+      "_blank",
+    );
+  };
+
+  // Opens the orders export page in a new tab and auto-downloads it as a PDF.
+  const downloadOrdersPdf = (orders: any[], filename: string) => {
+    const orderIds = orders.map((o) => o.id).join(",");
+    window.open(
+      `/print/orders?ids=${orderIds}&driverId=${driverId}&pdf=true&filename=${encodeURIComponent(filename)}`,
+      "_blank",
+    );
   };
 
   // ─── Seller Flat Rate CRUD Handlers ────────────────────────────────────
@@ -886,7 +908,7 @@ export default function DriverProfilePage() {
                     onClick={() =>
                       exportOrdersToExcel(
                         assignedOrders,
-                        `assigned_all_${driverId}`,
+                        driverFileName("all_orders"),
                       )
                     }
                     className="px-3 py-1.5 rounded-lg text-xs font-semibold text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
@@ -895,15 +917,12 @@ export default function DriverProfilePage() {
                     📊 Excel
                   </button>
                   <button
-                    onClick={() => {
-                      const orderIds = assignedOrders
-                        .map((o: any) => o.id)
-                        .join(",");
-                      window.open(
-                        `/orders/print?ids=${orderIds}&pdf=true`,
-                        "_blank",
-                      );
-                    }}
+                    onClick={() =>
+                      downloadOrdersPdf(
+                        assignedOrders,
+                        driverFileName("all_orders"),
+                      )
+                    }
                     className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors"
                     title="Download all as PDF"
                   >
@@ -946,37 +965,9 @@ export default function DriverProfilePage() {
                         openOrdersInNewTab(sel);
                       }}
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
-                      title="Open in new tab"
+                      title="Open printable orders export"
                     >
-                      🔗 New Tab
-                    </button>
-                    <button
-                      onClick={() => {
-                        const sel = assignedOrders.filter((o: any) =>
-                          selectedOrders.includes(o.id),
-                        );
-                        exportOrdersToExcel(sel, `assigned_orders_${driverId}`);
-                      }}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
-                      title="Download as Excel"
-                    >
-                      📊 Excel
-                    </button>
-                    <button
-                      onClick={() => {
-                        const sel = assignedOrders.filter((o: any) =>
-                          selectedOrders.includes(o.id),
-                        );
-                        const orderIds = sel.map((o: any) => o.id).join(",");
-                        window.open(
-                          `/orders/print?ids=${orderIds}&pdf=true`,
-                          "_blank",
-                        );
-                      }}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors"
-                      title="Download as PDF"
-                    >
-                      📑 PDF
+                      🖨️ Print
                     </button>
                   </div>
                 </div>
@@ -1211,7 +1202,7 @@ export default function DriverProfilePage() {
                   onClick={() =>
                     exportOrdersToExcel(
                       deliveredOrders,
-                      `delivered_all_${driverId}`,
+                      driverFileName("delivered"),
                     )
                   }
                   className="px-3 py-1.5 rounded-lg text-xs font-semibold text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
@@ -1220,15 +1211,12 @@ export default function DriverProfilePage() {
                   📊 Excel
                 </button>
                 <button
-                  onClick={() => {
-                    const orderIds = deliveredOrders
-                      .map((o: any) => o.id)
-                      .join(",");
-                    window.open(
-                      `/orders/print?ids=${orderIds}&pdf=true`,
-                      "_blank",
-                    );
-                  }}
+                  onClick={() =>
+                    downloadOrdersPdf(
+                      deliveredOrders,
+                      driverFileName("delivered"),
+                    )
+                  }
                   className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors"
                   title="Download all as PDF"
                 >
@@ -1280,36 +1268,9 @@ export default function DriverProfilePage() {
                   <button
                     onClick={() => openOrdersInNewTab(selectedWdOrders)}
                     className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
-                    title="Open in new tab"
+                    title="Open printable orders export"
                   >
-                    🔗 New Tab
-                  </button>
-                  <button
-                    onClick={() =>
-                      exportOrdersToExcel(
-                        selectedWdOrders,
-                        `delivered_orders_${driverId}`,
-                      )
-                    }
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
-                    title="Download as Excel"
-                  >
-                    📊 Excel
-                  </button>
-                  <button
-                    onClick={() => {
-                      const orderIds = selectedWdOrders
-                        .map((o: any) => o.id)
-                        .join(",");
-                      window.open(
-                        `/orders/print?ids=${orderIds}&pdf=true`,
-                        "_blank",
-                      );
-                    }}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors"
-                    title="Download as PDF"
-                  >
-                    📑 PDF
+                    🖨️ Print
                   </button>
                 </div>
                 <button
@@ -1582,7 +1543,7 @@ export default function DriverProfilePage() {
                       const sel = returnedOrders.filter((o: any) =>
                         selectedOrders.includes(o.id),
                       );
-                      exportOrdersToExcel(sel, `returns_${driverId}`);
+                      exportOrdersToExcel(sel, driverFileName("returns"));
                     }}
                     className="px-3 py-1.5 rounded-lg text-xs font-semibold text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
                   >

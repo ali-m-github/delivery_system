@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { DEFAULT_DRIVER_USD } from "@/lib/commission";
+import { PdfDownloadTrigger } from "./PdfDownloadTrigger";
 
 const prisma = new PrismaClient();
 
@@ -39,9 +40,10 @@ export default async function PrintOrdersPage({
     driverId?: string;
     payoutId?: string;
     simple?: string;
+    pdf?: string;
   }>;
 }) {
-  const { ids, driverId, payoutId, simple } = await searchParams;
+  const { ids, driverId, payoutId, simple, pdf } = await searchParams;
 
   if (!ids) {
     return (
@@ -182,10 +184,16 @@ export default async function PrintOrdersPage({
   // ── "simple" mode: used from the Orders page — hides financial columns ──
   const isSimple = simple === "true";
 
-  // ── Determine if any order belongs to a cash seller (for Profit column visibility) ──
-  const showProfit = isSimple
-    ? false
-    : orders.some((o) => o.merchant?.isCashSeller);
+  // ── Profit column visibility ──
+  // Profit is a company-internal figure: it must never appear on documents
+  // given to drivers (driver mode or payout context), nor in "simple" mode.
+  // The record itself stays in the DB and is surfaced in the admin panel
+  // (Profit tab: per seller and per driver) via /api/admin/profit.
+  const isDriverFacing = isDriverMode || !!payoutId;
+  const showProfit =
+    !isSimple &&
+    !isDriverFacing &&
+    orders.some((o) => o.merchant?.isCashSeller);
 
   // ── Totals ───────────────────────────────────────────────────────────────
   const totals = enrichedOrders.reduce(
@@ -201,7 +209,22 @@ export default async function PrintOrdersPage({
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div id="print-container" className="p-6 max-w-[1400px] mx-auto">
+    <>
+      {pdf === "true" && <PdfDownloadTrigger />}
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
+        table { page-break-inside: auto; }
+        tr { page-break-inside: avoid; }
+        thead { display: table-header-group; }
+        /* Render the footer as a plain row group: table-footer-group makes
+           the browser pin/repeat the Totals row at the bottom of every page,
+           which overlaps the last data row when the table ends at the page edge. */
+        tfoot { display: table-row-group; }
+      `,
+        }}
+      />
+      <div id="print-container" className="p-6 max-w-[1400px] mx-auto">
       {/* Print-only header */}
       <div className="mb-4">
         <h1 className="text-xl font-bold text-black">
@@ -383,6 +406,7 @@ export default async function PrintOrdersPage({
           )}
         </tfoot>
       </table>
-    </div>
+      </div>
+    </>
   );
 }

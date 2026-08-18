@@ -14,11 +14,21 @@ interface ProfitSeller {
   feePerOrder: number;
 }
 
+interface ProfitDriver {
+  driverProfileId: string;
+  driverName: string;
+  driverCode: string;
+  orderCount: number;
+  totalCollectedUsd: number;
+  totalProfit: number;
+}
+
 interface ProfitSummary {
   orderCount: number;
   totalCollectedUsd: number;
   totalProfit: number;
   sellerCount: number;
+  driverCount?: number;
 }
 
 const EMPTY_SUMMARY: ProfitSummary = {
@@ -26,6 +36,7 @@ const EMPTY_SUMMARY: ProfitSummary = {
   totalCollectedUsd: 0,
   totalProfit: 0,
   sellerCount: 0,
+  driverCount: 0,
 };
 
 type PresetKind = "today" | "week" | "month" | "lastmonth" | "all";
@@ -34,6 +45,7 @@ type PresetKind = "today" | "week" | "month" | "lastmonth" | "all";
 
 export default function ProfitTab() {
   const [sellers, setSellers] = useState<ProfitSeller[]>([]);
+  const [drivers, setDrivers] = useState<ProfitDriver[]>([]);
   const [summary, setSummary] = useState<ProfitSummary>(EMPTY_SUMMARY);
   const [merchants, setMerchants] = useState<
     { id: string; merchantName: string; isCashSeller: boolean }[]
@@ -67,6 +79,7 @@ export default function ProfitTab() {
         }
         const data = await res.json();
         setSellers(data.sellers || []);
+        setDrivers(data.drivers || []);
         setSummary(data.summary || EMPTY_SUMMARY);
       } catch (e) {
         setError(
@@ -366,6 +379,59 @@ export default function ProfitTab() {
               </tr>
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* ── Per-driver table (admin-only; never shown on driver PDFs) ── */}
+      {!loading && drivers.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-white font-semibold text-sm mb-3">
+            Profit by Driver
+          </h3>
+          <p className="text-gray-500 text-xs mb-3 leading-relaxed">
+            The same profit, attributed to the delivering driver. This record
+            is kept only for the admin panel — it is hidden from all
+            driver-facing documents.
+          </p>
+          <div className="bg-white/[0.02] border border-white/10 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-white/[0.03] border-b border-white/10 text-gray-400 text-[11px] uppercase">
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium">Driver</th>
+                  <th className="px-4 py-3 text-right font-medium">Orders</th>
+                  <th className="px-4 py-3 text-right font-medium">
+                    Gross Collected
+                  </th>
+                  <th className="px-4 py-3 text-right font-medium text-yellow-400">
+                    Profit
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {drivers.map((d) => (
+                  <tr key={d.driverProfileId || d.driverName} className="hover:bg-white/[0.02]">
+                    <td className="px-4 py-3">
+                      <span className="text-white font-semibold">
+                        {d.driverName}
+                      </span>{" "}
+                      <span className="text-gray-600 text-xs">
+                        {d.driverCode}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-gray-300">
+                      {d.orderCount}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-green-400">
+                      ${d.totalCollectedUsd.toFixed(2)}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-yellow-400 font-bold">
+                      ${d.totalProfit.toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
