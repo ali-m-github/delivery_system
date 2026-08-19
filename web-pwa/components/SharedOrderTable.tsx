@@ -126,7 +126,7 @@ interface SharedOrderTableProps {
   availableDrivers?: any[];
   onUpdateOrder?: (id: string, payload: any) => void;
   currentUser?: any;
-  onCopyLink?: (orderId: string) => void;
+  onCopyLink?: (order: any) => void;
   /** Called with a DELIVERED (WO/WD) order to return it to the warehouse. */
   onReturnDelivered?: (order: any) => void;
 }
@@ -462,7 +462,7 @@ export default function SharedOrderTable({
           <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
             <span className="lg:hidden font-bold text-gray-400">Link:</span>
             <button
-              onClick={() => onCopyLink(order.orderId)}
+              onClick={() => onCopyLink(order)}
               className="p-1 text-gray-400 hover:text-white transition-colors flex items-center justify-center"
               title="Copy Link"
             >
@@ -668,7 +668,7 @@ export default function SharedOrderTable({
       {historyModalOrder && (
         <OrderHistoryModal
           orderId={historyModalOrder.id}
-          orderHistory={historyModalOrder.history}
+          initialHistory={historyModalOrder.history}
           payoutReference={historyModalOrder.payoutReference}
           onClose={() => setHistoryModalOrder(null)}
         />

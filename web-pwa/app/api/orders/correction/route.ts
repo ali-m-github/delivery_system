@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { generateTrackToken } from "@/lib/tracking";
 
 const prisma = new PrismaClient();
 
@@ -43,10 +44,15 @@ export async function POST(request: Request) {
     const netOwedUsd = originalOrder.amountUsd - newShipping;
 
     // 3. Generate the Deduction (D) and Correction (C) Orders simultaneously
+    const [deductionToken, correctionToken] = await Promise.all([
+      generateTrackToken(),
+      generateTrackToken(),
+    ]);
     const [deductionOrder, correctionOrder] = await prisma.$transaction([
       prisma.order.create({
         data: {
           orderId: `D-${originalOrder.orderId}`,
+          trackToken: deductionToken,
           customerName: originalOrder.customerName,
           customerPhone: originalOrder.customerPhone,
           customerAddress: originalOrder.customerAddress,
@@ -63,6 +69,7 @@ export async function POST(request: Request) {
       prisma.order.create({
         data: {
           orderId: `C-${originalOrder.orderId}`,
+          trackToken: correctionToken,
           customerName: originalOrder.customerName,
           customerPhone: originalOrder.customerPhone,
           customerAddress: originalOrder.customerAddress,

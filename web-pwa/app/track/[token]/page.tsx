@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 
 // ──────────────────────────────────────────────
 // Types
@@ -16,6 +16,7 @@ interface HistoryEntry {
 interface OrderData {
   id: string;
   orderId: string;
+  trackToken: string | null;
   location: string;
   updatedAt: string;
   createdAt: string;
@@ -203,7 +204,8 @@ function ExceptionBanner({ label }: { label: string }) {
 // ──────────────────────────────────────────────
 
 export default function TrackOrderPage() {
-  const params = useParams<{ id: string }>();
+  const params = useParams<{ token: string }>();
+  const router = useRouter();
   const [data, setData] = useState<OrderData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -211,7 +213,7 @@ export default function TrackOrderPage() {
   useEffect(() => {
     async function fetchOrder() {
       try {
-        const res = await fetch(`/api/track/${params.id}`);
+        const res = await fetch(`/api/track/${params.token}`);
         if (!res.ok) {
           if (res.status === 404) {
             setError("Order not found. Please check your tracking ID.");
@@ -221,6 +223,12 @@ export default function TrackOrderPage() {
           return;
         }
         const json: OrderData = await res.json();
+        // Redirect legacy /track/<orderId> links to the tokenized
+        // /track/<token>/<orderId> format.
+        if (json.trackToken) {
+          router.replace(`/track/${json.trackToken}/${json.orderId}`);
+          return;
+        }
         setData(json);
       } catch {
         setError("Network error. Please try again.");
@@ -229,7 +237,7 @@ export default function TrackOrderPage() {
       }
     }
     fetchOrder();
-  }, [params.id]);
+  }, [params.token]);
 
   // Build enriched timeline entries (filter out financial-only entries)
   const timelineEntries = useMemo(() => {

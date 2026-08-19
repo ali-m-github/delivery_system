@@ -2356,7 +2356,7 @@ export default function DriverClient({
       {historyModalOrder && (
         <OrderHistoryModal
           orderId={historyModalOrder.id}
-          orderHistory={historyModalOrder.history}
+          initialHistory={historyModalOrder.history}
           onClose={() => setHistoryModalOrder(null)}
         />
       )}

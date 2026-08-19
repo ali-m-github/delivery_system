@@ -2615,7 +2615,7 @@ export default function DriverProfilePage() {
         {historyModalOrder && (
           <OrderHistoryModal
             orderId={historyModalOrder.id}
-            orderHistory={historyModalOrder.history}
+            initialHistory={historyModalOrder.history}
             onClose={() => setHistoryModalOrder(null)}
           />
         )}

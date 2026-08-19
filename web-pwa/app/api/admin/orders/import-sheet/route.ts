@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import Papa from "papaparse";
+import { generateTrackTokens } from "@/lib/tracking";
 
 const prisma = new PrismaClient();
 
@@ -188,7 +189,8 @@ export async function POST(request: Request) {
     }
 
     // ── Step 4: Map & sanitize rows ─────────────────────────────────────
-    const mappedOrders = dataRows.map((row) => {
+    const trackTokens = await generateTrackTokens(dataRows.length);
+    const mappedOrders = dataRows.map((row, index) => {
       // Extract raw values using colMapping
       const rawOrderId = row[colMapping.orderId]?.trim() || "";
       const rawCustomerName = row[colMapping.customerName]?.trim() || "";
@@ -214,6 +216,7 @@ export async function POST(request: Request) {
 
       return {
         orderId,
+        trackToken: trackTokens[index] ?? null,
         customerName: rawCustomerName || "Unknown",
         customerPhone: rawPhone || "N/A",
         customerAddress: rawAddress || "N/A",

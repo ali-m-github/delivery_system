@@ -3,6 +3,7 @@ import prisma from "@/lib/prisma";
 import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
 import { notifyCustomerStatusChange } from "@/lib/notifications";
+import { generateTrackToken } from "@/lib/tracking";
 import { createExchangeOrderFromDelivered } from "@/lib/exchange";
 
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
@@ -85,6 +86,7 @@ export async function GET(request: NextRequest) {
           merchantId: true,
           driverId: true,
           waybillUrl: true,
+          trackToken: true,
           isArchived: true,
           packages: true,
           extraShipping: true,
@@ -122,11 +124,10 @@ export async function GET(request: NextRequest) {
               action: true,
               location: true,
               driverId: true,
-              user: { select: { id: true, username: true } },
+              user: { select: { id: true, username: true, role: true } },
               createdAt: true,
             },
             orderBy: { createdAt: "asc" },
-            take: 10,
           },
           driverPayout: {
             select: {
@@ -221,6 +222,7 @@ export async function POST(request: Request) {
     const newOrder = await prisma.order.create({
       data: {
         orderId: uniqueOrderId,
+        trackToken: await generateTrackToken(),
         customerName,
         customerPhone: body.customerPhone || "N/A",
         customerAddress: body.customerAddress || "N/A",
@@ -593,6 +595,7 @@ export async function PATCH(request: Request) {
       updatedOrder.orderId,
       newLocation,
       updatedOrder.customerPhone,
+      updatedOrder.trackToken,
     ).catch(console.error);
 
     return NextResponse.json(updatedOrder, { status: 200 });

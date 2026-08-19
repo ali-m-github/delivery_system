@@ -4,6 +4,7 @@ import { jwtVerify } from "jose";
 import { PrismaClient } from "@prisma/client";
 import Papa from "papaparse";
 import { ensureFallbackZone } from "@/lib/zoneMatcher";
+import { generateTrackTokens } from "@/lib/tracking";
 
 const prisma = new PrismaClient();
 
@@ -165,7 +166,8 @@ export async function POST(request: Request) {
     const defaultZoneId = await ensureFallbackZone();
 
     // ── Step 4: Map & sanitize rows ─────────────────────────────────────
-    const mappedOrders = dataRows.map((row) => {
+    const trackTokens = await generateTrackTokens(dataRows.length);
+    const mappedOrders = dataRows.map((row, index) => {
       const rawOrderId = row[colMapping.orderId]?.trim() || "";
       const rawCustomerName = row[colMapping.customerName]?.trim() || "";
       const rawPhone = row[colMapping.phone]?.trim() || "";
@@ -187,6 +189,7 @@ export async function POST(request: Request) {
 
       return {
         orderId,
+        trackToken: trackTokens[index] ?? null,
         customerName: rawCustomerName || "Unknown",
         customerPhone: rawPhone || "N/A",
         customerAddress: rawAddress || "N/A",

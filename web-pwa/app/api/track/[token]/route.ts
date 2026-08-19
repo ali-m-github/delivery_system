@@ -3,15 +3,16 @@ import prisma from "@/lib/prisma";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
+  { params }: { params: Promise<{ token: string }> },
 ) {
-  const { id } = await params;
+  const { token } = await params;
 
   const order = await prisma.order.findUnique({
-    where: { orderId: id },
+    where: { orderId: token },
     select: {
       id: true,
       orderId: true,
+      trackToken: true,
       location: true,
       updatedAt: true,
       createdAt: true,

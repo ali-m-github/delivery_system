@@ -22,6 +22,7 @@ interface Order {
   financialStatus: string;
   notes: string | null;
   packages: number;
+  trackToken?: string | null;
   // Cash-seller payout linkage (present for every order).
   cashPayoutBatchId: number | null;
   returnDeductionBatchId: number | null;
@@ -554,8 +555,10 @@ export default function MerchantClient({
   };
 
   // ── Copy tracking link to clipboard ────────────────────────────────────
-  const handleCopyLink = (orderId: string) => {
-    const trackingUrl = window.location.origin + "/track/" + orderId;
+  const handleCopyLink = (order: Order) => {
+    const trackingUrl = order.trackToken
+      ? window.location.origin + "/track/" + order.trackToken + "/" + order.orderId
+      : window.location.origin + "/track/" + order.orderId;
 
     if (navigator.clipboard && window.isSecureContext) {
       // Modern HTTPS approach
@@ -1407,7 +1410,7 @@ export default function MerchantClient({
                             <td className="px-4 py-3 whitespace-nowrap text-right">
                               <div className="flex items-center justify-end gap-1.5">
                                 <button
-                                  onClick={() => handleCopyLink(order.orderId)}
+                                  onClick={() => handleCopyLink(order)}
                                   className="px-3 py-1.5 text-xs font-bold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded transition-colors"
                                 >
                                   🔗 Copy Link
@@ -2418,7 +2421,7 @@ export default function MerchantClient({
       {historyModalOrder && (
         <OrderHistoryModal
           orderId={historyModalOrder.id}
-          orderHistory={historyModalOrder.history}
+          initialHistory={historyModalOrder.history}
           onClose={() => setHistoryModalOrder(null)}
         />
       )}

@@ -1,8 +1,14 @@
 const TRACKING_BASE =
   process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
 
-function getStatusMessage(status: string, orderId: string): string | null {
-  const trackingUrl = `${TRACKING_BASE}/track/${orderId}`;
+function getStatusMessage(
+  status: string,
+  orderId: string,
+  trackToken?: string | null,
+): string | null {
+  const trackingUrl = trackToken
+    ? `${TRACKING_BASE}/track/${trackToken}/${orderId}`
+    : `${TRACKING_BASE}/track/${orderId}`;
 
   switch (status) {
     case "WITH_DRIVER":
@@ -24,8 +30,9 @@ export async function notifyCustomerStatusChange(
   orderId: string,
   newStatus: string,
   customerPhone: string,
+  trackToken?: string | null,
 ): Promise<void> {
-  const message = getStatusMessage(newStatus, orderId);
+  const message = getStatusMessage(newStatus, orderId, trackToken);
   if (!message) return;
 
   // Colored console output for the admin to see in the terminal.

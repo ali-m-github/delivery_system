@@ -137,6 +137,7 @@ interface Order {
     userId: string;
   } | null;
   waybillUrl?: string | null;
+  trackToken?: string | null;
   isArchived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -948,8 +949,10 @@ function OrdersPageInner() {
   };
 
   // ── Copy tracking link to clipboard ────────────────────────────────────
-  const handleCopyLink = (orderId: string) => {
-    const trackingUrl = window.location.origin + "/track/" + orderId;
+  const handleCopyLink = (order: Order) => {
+    const trackingUrl = order.trackToken
+      ? window.location.origin + "/track/" + order.trackToken + "/" + order.orderId
+      : window.location.origin + "/track/" + order.orderId;
 
     if (navigator.clipboard && window.isSecureContext) {
       // Modern HTTPS approach
@@ -6282,7 +6285,7 @@ function OrdersPageInner() {
         {historyModalOrder && (
           <OrderHistoryModal
             orderId={historyModalOrder.id}
-            orderHistory={historyModalOrder.history}
+            initialHistory={historyModalOrder.history}
             payoutReference={historyModalOrder.payoutReference}
             onClose={() => setHistoryModalOrder(null)}
           />

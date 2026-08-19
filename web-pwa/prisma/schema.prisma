@@ -312,6 +312,7 @@ model Order {
   returnDeductionBatch   CashPayoutBatch? @relation("OrderReturnDeductionBatch", fields: [returnDeductionBatchId], references: [id], onDelete: SetNull)
 
   waybillUrl       String?
+  trackToken       String?        @unique // 8-digit random token for public tracking link: /track/<token>/<orderId>
 
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
