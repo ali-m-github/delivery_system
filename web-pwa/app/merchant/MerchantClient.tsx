@@ -1207,10 +1207,10 @@ export default function MerchantClient({
                       />
                     </div>
 
-                    {/* Exch */}
-                    <div className="flex flex-col gap-1 min-w-[50px] items-center">
+                    {/* Exchange */}
+                    <div className="flex flex-col gap-1 min-w-[60px] items-center">
                       <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        Exch
+                        Exchange
                       </label>
                       <label className="flex items-center cursor-pointer">
                         <input
@@ -1806,10 +1806,10 @@ export default function MerchantClient({
                       />
                     </div>
 
-                    {/* Exch */}
-                    <div className="flex flex-col gap-1 min-w-[50px] items-center">
+                    {/* Exchange */}
+                    <div className="flex flex-col gap-1 min-w-[60px] items-center">
                       <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        Exch
+                        Exchange
                       </label>
                       <label className="flex items-center cursor-pointer">
                         <input
