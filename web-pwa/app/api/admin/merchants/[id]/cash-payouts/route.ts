@@ -48,6 +48,11 @@ export async function GET(
         returnDeductionBatchId: null,
         cashPayoutExcluded: false,
         isArchived: false,
+        // Exclude exchange-generated proof orders (orderId ends with "-Exchange").
+        // These duplicate the main order's price but were already paid out as part
+        // of the original order, so they must never appear as eligible for a new
+        // cash seller advance.
+        NOT: { orderId: { endsWith: "-Exchange" } },
         ...(Object.keys(dateFilter).length ? { createdAt: dateFilter } : {}),
       },
       select: {
