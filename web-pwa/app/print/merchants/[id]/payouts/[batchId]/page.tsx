@@ -46,6 +46,11 @@ function currency(amount: number): string {
   return `$${Math.abs(amount).toFixed(2)}`;
 }
 
+function displayOrderId(orderId: string, financialStatus: string): string {
+  const baseOrderId = orderId.replace(/R$/i, "");
+  return financialStatus === "RTS" ? baseOrderId + "R" : baseOrderId;
+}
+
 // ─── Server Component ─────────────────────────────────────────────────────────
 
 export default async function PrintSellerInvoicePage({
@@ -258,7 +263,7 @@ export default async function PrintSellerInvoicePage({
                     letterSpacing: "0.5px",
                   }}
                 >
-                  #{line.orderId}{line.type === "return" && line.financialStatus === "RTS" ? "R" : ""}
+                  #{displayOrderId(line.orderId, line.financialStatus)}
                 </td>
                 <td style={{ fontSize: 11 }}>{line.customerName}</td>
                 <td style={{ fontSize: 11 }}>{line.customerAddress}</td>
