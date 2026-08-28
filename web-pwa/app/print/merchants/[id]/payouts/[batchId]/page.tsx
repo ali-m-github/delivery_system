@@ -17,6 +17,7 @@ interface InvoiceLine {
   shippingUsd: number;
   netToSeller: number;
   type: "advance" | "return";
+  financialStatus: string;
 }
 
 interface InvoiceAdjustment {
@@ -115,6 +116,7 @@ export default async function PrintSellerInvoicePage({
     shippingUsd: cashSellerRate,
     netToSeller: (o.amountUsd ?? 0) - cashSellerRate,
     type: "advance",
+    financialStatus: o.financialStatus,
   }));
 
   const returnLines: InvoiceLine[] = batch.resolvedReturns.map((r) => ({
@@ -128,6 +130,7 @@ export default async function PrintSellerInvoicePage({
     shippingUsd: cashSellerRate,
     netToSeller: (r.amountUsd ?? 0) - cashSellerRate,
     type: "return",
+    financialStatus: r.financialStatus,
   }));
 
   const adjustments: InvoiceAdjustment[] = batch.adjustments.map((a) => ({
@@ -255,7 +258,7 @@ export default async function PrintSellerInvoicePage({
                     letterSpacing: "0.5px",
                   }}
                 >
-                  #{line.orderId}
+                  #{line.orderId}{line.type === "return" && line.financialStatus === "RTS" ? "R" : ""}
                 </td>
                 <td style={{ fontSize: 11 }}>{line.customerName}</td>
                 <td style={{ fontSize: 11 }}>{line.customerAddress}</td>
