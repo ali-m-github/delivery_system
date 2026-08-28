@@ -263,7 +263,9 @@ export default async function PrintSellerInvoicePage({
                 <td className="right">{currency(line.amountUsd)}</td>
                 <td className="right">{currency(line.shippingUsd)}</td>
                 <td className="right">
-                  {line.type === "advance" ? currency(line.netToSeller) : "—"}
+                  {line.type === "advance"
+                    ? currency(line.netToSeller)
+                    : `−${currency(line.netToSeller)}`}
                 </td>
               </tr>
             ))}
