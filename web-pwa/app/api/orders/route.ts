@@ -5,6 +5,7 @@ import { jwtVerify } from "jose";
 import { notifyCustomerStatusChange } from "@/lib/notifications";
 import { generateTrackToken } from "@/lib/tracking";
 import { createExchangeOrderFromDelivered } from "@/lib/exchange";
+import { orderIdForFinancialStatus } from "@/lib/order-id";
 
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
 export async function GET(request: NextRequest) {
@@ -404,6 +405,14 @@ export async function PATCH(request: Request) {
         changes.push(`Location changed to ${updateData.location}`);
       }
     }
+
+    // Keep the persisted display ID synchronized with the current financial status.
+    const requestedOrderId =
+      typeof updateData.orderId === "string" ? updateData.orderId : existing.orderId;
+    updateData.orderId = orderIdForFinancialStatus(
+      requestedOrderId,
+      updateData.financialStatus ?? existing.financialStatus,
+    );
 
     // ── Payout cleanup: Unlink + recalc when order removed from pending payout ─
     // If the order was in a pending payout and is being moved back (not DELIVERED),

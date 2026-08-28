@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { computeOrderProfit, resolveDriverSellerException } from "@/lib/profit";
+import { orderIdForFinancialStatus } from "@/lib/order-id";
 
 const prisma = new PrismaClient();
 
@@ -214,6 +215,7 @@ export async function POST(
             },
             select: {
               id: true,
+              orderId: true,
               amountUsd: true,
               driverId: true,
               createdAt: true,
@@ -246,6 +248,7 @@ export async function POST(
             },
             select: {
               id: true,
+              orderId: true,
               amountUsd: true,
               driverId: true,
               createdAt: true,
@@ -336,17 +339,18 @@ export async function POST(
 
       // 10. Update all return orders — link to batch + mark RTS (Returned to Seller)
       if (returnIds.length) {
-        await tx.order.updateMany({
-          where: {
-            id: { in: returnIds },
-            merchantId,
-            returnDeductionBatchId: null,
-          },
-          data: {
-            returnDeductionBatchId: cashPayoutBatch.id,
-            financialStatus: "RTS",
-          },
-        });
+        await Promise.all(
+          returnOrders.map((o) =>
+            tx.order.update({
+              where: { id: o.id },
+              data: {
+                orderId: orderIdForFinancialStatus(o.orderId, "RTS"),
+                returnDeductionBatchId: cashPayoutBatch.id,
+                financialStatus: "RTS",
+              },
+            }),
+          ),
+        );
       }
 
       return cashPayoutBatch;

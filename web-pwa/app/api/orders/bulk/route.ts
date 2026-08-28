@@ -3,6 +3,7 @@ import prisma from "@/lib/prisma";
 import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
 import { createExchangeOrderFromDelivered } from "@/lib/exchange";
+import { orderIdForFinancialStatus } from "@/lib/order-id";
 
 // ─── PATCH /api/orders/bulk ───────────────────────────────────────────────────
 export async function PATCH(request: Request) {
@@ -142,6 +143,11 @@ export async function PATCH(request: Request) {
           : changes.length > 0
             ? changes.join(" | ")
             : "Order Updated (Bulk)";
+
+        updateData.orderId = orderIdForFinancialStatus(
+          existing.orderId,
+          String(updateData.financialStatus ?? existing.financialStatus),
+        );
 
         const newLocation =
           (updateData.location as string) || existing.location;

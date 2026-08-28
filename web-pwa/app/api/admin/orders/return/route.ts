@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
+import { orderIdForFinancialStatus } from "@/lib/order-id";
 
 // ─── PATCH /api/admin/orders/return ──────────────────────────────────────────
 // Permission-gated endpoint that returns a DELIVERED order (financialStatus WO
@@ -171,6 +172,7 @@ export async function PATCH(request: Request) {
         await prisma.order.update({
           where: { id: o.id },
           data: {
+            orderId: orderIdForFinancialStatus(o.orderId, targetFinancialStatus),
             location: targetLocation,
             financialStatus: targetFinancialStatus,
             ...(leavingDelivered && {

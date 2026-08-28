@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
+import { orderIdForFinancialStatus } from "@/lib/order-id";
 
 const prisma = new PrismaClient();
 
@@ -59,7 +60,12 @@ export async function PATCH(request: Request) {
     // (RTS) accepts both Re (returns) and EX (exchanges).
     const existingOrders = await prisma.order.findMany({
       where: { id: { in: orderIds } },
-      select: { id: true, financialStatus: true, location: true },
+      select: {
+        id: true,
+        orderId: true,
+        financialStatus: true,
+        location: true,
+      },
     });
 
     const allowedSources = newStatus === "Re" ? ["RWD", "EWD"] : ["Re", "EX"];
@@ -86,7 +92,7 @@ export async function PATCH(request: Request) {
       const from = o.financialStatus;
       const target =
         newStatus === "Re" ? (from === "EWD" ? "EX" : "Re") : "RTS";
-      return { id: o.id, from, target };
+      return { id: o.id, orderId: o.orderId, from, target };
     });
 
     // ── Perform bulk update ─────────────────────────────────────────────────
@@ -94,7 +100,10 @@ export async function PATCH(request: Request) {
       updates.map((u) =>
         prisma.order.update({
           where: { id: u.id },
-          data: { financialStatus: u.target },
+          data: {
+            orderId: orderIdForFinancialStatus(u.orderId, u.target),
+            financialStatus: u.target,
+          },
         }),
       ),
     );
