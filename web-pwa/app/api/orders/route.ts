@@ -62,9 +62,24 @@ export async function GET(request: NextRequest) {
       ];
     }
 
-    // Run count + data in parallel
-    const [total, orders] = await Promise.all([
+    // Tab badges need totals from the database, not only the current page of
+    // orders returned below. Keep the archive scope consistent with the view.
+    const summaryWhere: Record<string, unknown> = {};
+    if (isArchived === "true" || isArchived === "false") {
+      summaryWhere.isArchived = isArchived === "true";
+    }
+
+    // Run counts + data in parallel
+    const [total, rwdTotal, cpTotal, orders] = await Promise.all([
       prisma.order.count({ where }),
+      prisma.order.count({
+        where: {
+          ...summaryWhere,
+          location: "RETURN",
+          financialStatus: { in: ["RWD", "EWD"] },
+        },
+      }),
+      prisma.order.count({ where: { ...summaryWhere, location: "CP" } }),
       prisma.order.findMany({
         where,
         skip,
@@ -145,6 +160,8 @@ export async function GET(request: NextRequest) {
         data: orders,
         meta: {
           total,
+          rwdTotal,
+          cpTotal,
           skip,
           take,
           hasMore: skip + take < total,

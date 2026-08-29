@@ -413,6 +413,8 @@ function OrdersPageInner() {
   >([]);
   const [loading, setLoading] = useState(true);
   const [totalOrders, setTotalOrders] = useState(0);
+  const [rwdTotal, setRwdTotal] = useState(0);
+  const [cpTotal, setCpTotal] = useState(0);
   const [currentUser, setCurrentUser] = useState<{
     id: string;
     username: string;
@@ -915,8 +917,12 @@ function OrdersPageInner() {
         // Track total count for server-side pagination
         if (!Array.isArray(result) && result.meta) {
           setTotalOrders(result.meta.total);
+          setRwdTotal(result.meta.rwdTotal ?? orderList.length);
+          setCpTotal(result.meta.cpTotal ?? orderList.length);
         } else {
           setTotalOrders(orderList.length);
+          setRwdTotal(orderList.filter((o: Order) => String(o.location).toUpperCase() === "RETURN" && ["RWD", "EWD"].includes(String(o.financialStatus).toUpperCase())).length);
+          setCpTotal(orderList.filter((o: Order) => String(o.location).toUpperCase() === "CP").length);
         }
       }
       if (zonesRes.ok) {
@@ -2290,12 +2296,12 @@ function OrdersPageInner() {
             { key: "warehouse" as Tab, label: "Warehouse" },
             {
               key: "cp" as Tab,
-              label: `CP (Pickup) (${cpOrders.length})`,
+              label: `CP (Pickup) (${cpTotal})`,
             },
             { key: "reports" as Tab, label: "Reports" },
             {
               key: "rwd" as Tab,
-              label: `Return w/ Driver (${rwdOrders.length})`,
+              label: `Return w/ Driver (${rwdTotal})`,
             },
             { key: "returns" as Tab, label: "Returns & Exchange" },
             ...(hasPermission("ORDERS_CREATE")
