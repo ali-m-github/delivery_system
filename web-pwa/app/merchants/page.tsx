@@ -24,6 +24,21 @@ export default function SellersPage() {
   const [submitting, setSubmitting] = useState(false);
   const [logoFile, setLogoFile] = useState<File | null>(null);
 
+  // Edit Modal State
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingSeller, setEditingSeller] = useState<any | null>(null);
+  const [editForm, setEditForm] = useState({
+    merchantName: "",
+    contactName: "",
+    phone: "",
+    address: "",
+    socialMedia: "",
+    isCashSeller: false,
+    defaultSellerRate: "",
+    defaultProfitRate: "",
+  });
+  const [editLogoFile, setEditLogoFile] = useState<File | null>(null);
+
   // Zone Overrides Modal State
   const [isRatesModalOpen, setIsRatesModalOpen] = useState(false);
   const [selectedSeller, setSelectedSeller] = useState<any | null>(null);
@@ -128,6 +143,82 @@ export default function SellersPage() {
       }
     } catch (err) {
       alert("Failed to create seller.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleOpenEdit = (seller: any) => {
+    setEditingSeller(seller);
+    setEditForm({
+      merchantName: seller.merchantName ?? "",
+      contactName: seller.contactName ?? "",
+      phone: seller.phone ?? "",
+      address: seller.address ?? "",
+      socialMedia: seller.socialMedia ?? "",
+      isCashSeller: !!seller.isCashSeller,
+      defaultSellerRate: seller.defaultSellerRate != null ? String(seller.defaultSellerRate) : "",
+      defaultProfitRate: seller.defaultProfitRate != null ? String(seller.defaultProfitRate) : "",
+    });
+    setEditLogoFile(null);
+    setIsEditModalOpen(true);
+  };
+
+  const handleUpdateSeller = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSeller || !editForm.merchantName.trim()) return;
+
+    setSubmitting(true);
+    try {
+      const payload: Record<string, string | number | boolean | null> = {
+        merchantName: editForm.merchantName.trim(),
+        contactName: editForm.contactName.trim() || null,
+        phone: editForm.phone.trim() || null,
+        address: editForm.address?.trim() || null,
+        socialMedia: editForm.socialMedia?.trim() || null,
+        isCashSeller: editForm.isCashSeller,
+        defaultSellerRate: editForm.isCashSeller
+          ? parseFloat(editForm.defaultSellerRate) || null
+          : null,
+        defaultProfitRate: editForm.isCashSeller
+          ? parseFloat(editForm.defaultProfitRate) || null
+          : null,
+      };
+
+      let res: Response;
+      if (editLogoFile) {
+        const formData = new FormData();
+        Object.entries(payload).forEach(([key, value]) => {
+          if (value !== null && value !== undefined)
+            formData.append(key, String(value));
+        });
+        formData.append("logo", editLogoFile);
+        res = await fetch(`/api/admin/merchants/${editingSeller.id}`, {
+          method: "PATCH",
+          body: formData,
+        });
+      } else {
+        res = await fetch(`/api/admin/merchants/${editingSeller.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      }
+      if (res.ok) {
+        setIsEditModalOpen(false);
+        setEditingSeller(null);
+        setEditLogoFile(null);
+        await fetchData();
+      } else {
+        const errBody = await res.json().catch(() => null);
+        alert(
+          `Failed to update seller: ${
+            (errBody as { error?: string } | null)?.error ?? res.statusText
+          }`,
+        );
+      }
+    } catch (err) {
+      alert("Error updating seller.");
     } finally {
       setSubmitting(false);
     }
@@ -322,6 +413,12 @@ export default function SellersPage() {
                         >
                           View Profile
                         </Link>
+                        <button
+                          onClick={() => handleOpenEdit(seller)}
+                          className="bg-cyan-600/20 text-cyan-400 hover:bg-cyan-600/40 border border-cyan-500/30 px-3 py-1.5 rounded transition-colors text-xs font-bold mr-2"
+                        >
+                          Edit
+                        </button>
                         <button
                           onClick={() => handleOpenRates(seller)}
                           className="bg-purple-600/20 text-purple-400 hover:bg-purple-600/40 border border-purple-500/30 px-3 py-1.5 rounded transition-colors text-xs font-bold mr-2"
@@ -547,6 +644,211 @@ export default function SellersPage() {
                   className="bg-[#124046] text-[#42d4e6] px-6 py-2 rounded-lg font-bold transition-colors disabled:opacity-50 hover:brightness-110"
                 >
                   {submitting ? "Saving..." : "Create Seller"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT SELLER MODAL */}
+      {isEditModalOpen && editingSeller && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setIsEditModalOpen(false)}
+          />
+          <div className="bg-black/80 border border-gray-800 rounded-2xl shadow-2xl w-full max-w-md relative z-10 overflow-hidden backdrop-blur-xl">
+            <div className="p-6 border-b border-gray-800">
+              <h2 className="text-xl font-bold text-white">Edit Seller</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Update the details for {editingSeller.merchantName}.
+              </p>
+            </div>
+            <form onSubmit={handleUpdateSeller} className="p-6">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                    Business Name <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    placeholder="e.g. HiCart"
+                    value={editForm.merchantName}
+                    onChange={(e) =>
+                      setEditForm({
+                        ...editForm,
+                        merchantName: e.target.value,
+                      })
+                    }
+                    className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                    Contact Name
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. John Doe"
+                    value={editForm.contactName}
+                    onChange={(e) =>
+                      setEditForm({
+                        ...editForm,
+                        contactName: e.target.value,
+                      })
+                    }
+                    className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                    Phone
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. +1 (555) 123-4567"
+                    value={editForm.phone}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, phone: e.target.value })
+                    }
+                    className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                    Address
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 123 Main St, Beirut"
+                    value={editForm.address}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, address: e.target.value })
+                    }
+                    className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                    Social Media / Website
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. @merchant_ig or website.com"
+                    value={editForm.socialMedia}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, socialMedia: e.target.value })
+                    }
+                    className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5">
+                    Logo
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setEditLogoFile(e.target.files?.[0] || null)}
+                    className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#124046] file:text-[#42d4e6] file:font-bold file:cursor-pointer cursor-pointer"
+                  />
+                  <p className="text-[10px] text-gray-600 mt-1">
+                    Optional. Upload a new square PNG/JPG/WebP logo to replace
+                    the current one.
+                  </p>
+                </div>
+
+                {/* ── Cash Seller Toggle ── */}
+                <div className="border-t border-gray-800 pt-4 mt-2">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editForm.isCashSeller}
+                      onChange={(e) =>
+                        setEditForm({
+                          ...editForm,
+                          isCashSeller: e.target.checked,
+                        })
+                      }
+                      className="rounded border-gray-700 bg-[#111318] text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-4 h-4"
+                    />
+                    <span className="text-xs font-medium text-gray-300">
+                      Enable Prepaid (Cash Seller) Factoring
+                    </span>
+                  </label>
+                  <p className="text-[10px] text-gray-600 mt-1 ml-7">
+                    When enabled, you can advance cash to this seller before
+                    delivery, deducting a per-order fee.
+                  </p>
+                </div>
+
+                {/* ── Conditional Rate Inputs ── */}
+                {editForm.isCashSeller && (
+                  <div className="grid grid-cols-2 gap-3 mt-3 ml-7 p-3 bg-cyan-500/5 border border-cyan-500/10 rounded-lg">
+                    <div>
+                      <label className="block text-[10px] font-medium text-gray-400 mb-1">
+                        Default Seller Rate ($USD)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="$4.00"
+                        value={editForm.defaultSellerRate}
+                        onChange={(e) =>
+                          setEditForm({
+                            ...editForm,
+                            defaultSellerRate: e.target.value,
+                          })
+                        }
+                        className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors text-sm"
+                      />
+                      <p className="text-[10px] text-gray-600 mt-1">
+                        Fee charged to seller per order
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-medium text-gray-400 mb-1">
+                        Default Profit Rate ($USD)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="$1.00"
+                        value={editForm.defaultProfitRate}
+                        onChange={(e) =>
+                          setEditForm({
+                            ...editForm,
+                            defaultProfitRate: e.target.value,
+                          })
+                        }
+                        className="w-full bg-[#111318] border border-gray-800 rounded-lg p-2.5 text-white placeholder-gray-600 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-colors text-sm"
+                      />
+                      <p className="text-[10px] text-gray-600 mt-1">
+                        Company profit per order. Total fee = seller rate +
+                        profit.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end space-x-3 mt-8">
+                <button
+                  type="button"
+                  onClick={() => setIsEditModalOpen(false)}
+                  className="px-4 py-2 rounded-lg bg-[#232529] text-white hover:bg-gray-700 font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-[#124046] text-[#42d4e6] px-6 py-2 rounded-lg font-bold transition-colors disabled:opacity-50 hover:brightness-110"
+                >
+                  {submitting ? "Saving..." : "Save Changes"}
                 </button>
               </div>
             </form>
