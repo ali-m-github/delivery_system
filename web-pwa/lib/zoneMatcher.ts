@@ -49,48 +49,73 @@ function containsIsolatedWord(haystack: string, needle: string): boolean {
 }
 
 /**
- * Resolve the delivery zone id for a raw customer address.
- * Returns the matched zone id, or the fallback zone "99" when no mapping exists.
+ * Everything zone matching needs, loaded ONCE from the database: the
+ * fallback zone id, the verified city mappings (already sorted longest-first
+ * and filtered to existing zones), and an exact-match lookup map. Build it
+ * once per request (e.g. a bulk move-from-cp) and answer any number of
+ * per-address questions from it with zero further DB queries.
  */
-export async function resolveZoneForAddress(
-  address: string,
-): Promise<string> {
-  const fallbackZoneId = await ensureFallbackZone();
-  const normalized = normalizeAddress(address || "");
-  if (!normalized) return fallbackZoneId;
+export interface ZoneMatchContext {
+  fallbackZoneId: string;
+  /** Verified mappings, sorted by normalizedAddress length (desc). */
+  mappings: { normalizedAddress: string; zoneId: string }[];
+  /** normalizedAddress → zoneId for tier-1 exact matches. */
+  exactMatchMap: Map<string, string>;
+}
 
-  // ── 1. Fetch verified city mappings (the "cities database") ────────────
-  const verifiedMappings = await prisma.zoneMapping.findMany({
-    where: { isVerified: true },
-    select: { normalizedAddress: true, zoneId: true },
-  });
+/**
+ * One-time load of the matching data (fallback zone + verified mappings +
+ * zone filter). Replaces the historical per-address 3-query pattern with a
+ * single parallel load; matching semantics are unchanged.
+ */
+export async function createZoneMatchContext(): Promise<ZoneMatchContext> {
+  const [fallbackZoneId, verifiedMappings, zones] = await Promise.all([
+    ensureFallbackZone(),
+    // Verified city mappings (the "cities database")
+    prisma.zoneMapping.findMany({
+      where: { isVerified: true },
+      select: { normalizedAddress: true, zoneId: true },
+    }),
+    // Drop mappings that point to deleted zones
+    prisma.zone.findMany({ select: { id: true } }),
+  ]);
 
-  // ── 1b. Drop mappings that point to deleted zones ───────────────────────
-  const validZoneIds = new Set(
-    (await prisma.zone.findMany({ select: { id: true } })).map((z) => z.id),
-  );
+  const validZoneIds = new Set(zones.map((z) => z.id));
   const validMappings = verifiedMappings.filter((m) =>
     validZoneIds.has(m.zoneId),
   );
 
-  if (validMappings.length === 0) return fallbackZoneId;
-
-  // ── 2. Longer (more specific) city names first ─────────────────────────
-  const sortedMappings = [...validMappings].sort(
+  // Longer (more specific) city names first — same ordering the per-address
+  // resolver historically used (stable sort, DB order ties).
+  const mappings = [...validMappings].sort(
     (a, b) => b.normalizedAddress.length - a.normalizedAddress.length,
   );
 
-  // Exact-match lookup map
-  const exactMatchMap = new Map(
-    sortedMappings.map((m) => [m.normalizedAddress, m.zoneId]),
-  );
+  return {
+    fallbackZoneId,
+    mappings,
+    exactMatchMap: new Map(mappings.map((m) => [m.normalizedAddress, m.zoneId])),
+  };
+}
+
+/**
+ * Pure in-memory zone resolution against a pre-loaded context — no DB
+ * access. Tier order is exactly the documented hierarchy:
+ * exact → isolated phrase → fuzzy >= threshold → fallback zone "99".
+ */
+export function matchZoneInContext(
+  ctx: ZoneMatchContext,
+  address: string,
+): string {
+  const normalized = normalizeAddress(address || "");
+  if (!normalized || ctx.mappings.length === 0) return ctx.fallbackZoneId;
 
   // ── Tier 1: Exact Match ─────────────────────────────────────────────────
-  const exactZoneId = exactMatchMap.get(normalized);
+  const exactZoneId = ctx.exactMatchMap.get(normalized);
   if (exactZoneId) return exactZoneId;
 
   // ── Tier 2: Substring / Keyword Match ──────────────────────────────────
-  for (const mapping of sortedMappings) {
+  for (const mapping of ctx.mappings) {
     if (containsIsolatedWord(normalized, mapping.normalizedAddress)) {
       return mapping.zoneId;
     }
@@ -99,7 +124,7 @@ export async function resolveZoneForAddress(
   // ── Tier 3: Fuzzy Match Fallback ───────────────────────────────────────
   let bestScore = 0;
   let bestZoneId = "";
-  for (const mapping of sortedMappings) {
+  for (const mapping of ctx.mappings) {
     const score = similarityScore(normalized, mapping.normalizedAddress);
     if (score > bestScore) {
       bestScore = score;
@@ -112,5 +137,34 @@ export async function resolveZoneForAddress(
   if (bestScore >= FUZZY_THRESHOLD && bestZoneId) return bestZoneId;
 
   // ── No match → fallback zone "99" ──────────────────────────────────────
-  return fallbackZoneId;
+  return ctx.fallbackZoneId;
+}
+
+/**
+ * Resolve the delivery zone id for a raw customer address.
+ * Returns the matched zone id, or the fallback zone "99" when no mapping
+ * exists. Pass a pre-loaded {@link ZoneMatchContext} to skip the DB load
+ * (built via {@link createZoneMatchContext}).
+ */
+export async function resolveZoneForAddress(
+  address: string,
+  ctx?: ZoneMatchContext,
+): Promise<string> {
+  const context = ctx ?? (await createZoneMatchContext());
+  return matchZoneInContext(context, address);
+}
+
+/**
+ * Batch version for bulk flows (e.g. move-from-cp): ONE context load for N
+ * addresses instead of 3 queries per address. Returns address → zoneId.
+ */
+export async function resolveZonesForAddresses(
+  addresses: string[],
+): Promise<Map<string, string>> {
+  const ctx = await createZoneMatchContext();
+  const zones = new Map<string, string>();
+  for (const address of addresses) {
+    zones.set(address, matchZoneInContext(ctx, address));
+  }
+  return zones;
 }

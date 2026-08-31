@@ -145,7 +145,14 @@ export async function GET(
       },
       { status: 200 },
     );
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error: unknown) {
+    console.error(
+      "GET /api/admin/merchants/[id]/payouts/[batchId]/invoice Error:",
+      error,
+    );
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }

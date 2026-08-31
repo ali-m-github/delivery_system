@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import {
   loadDriverRateTable,
   enrichPayoutOrdersWithCommission,
 } from "@/lib/commission";
 import { requireServerPermission } from "@/lib/server-permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // GET /api/drivers/payouts — Fetch all global payout history with advanced filtering
 export async function GET(request: Request) {
@@ -15,6 +15,15 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
+
+    // Pagination: opt-in (default take=1000 keeps the historical behavior of
+    // returning the full ledger for current-sized deployments). Clients can
+    // page with ?skip=&take= and use meta.total/hasMore to know when to stop.
+    const skip = Math.max(0, parseInt(searchParams.get("skip") || "0", 10));
+    const take = Math.min(
+      5000,
+      Math.max(1, parseInt(searchParams.get("take") || "1000", 10)),
+    );
     const status = searchParams.get("status") || "ALL";
     const startDate = searchParams.get("startDate") || "";
     const endDate = searchParams.get("endDate") || "";
@@ -89,50 +98,59 @@ export async function GET(request: Request) {
       [sortBy]: sortDir,
     };
 
-    const payouts = await prisma.driverPayout.findMany({
-      where,
-      include: {
-        driver: {
-          select: {
-            id: true,
-            driverId: true,
-            firstName: true,
-            lastName: true,
-            carriedDebtUsd: true,
-            carriedDebtLbp: true,
-            userId: true,
-          },
-        },
-        createdBy: {
-          select: {
-            id: true,
-            username: true,
-            email: true,
-          },
-        },
-        orders: {
-          include: {
-            zone: {
-              select: { name: true },
-            },
-            merchant: {
-              select: { merchantName: true },
+    // Opt-in metadata: ?meta=true returns { data, meta } with total/hasMore.
+    // Default keeps the historical bare-array shape for existing clients.
+    const wantMeta = searchParams.get("meta") === "true";
+
+    const [total, payouts] = await Promise.all([
+      wantMeta ? prisma.driverPayout.count({ where }) : Promise.resolve(0),
+      prisma.driverPayout.findMany({
+        where,
+        skip,
+        take,
+        include: {
+          driver: {
+            select: {
+              id: true,
+              driverId: true,
+              firstName: true,
+              lastName: true,
+              carriedDebtUsd: true,
+              carriedDebtLbp: true,
+              userId: true,
             },
           },
-        },
-        paidStatements: {
-          include: {
-            treasuryBox: {
-              select: { id: true, name: true },
+          createdBy: {
+            select: {
+              id: true,
+              username: true,
+              email: true,
             },
-            merchant: {
-              select: { merchantName: true },
+          },
+          orders: {
+            include: {
+              zone: {
+                select: { name: true },
+              },
+              merchant: {
+                select: { merchantName: true },
+              },
+            },
+          },
+          paidStatements: {
+            include: {
+              treasuryBox: {
+                select: { id: true, name: true },
+              },
+              merchant: {
+                select: { merchantName: true },
+              },
             },
           },
         },
-      },
-      orderBy,
-    });
+        orderBy,
+      }),
+    ]);
 
     // Calculate per-order driver commission using the authoritative
     // precedence from lib/commission.ts. Rate tables are loaded ONCE PER
@@ -163,6 +181,23 @@ export async function GET(request: Request) {
         orders: enrichPayoutOrdersWithCommission(rateTable, payout.orders),
       };
     });
+
+    // Default: bare array (historical shape used by /drivers and
+    // /cleared-payouts). Opt-in: { data, meta } for paginating clients.
+    if (wantMeta) {
+      return NextResponse.json(
+        {
+          data: enrichedPayouts,
+          meta: {
+            total,
+            skip,
+            take,
+            hasMore: skip + payouts.length < total,
+          },
+        },
+        { status: 200 },
+      );
+    }
 
     return NextResponse.json(enrichedPayouts, { status: 200 });
   } catch (error) {

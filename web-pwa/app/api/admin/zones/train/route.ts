@@ -271,10 +271,10 @@ export async function POST(request: Request) {
       },
       { status: 200 },
     );
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[POST /api/admin/zones/train] Error:", error);
     return NextResponse.json(
-      { error: "Training failed", details: error.message || String(error) },
+      { error: "Training failed" },
       { status: 500 },
     );
   }

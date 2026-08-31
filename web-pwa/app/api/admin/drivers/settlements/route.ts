@@ -2,9 +2,21 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
 import {
+  withConcurrencyRetries,
+  ConcurrencyConflictError,
+} from "@/lib/concurrency";
+import {
   loadDriverRateTable,
   enrichPayoutOrdersWithCommission,
 } from "@/lib/commission";
+
+/** Thrown when a row was already processed by another request (CAS claim lost). */
+class AlreadyProcessedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AlreadyProcessedError";
+  }
+}
 
 // Enrich orders with per-order driver commission (authoritative precedence
 // from lib/commission.ts: seller exception (cash wins) → zone → $0).
@@ -144,9 +156,12 @@ export async function GET(request: Request) {
     const settlements = enrichedPending.map(mapPayout);
 
     return NextResponse.json({ settlements }, { status: 200 });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("GET settlements error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }
 
@@ -216,8 +231,10 @@ export async function POST(request: Request) {
       );
     }
 
-    // Execute full settlement in a transaction
-    const result = await prisma.$transaction(async (tx) => {
+    // Execute full settlement in a transaction. Wrapped in a retry loop so a
+    // lost CAS race (concurrent settle of the same payout) re-runs cleanly.
+    const result = await withConcurrencyRetries(() =>
+      prisma.$transaction(async (tx) => {
       // 1. Fetch the payout to get net values
       const payout = await tx.driverPayout.findUnique({
         where: { id: payoutId },
@@ -228,7 +245,7 @@ export async function POST(request: Request) {
       }
 
       if (payout.status !== "PENDING") {
-        throw new Error("Payout is not in PENDING status");
+        throw new AlreadyProcessedError("Payout is not in PENDING status");
       }
 
       // 1b. Validate + resolve the paid-by-driver statements.
@@ -250,12 +267,12 @@ export async function POST(request: Request) {
             stmt.paymentStatus === "PAID" ||
             stmt.paymentStatus === "PENDING_APPROVAL"
           ) {
-            throw new Error(
+            throw new AlreadyProcessedError(
               `Statement #${stmt.sequentialIndex} is already paid or pending approval and cannot be deducted twice.`,
             );
           }
           if (stmt.paidByDriverPayoutId) {
-            throw new Error(
+            throw new AlreadyProcessedError(
               `Statement #${stmt.sequentialIndex} was already paid by a driver.`,
             );
           }
@@ -284,10 +301,12 @@ export async function POST(request: Request) {
       // Orders stay at 'WD' — they flip to 'WO' only during approval (Phase 2).
       const newStatus = "PENDING_APPROVAL";
 
-      // 2. Update the DriverPayout — record the amount paid, remember the chosen
-      //    treasury box, and move to PENDING_APPROVAL.
-      const updatedPayout = await tx.driverPayout.update({
-        where: { id: payoutId },
+      // 2. CLAIM the payout with a conditional update (compare-and-swap):
+      //    only a PENDING payout can be settled. Concurrent settles serialize
+      //    on the payout row lock; exactly one sees count === 1. The loser's
+      //    transaction rolls back with nothing persisted.
+      const claimedPayout = await tx.driverPayout.updateMany({
+        where: { id: payoutId, status: "PENDING" },
         data: {
           amountPaidUsd: safeAmountPaidUsd,
           amountPaidLbp: safeAmountPaidLbp,
@@ -300,6 +319,10 @@ export async function POST(request: Request) {
         },
       });
 
+      if (claimedPayout.count !== 1) {
+        throw new ConcurrencyConflictError("Payout was settled concurrently");
+      }
+
       // 2b. Link the paid-by-driver statements to this payout and hold them as
       // PENDING_APPROVAL. Each statement records the cashbox it will be paid
       // into; it is only marked PAID (and posted to its cashbox) when the
@@ -310,8 +333,15 @@ export async function POST(request: Request) {
         });
         for (const stmt of statements) {
           const selection = statementSelections.find((s) => s.id === stmt.id);
-          await tx.merchantPayout.update({
-            where: { id: stmt.id },
+          // CAS: only claim statements that are still available (not paid /
+          // not pending approval / not already paid by a driver). If a
+          // concurrent request took one, this attempt rolls back entirely.
+          const claimedStmt = await tx.merchantPayout.updateMany({
+            where: {
+              id: stmt.id,
+              paidByDriverPayoutId: null,
+              paymentStatus: { notIn: ["PAID", "PENDING_APPROVAL"] },
+            },
             data: {
               paymentStatus: "PENDING_APPROVAL",
               paidByDriverPayoutId: payout.id,
@@ -320,6 +350,11 @@ export async function POST(request: Request) {
               treasuryBoxId: selection?.treasuryBoxId || null,
             },
           });
+          if (claimedStmt.count !== 1) {
+            throw new ConcurrencyConflictError(
+              `Statement #${stmt.sequentialIndex} was taken concurrently`,
+            );
+          }
         }
       }
 
@@ -342,6 +377,10 @@ export async function POST(request: Request) {
       // yet, so the money must NOT hit the treasury box. The transaction is
       // created in the approve route (Phase 2) using the stored treasuryBoxId.
 
+      const updatedPayout = await tx.driverPayout.findUniqueOrThrow({
+        where: { id: payoutId },
+      });
+
       return {
         payout: updatedPayout,
         remainingUsd,
@@ -351,7 +390,8 @@ export async function POST(request: Request) {
         statementsDeductedLbp,
         statementsCount: statementIds.length,
       };
-    });
+      })
+    );
 
     return NextResponse.json(
       {
@@ -368,7 +408,13 @@ export async function POST(request: Request) {
       { status: 200 },
     );
   } catch (error: any) {
+    if (error instanceof AlreadyProcessedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     console.error("POST settlement error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }

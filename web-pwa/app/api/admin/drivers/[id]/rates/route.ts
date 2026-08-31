@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // GET /api/admin/drivers/[id]/rates — Fetch all seller-specific flat rates for a driver
 export async function GET(

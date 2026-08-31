@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { extractDriverNotes } from "@/lib/tracking";
+import { rateLimitResponse } from "@/lib/rate-limit";
 
 // ──────────────────────────────────────────────
 // Public customer-facing tracking endpoint
@@ -11,12 +12,41 @@ import { extractDriverNotes } from "@/lib/tracking";
 // returned. The 8-digit token makes the link unguessable; the orderId
 // is validated against the token so a leaked token alone can't be
 // probed for other orders (and vice versa).
+//
+// Hardening (2026-08):
+//  - Input shape allow-lists reject junk before any database access.
+//  - Per-client rate limit keeps the public endpoint cheap.
+//  - Customer PII is masked on the server (phone → last 4, name →
+//    first name + initials) instead of shipping full PII to the page.
 // ──────────────────────────────────────────────
 
-interface HistoryRow {
-  action: string;
-  location: string | null;
-  createdAt: Date;
+// Track tokens have always been exactly 8 digits (10000000–99999999);
+// orderIds are short alphanumeric (e.g. "10007447", "2-0001", "C-10007447").
+const TRACK_TOKEN_RE = /^\d{8}$/;
+const ORDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$/;
+
+// Phone number for public display: keep only the last 4 digits.
+function publicPhone(phone: string | null): string {
+  if (!phone) return "";
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 4) return "";
+  return `•••• ${digits.slice(-4)}`;
+}
+
+// Name for public display: masked first name + initials of the rest
+// (matches what the legacy tracking page rendered client-side).
+function publicName(name: string | null): string {
+  if (!name) return "";
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "";
+  const first = parts[0];
+  const maskedFirst =
+    first.length <= 1 ? first : `${first[0]}${"*".repeat(first.length - 1)}`;
+  const tail = parts
+    .slice(1)
+    .map((p) => (p.length <= 1 ? `${p}.` : `${p[0]}.`))
+    .join(" ");
+  return tail ? `${maskedFirst} ${tail}` : maskedFirst;
 }
 
 // True when a history action contains money/treasury information.
@@ -106,60 +136,82 @@ function currentStatusLabel(location: string): string {
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ token: string; orderId: string }> },
 ) {
+  // Per-client throttle on the public endpoint (expensive: DB read +
+  // history fan-out per request).
+  const throttled = rateLimitResponse("public-track", request, {
+    limit: 30,
+    windowMs: 60_000,
+  });
+  if (throttled) return throttled;
+
   const { token, orderId } = await params;
 
-  const order = await prisma.order.findUnique({
-    where: { trackToken: token },
-    select: {
-      orderId: true,
-      customerName: true,
-      customerPhone: true,
-      customerAddress: true,
-      notes: true,
-      location: true,
-      deliveredAt: true,
-      updatedAt: true,
-      merchant: { select: { merchantName: true } },
-      history: {
-        select: { action: true, location: true, createdAt: true },
-        orderBy: { createdAt: "asc" },
-      },
-    },
-  });
-
-  // One generic 404 for a bad token OR a token/orderId mismatch, so the
+  // Reject malformed shapes with the same generic 404 as a miss, so the
   // response never reveals which part of the link was wrong.
-  if (!order || order.orderId !== orderId) {
+  if (!TRACK_TOKEN_RE.test(token) || !ORDER_ID_RE.test(orderId)) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
-  const timeline = order.history
-    .map((h) => ({ message: toCustomerMessage(h), at: h.createdAt }))
-    .filter(
-      (e): e is {
-        message: { status: string; detail: string | null };
-        at: Date;
-      } => e.message !== null,
-    )
-    .map(({ message, at }) => ({
-      status: message.status,
-      detail: message.detail,
-      at,
-    }));
+  try {
+    const order = await prisma.order.findUnique({
+      where: { trackToken: token },
+      select: {
+        orderId: true,
+        customerName: true,
+        customerPhone: true,
+        customerAddress: true,
+        notes: true,
+        location: true,
+        deliveredAt: true,
+        updatedAt: true,
+        merchant: { select: { merchantName: true } },
+        history: {
+          select: { action: true, location: true, createdAt: true },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
 
-  return NextResponse.json({
-    orderId: order.orderId,
-    customerName: order.customerName,
-    customerPhone: order.customerPhone,
-    customerAddress: order.customerAddress,
-    merchantName: order.merchant?.merchantName ?? null,
-    status: currentStatusLabel(order.location),
-    driverNotes: extractDriverNotes(order.notes),
-    timeline,
-    deliveredAt: order.deliveredAt,
-    updatedAt: order.updatedAt,
-  });
+    // One generic 404 for a bad token OR a token/orderId mismatch, so the
+    // response never reveals which part of the link was wrong.
+    if (!order || order.orderId !== orderId) {
+      return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    }
+
+    const timeline = order.history
+      .map((h) => ({ message: toCustomerMessage(h), at: h.createdAt }))
+      .filter(
+        (e): e is {
+          message: { status: string; detail: string | null };
+          at: Date;
+        } => e.message !== null,
+      )
+      .map(({ message, at }) => ({
+        status: message.status,
+        detail: message.detail,
+        at,
+      }));
+
+    return NextResponse.json({
+      orderId: order.orderId,
+      customerName: publicName(order.customerName),
+      customerPhone: publicPhone(order.customerPhone),
+      customerAddress: order.customerAddress,
+      merchantName: order.merchant?.merchantName ?? null,
+      status: currentStatusLabel(order.location),
+      driverNotes: extractDriverNotes(order.notes),
+      timeline,
+      deliveredAt: order.deliveredAt,
+      updatedAt: order.updatedAt,
+    });
+  } catch (error) {
+    console.error("[GET /api/track/<token>/<orderId>] Error:", error);
+    return NextResponse.json(
+      { error: "Unable to load tracking information" },
+      { status: 500 },
+    );
+  }
 }

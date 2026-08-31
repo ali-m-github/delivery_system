@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // ─── PATCH /api/admin/orders/returns ────────────────────────────────────────
 // Bulk transition for the Return/Exchange Lifecycle State Machine:
@@ -122,9 +122,9 @@ export async function PATCH(request: Request) {
       newStatus,
     });
   } catch (error: any) {
-    console.error("[PATCH /api/admin/orders/returns] Error:", error.message);
+    console.error("[PATCH /api/admin/orders/returns] Error:", error);
     return NextResponse.json(
-      { error: "Internal Server Error", details: error.message },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }

@@ -1,27 +1,24 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import bcrypt from "bcryptjs";
 import prisma from "@/lib/prisma";
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/jwt";
 
 export async function PATCH(request: Request) {
   try {
     // ── Extract & verify session token ──────────────────────────────────
     const cookieStore = await cookies();
-    const token = cookieStore.get("session")?.value;
+    const token = cookieStore.get(SESSION_COOKIE)?.value;
 
     if (!token) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    let userId: string;
-    try {
-      const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-      const { payload } = await jwtVerify(token, secret);
-      userId = payload.id as string;
-    } catch {
+    const payload = await verifySessionToken(token);
+    if (!payload) {
       return NextResponse.json({ error: "Invalid session" }, { status: 401 });
     }
+    const userId = payload.id;
 
     // ── Parse request body ──────────────────────────────────────────────
     const { currentPassword, newPassword } = await request.json();

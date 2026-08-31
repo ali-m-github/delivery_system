@@ -1,28 +1,25 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import prisma from "@/lib/prisma";
 import { loadDriverRateTable, enrichPayoutOrdersWithCommission } from "@/lib/commission";
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/jwt";
 
 // GET /api/driver/my-payouts — Fetch payouts for the logged-in driver only
 export async function GET(request: Request) {
   try {
     // ── Read & verify session cookie ──
     const cookieStore = await cookies();
-    const token = cookieStore.get("session")?.value;
+    const token = cookieStore.get(SESSION_COOKIE)?.value;
 
     if (!token) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    let userId: string;
-    try {
-      const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-      const { payload } = await jwtVerify(token, secret);
-      userId = payload.id as string;
-    } catch {
+    const payload = await verifySessionToken(token);
+    if (!payload) {
       return NextResponse.json({ error: "Invalid token" }, { status: 401 });
     }
+    const userId = payload.id;
 
     // ── Resolve driver profile ──
     const driverProfile = await prisma.driverProfile.findUnique({

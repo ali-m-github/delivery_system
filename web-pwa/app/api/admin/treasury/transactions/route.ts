@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // GET /api/admin/treasury/transactions — List treasury transactions with an
 // optional status filter (e.g. ?status=PENDING_APPROVAL). Used by the Treasury
@@ -40,8 +40,11 @@ export async function GET(request: Request) {
     });
 
     return NextResponse.json(transactions, { status: 200 });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("GET treasury transactions error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }

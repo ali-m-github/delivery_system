@@ -168,24 +168,24 @@ export async function PATCH(request: Request) {
           success: true,
           order: updatedOrder,
         });
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error(
           `[PATCH /api/orders/bulk] Item ${id} failed:`,
-          error.message,
+          error,
         );
         results.push({
           id,
           success: false,
-          error: error.message || "Failed to update order",
+          error: "Failed to update order",
         });
       }
     }
 
     return NextResponse.json({ results }, { status: 200 });
-  } catch (error: any) {
-    console.error("[PATCH /api/orders/bulk] Error:", error.message);
+  } catch (error: unknown) {
+    console.error("[PATCH /api/orders/bulk] Error:", error);
     return NextResponse.json(
-      { error: "Internal Server Error", details: error.message },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }

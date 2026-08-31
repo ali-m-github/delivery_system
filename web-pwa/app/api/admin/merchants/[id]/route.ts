@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { isImageFile, saveMerchantLogo } from "@/lib/logoUpload";
 import { requireServerPermission } from "@/lib/server-permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // Helper: read a string field from a FormData payload (empty → null)
 function formString(formData: FormData, key: string): string | null {
@@ -180,6 +180,9 @@ export async function PATCH(
         { status: 404 },
       );
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }

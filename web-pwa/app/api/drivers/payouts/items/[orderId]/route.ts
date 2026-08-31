@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import {
   loadDriverRateTable,
   recalcPayoutTotals,
 } from "@/lib/commission";
 import { requireServerPermission } from "@/lib/server-permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // POST /api/drivers/payouts/items/[orderId] — Rollback a single order out of its payout batch
 export async function POST(

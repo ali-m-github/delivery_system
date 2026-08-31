@@ -1,7 +1,6 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
-import { jwtVerify } from "jose";
 import prisma from "@/lib/prisma";
+import { getSessionUser } from "@/lib/server-permissions";
 import DashboardApprovals from "@/components/DashboardApprovals";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -14,23 +13,9 @@ function daysAgo(date: Date): number {
 // ── Server Component ───────────────────────────────────────────────────────
 export default async function DashboardPage() {
   // ── Auth (server-side cookie read) ──────────────────────────────────────
-  const cookieStore = await cookies();
-  const token = cookieStore.get("session")?.value;
-
-  let user: { userId: string; role: string; username?: string } | null = null;
-  if (token) {
-    try {
-      const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-      const { payload } = await jwtVerify(token, secret);
-      user = {
-        userId: (payload as any).userId,
-        role: (payload as any).role,
-        username: (payload as any).username,
-      };
-    } catch {
-      user = null;
-    }
-  }
+  // Reads the session, verifies it, and loads the CURRENT user record from the
+  // database (role + username), so no stale token claims are trusted.
+  const user = await getSessionUser();
 
   // ── Prisma Queries ──────────────────────────────────────────────────────
   // 1. Active orders (not yet delivered or returned)

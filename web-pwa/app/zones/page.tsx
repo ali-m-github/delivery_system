@@ -1,21 +1,18 @@
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import prisma from "@/lib/prisma";
-import { verifySessionToken } from "@/helpers/auth";
+import { getSessionUser } from "@/lib/server-permissions";
 import ZonesClient from "./ZonesClient";
 
 // ─── Server Component ─────────────────────────────────────────────────────────
 export default async function ZonesPage() {
-  // Admin role check via session cookie
-  const cookieStore = await cookies();
-  const sessionToken = cookieStore.get("session")?.value;
-
-  if (!sessionToken) {
+  // Admin role check against the CURRENT database role (not the stale
+  // 24-hour token claim) so a role change is reflected immediately.
+  const user = await getSessionUser();
+  if (!user) {
     redirect("/login");
   }
 
-  const payload = await verifySessionToken(sessionToken);
-  if (!payload || payload.role !== "ADMIN") {
+  if (user.role !== "ADMIN") {
     redirect("/dashboard");
   }
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import {
   loadDriverRateTable,
   recalcPayoutTotals,
@@ -7,8 +7,12 @@ import {
   PAID_OUT_ELIGIBLE_STATUSES,
 } from "@/lib/commission";
 import { requireAuthenticatedSession } from "@/lib/server-permissions";
+import {
+  withConcurrencyRetries,
+  ConcurrencyConflictError,
+} from "@/lib/concurrency";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // GET /api/drivers/[id]/payouts — Fetch all pending DriverPayouts for a driver
 export async function GET(
@@ -100,7 +104,7 @@ export async function POST(
           mode: "insensitive",
         },
       },
-      select: { id: true, userId: true },
+      select: { id: true, userId: true, driverId: true },
     });
 
     if (!profile) {
@@ -161,82 +165,112 @@ export async function POST(
     const safeTotalUsd = parseFloat(String(totals.totalUsd)) || 0;
     const safeTotalLbp = parseFloat(String(totals.totalLbp)) || 0;
     const safeCommissionUsd = parseFloat(String(totals.commissionUsd)) || 0;
-    let safeNetUsd = parseFloat(String(totals.netUsd)) || 0;
+    const safeNetUsd = parseFloat(String(totals.netUsd)) || 0;
 
-    // Fetch driver's carried debt to inject into this payout
-    const driverProfile = await prisma.driverProfile.findUnique({
-      where: { id: driverId },
-      select: { carriedDebtUsd: true, carriedDebtLbp: true },
-    });
-
-    const carriedDebtUsd = driverProfile?.carriedDebtUsd ?? 0;
-    const carriedDebtLbp = driverProfile?.carriedDebtLbp ?? 0;
-
-    // Inject carried debt into the net amount the driver owes
-    safeNetUsd += carriedDebtUsd;
-
-    // Count existing payouts for this driver to generate sequential index
-    const priorCount = await prisma.driverPayout.count({ where: { driverId } });
-    const seqIndex = priorCount + 1;
-
-    // Generate human-readable payoutReference: driverId (e.g. D001) - sequence (e.g. 001)
-    const driverProfileForRef = await prisma.driverProfile.findUnique({
-      where: { id: driverId },
-      select: { driverId: true },
-    });
-    const payoutReference = `${driverProfileForRef!.driverId}-${String(seqIndex).padStart(3, "0")}`;
-
-    // Create the payout record and update orders in a transaction
-    const payout = await prisma.$transaction(async (tx) => {
-      const payoutRecord = await tx.driverPayout.create({
-        data: {
-          driverId,
-          sequentialIndex: seqIndex,
-          payoutReference,
-          totalUsd: safeTotalUsd,
-          totalLbp: safeTotalLbp,
-          commissionUsd: safeCommissionUsd,
-          netUsd: safeNetUsd,
-          totalCollected: safeTotalUsd,
-          previousDebtUsd: carriedDebtUsd,
-          previousDebtLbp: carriedDebtLbp,
-          status: "PENDING",
-          createdById: createdById ?? undefined,
-        },
-      });
-
-      // Link orders to this payout batch — keep financialStatus as "WD" (With Driver).
-      // Status must NOT change here. It only transitions to "WO" (With Office)
-      // when cash is physically received during the settlement step.
-      await tx.order.updateMany({
-        where: {
-          id: { in: orderIds },
-          driverId,
-          location: "DELIVERED",
-          financialStatus: { in: PAID_OUT_ELIGIBLE_STATUSES },
-        },
-        data: {
-          driverPayoutId: payoutRecord.id,
-          // financialStatus remains "WD" — enforced in settlement route
-        },
-      });
-
-      // Zero out the driver's carried debt since it's now encapsulated in this payout
-      if (carriedDebtUsd > 0 || carriedDebtLbp > 0) {
-        await tx.driverProfile.update({
+    // Carried debt, the sequential index and the payout reference are all
+    // generated INSIDE the transaction (below): reading/claiming them outside
+    // let concurrent creations reuse the same index or double-inject debt.
+    // The DB constraints (@@unique([driverId, sequentialIndex]) and
+    // @unique payoutReference) make collisions impossible; a P2002 from a
+    // lost race aborts the attempt and the whole unit of work is retried
+    // with a fresh read.
+    const payout = await withConcurrencyRetries(() =>
+      prisma.$transaction(async (tx) => {
+        // 1. Read the driver's carried debt fresh, inside the transaction.
+        const debt = await tx.driverProfile.findUnique({
           where: { id: driverId },
+          select: { carriedDebtUsd: true, carriedDebtLbp: true },
+        });
+        const carriedDebtUsd = debt?.carriedDebtUsd ?? 0;
+        const carriedDebtLbp = debt?.carriedDebtLbp ?? 0;
+
+        // Inject carried debt into the net amount the driver owes
+        const netUsd = safeNetUsd + carriedDebtUsd;
+
+        // 2. Next sequential index: max existing + 1 (gaps left by voided
+        //    payouts are allowed; count+1 would reuse indices after voids).
+        const last = await tx.driverPayout.findFirst({
+          where: { driverId },
+          orderBy: { sequentialIndex: "desc" },
+          select: { sequentialIndex: true },
+        });
+        const seqIndex = (last?.sequentialIndex ?? 0) + 1;
+
+        // Human-readable reference: driverId (e.g. D001) - sequence (e.g. 001).
+        // Uniqueness is enforced by the DB (@unique payoutReference).
+        const payoutReference = `${profile!.driverId}-${String(seqIndex).padStart(3, "0")}`;
+
+        // 3. Atomically CONSUME the carried debt (compare-and-swap): zero it
+        //    only if it still equals the value we just read. A concurrent
+        //    payout that consumed it first makes this match 0 rows, so this
+        //    attempt rolls back and retries — the second payout then injects
+        //    whatever debt remains. Either way the debt is injected exactly once.
+        if (carriedDebtUsd > 0 || carriedDebtLbp > 0) {
+          const consumed = await tx.driverProfile.updateMany({
+            where: {
+              id: driverId,
+              carriedDebtUsd: carriedDebtUsd,
+              carriedDebtLbp: carriedDebtLbp,
+            },
+            data: { carriedDebtUsd: 0, carriedDebtLbp: 0 },
+          });
+          if (consumed.count !== 1) {
+            throw new ConcurrencyConflictError(
+              "Driver's carried debt changed during payout creation",
+            );
+          }
+        }
+
+        // 4. Create the payout record.
+        const payoutRecord = await tx.driverPayout.create({
           data: {
-            carriedDebtUsd: 0,
-            carriedDebtLbp: 0,
+            driverId,
+            sequentialIndex: seqIndex,
+            payoutReference,
+            totalUsd: safeTotalUsd,
+            totalLbp: safeTotalLbp,
+            commissionUsd: safeCommissionUsd,
+            netUsd,
+            totalCollected: safeTotalUsd,
+            previousDebtUsd: carriedDebtUsd,
+            previousDebtLbp: carriedDebtLbp,
+            status: "PENDING",
+            createdById: createdById ?? undefined,
           },
         });
-      }
 
-      return tx.driverPayout.findUnique({
-        where: { id: payoutRecord.id },
-        include: { orders: true },
-      });
-    });
+        // 5. Claim the orders for this payout batch — keep financialStatus as
+        //    "WD" (With Driver). Status must NOT change here; it only
+        //    transitions to "WO" (With Office) when cash is physically
+        //    received during settlement. Only UNCLAIMED eligible orders are
+        //    linked (driverPayoutId: null) so a concurrent payout cannot
+        //    double-book the same order into two batches.
+        const claimedOrders = await tx.order.updateMany({
+          where: {
+            id: { in: orderIds },
+            driverId,
+            location: "DELIVERED",
+            financialStatus: { in: PAID_OUT_ELIGIBLE_STATUSES },
+            driverPayoutId: null,
+          },
+          data: {
+            driverPayoutId: payoutRecord.id,
+            // financialStatus remains "WD" — enforced in settlement route
+          },
+        });
+
+        if (claimedOrders.count !== orders.length) {
+          throw new Error(
+            "One or more orders are already part of another payout batch or are no longer eligible.",
+          );
+        }
+
+        return tx.driverPayout.findUnique({
+          where: { id: payoutRecord.id },
+          include: { orders: true },
+        });
+      })
+    );
 
     return NextResponse.json(payout, { status: 201 });
   } catch (error) {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
-import { resolveZoneForAddress } from "@/lib/zoneMatcher";
+import { createZoneMatchContext, matchZoneInContext } from "@/lib/zoneMatcher";
 
 // ─── POST /api/admin/orders/move-from-cp ──────────────────────────────────────
 // Moves one or more orders from the "CP" (customer pickup) warehouse into the
@@ -52,10 +52,15 @@ export async function POST(request: Request) {
 
     let movedCount = 0;
 
+    // ── Load the zone matching data ONCE for the whole batch ──────────────
+    // (historically 3 queries per address; matching semantics unchanged)
+    const zoneCtx = await createZoneMatchContext();
+
     for (const order of orders) {
       try {
         // ── Resolve zone from the cities database (fallback zone "99") ──
-        const zoneId = await resolveZoneForAddress(order.customerAddress);
+        // Pure in-memory match against the batch's pre-loaded context.
+        const zoneId = matchZoneInContext(zoneCtx, order.customerAddress);
 
         const updated = await prisma.order.update({
           where: { id: order.id },

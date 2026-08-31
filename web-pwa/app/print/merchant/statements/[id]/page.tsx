@@ -1,9 +1,8 @@
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import prisma from "@/lib/prisma";
+import { getSessionUser } from "@/lib/server-permissions";
 import { PrintControls } from "./PrintControls";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -28,9 +27,10 @@ export default async function PrintMerchantStatementInvoicePage({
   const { id } = await params;
 
   // ── Authenticate the merchant from the session cookie ────────────────────
-  const cookieStore = await cookies();
-  const token = cookieStore.get("session")?.value;
-  if (!token) {
+  // Verifies the session and loads the CURRENT user record from the database
+  // (the role is not trusted from the stale 24-hour token claim).
+  const user = await getSessionUser();
+  if (!user) {
     return (
       <div className="p-8 text-center text-red-600 text-sm font-medium">
         Unauthorized
@@ -41,25 +41,19 @@ export default async function PrintMerchantStatementInvoicePage({
   let merchantId = "";
   let merchantName = "";
   let authError: string | null = null;
-  try {
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-    const { payload } = await jwtVerify(token, secret);
-    if (payload.role !== "MERCHANT") {
-      authError = "Forbidden";
+  if (user.role !== "MERCHANT") {
+    authError = "Forbidden";
+  } else {
+    const merchant = await prisma.merchant.findUnique({
+      where: { userId: user.id },
+      select: { id: true, merchantName: true },
+    });
+    if (!merchant) {
+      authError = "No merchant profile linked to your account";
     } else {
-      const merchant = await prisma.merchant.findUnique({
-        where: { userId: payload.id as string },
-        select: { id: true, merchantName: true },
-      });
-      if (!merchant) {
-        authError = "No merchant profile linked to your account";
-      } else {
-        merchantId = merchant.id;
-        merchantName = merchant.merchantName;
-      }
+      merchantId = merchant.id;
+      merchantName = merchant.merchantName;
     }
-  } catch {
-    authError = "Invalid or expired session";
   }
 
   if (authError) {

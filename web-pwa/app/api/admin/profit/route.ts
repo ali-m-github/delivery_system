@@ -199,7 +199,6 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         error: "Failed to load profit overview",
-        details: error instanceof Error ? error.message : String(error),
       },
       { status: 500 },
     );

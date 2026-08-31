@@ -67,10 +67,10 @@ export async function POST(request: NextRequest) {
       },
       { status: 200 },
     );
-  } catch (error: any) {
-    console.error("[POST /api/orders/bulk/lookup] Error:", error.message);
+  } catch (error: unknown) {
+    console.error("[POST /api/orders/bulk/lookup] Error:", error);
     return NextResponse.json(
-      { error: "Internal Server Error", details: error.message },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }

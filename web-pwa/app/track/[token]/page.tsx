@@ -112,12 +112,8 @@ function toCustomerMessage(entry: HistoryEntry): {
 // Helpers
 // ──────────────────────────────────────────────
 
-function maskName(fullName: string): string {
-  const parts = fullName.trim().split(/\s+/);
-  if (parts.length <= 1) return parts[0];
-  const last = parts[parts.length - 1];
-  return parts.slice(0, -1).join(" ") + " " + last.charAt(0) + ".";
-}
+// The API now returns an already-masked customer name (PII hardening).
+// Display it as-is; nothing here may re-introduce unmasked PII.
 
 function isException(location: string): boolean {
   const loc = location.toUpperCase();
@@ -330,7 +326,7 @@ export default function TrackOrderPage() {
             Customer
           </span>
           <span className="text-white text-sm">
-            {maskName(data.customerName)}
+            {data.customerName}
           </span>
         </div>
 

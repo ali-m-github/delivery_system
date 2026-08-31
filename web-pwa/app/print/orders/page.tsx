@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import {
   computeOrderCommission,
   loadDriverRateTable,
@@ -6,7 +6,7 @@ import {
 } from "@/lib/commission";
 import { PdfDownloadTrigger } from "./PdfDownloadTrigger";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface EnrichedOrder {

@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
+import { requireServerRole } from "@/lib/server-permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // ─── PATCH /api/merchant/orders/import-sheet/config ───────────────────────────
 // Saves/overwrites the merchant's Google Sheets import template (startRow +
@@ -12,30 +11,14 @@ const prisma = new PrismaClient();
 export async function PATCH(request: Request) {
   try {
     // ── Authenticate via session cookie ──────────────────────────────────
-    const cookieStore = await cookies();
-    const token = cookieStore.get("session")?.value;
-    if (!token) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-    let payload: { id: string; role: string };
-    try {
-      const verified = await jwtVerify(token, secret);
-      payload = verified.payload as { id: string; role: string };
-    } catch {
-      return NextResponse.json(
-        { error: "Invalid or expired token" },
-        { status: 401 },
-      );
-    }
-
-    if (payload.role !== "MERCHANT") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+    // The role is re-read from the database (not the stale 24-hour token
+    // claim) so a role change takes effect immediately.
+    const auth = await requireServerRole(request, "MERCHANT");
+    if (auth instanceof Response) return auth;
+    const user = auth.user;
 
     const merchant = await prisma.merchant.findUnique({
-      where: { userId: payload.id },
+      where: { userId: user.id },
       select: { id: true },
     });
 
@@ -76,13 +59,12 @@ export async function PATCH(request: Request) {
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error: unknown) {
-    const err = error as { message?: string };
     console.error(
       "[PATCH /api/merchant/orders/import-sheet/config] Error:",
       error,
     );
     return NextResponse.json(
-      { error: "Internal Server Error", details: err.message || String(error) },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }

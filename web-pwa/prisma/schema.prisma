@@ -133,7 +133,7 @@ model DriverSellerRate {
 
 model MerchantPayout {
   id              String @id @default(uuid())
-  sequentialIndex Int    @default(1)
+  sequentialIndex Int    @unique @default(1)
 
   // Relation to Merchant
   merchantId String
@@ -372,7 +372,7 @@ model DriverPayout {
 
   status          String @default("PENDING")
   sequentialIndex Int    @default(1)
-  payoutReference String? // Human-readable ID like D001-001
+  payoutReference String? @unique // Human-readable ID like D001-001
   totalUsd        Float  @default(0)
   totalLbp        Float  @default(0)
   commissionUsd   Float  @default(0)
@@ -408,6 +408,10 @@ model DriverPayout {
   // The authenticated user who created this payout batch (admin or driver)
   createdById String?
   createdBy   User?   @relation("DriverPayoutCreatedBy", fields: [createdById], references: [id])
+
+  // A driver cannot have two payouts with the same sequence number
+  // (guards against max+1 / count+1 races under concurrent creation and voids).
+  @@unique([driverId, sequentialIndex])
 }
 
 model OrderHistory {
@@ -450,7 +454,7 @@ model TreasuryTransaction {
   amountUsd   Float    @default(0)
   amountLbp   Float    @default(0)
   description String?
-  reference   String?  // Human-readable transaction ID like TX-0001
+  reference   String?  @unique // Human-readable transaction ID like TX-0001
   referenceId String?  // ID of the DriverPayout or MerchantPayout (statement)
   userId      String?
   user        User?    @relation(fields: [userId], references: [id])

@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { computeOrderProfit, resolveDriverSellerException } from "@/lib/profit";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
 import { requireServerPermission } from "@/lib/server-permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // ============================================================
 // GET /api/admin/merchants/[id]/cash-payouts
@@ -146,10 +146,10 @@ export async function GET(
       },
       { status: 200 },
     );
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("CashPayouts GET Error:", error);
     return NextResponse.json(
-      { error: "Internal Server Error", details: error.message },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }
@@ -362,10 +362,10 @@ export async function POST(
     });
 
     return NextResponse.json(batch, { status: 201 });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("CashPayouts POST Error:", error);
     return NextResponse.json(
-      { error: "Internal Server Error", details: error.message },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }

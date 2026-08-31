@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import Papa from "papaparse";
 import { generateTrackTokens } from "@/lib/tracking";
 import { requireServerPermission } from "@/lib/server-permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // ─── POST /api/admin/orders/import-sheet ────────────────────────────────────────
 // Imports orders from a public Google Sheet CSV for a Cash Seller.
@@ -252,7 +252,6 @@ export async function POST(request: Request) {
         {
           error:
             "Some orders have duplicate tracking IDs. The import was partially applied (duplicates skipped).",
-          details: error.meta,
         },
         { status: 400 },
       );
@@ -261,7 +260,6 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error: "Internal Server Error",
-        details: error.message || String(error),
       },
       { status: 500 },
     );

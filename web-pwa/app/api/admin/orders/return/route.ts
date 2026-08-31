@@ -189,9 +189,9 @@ export async function PATCH(request: Request) {
       missing: missingIds,
     });
   } catch (error: any) {
-    console.error("[PATCH /api/admin/orders/return] Error:", error.message);
+    console.error("[PATCH /api/admin/orders/return] Error:", error);
     return NextResponse.json(
-      { error: "Internal Server Error", details: error.message },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }

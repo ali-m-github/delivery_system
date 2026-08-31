@@ -18,59 +18,62 @@ import {
 export async function GET(request: NextRequest) {
   const auth = await requireAuthenticatedSession(request);
   if (auth instanceof Response) return auth;
+
+  // Request-derived pagination + filters are computed outside the try so the
+  // error fallback below can reuse them and keep the response shape stable.
+  const { searchParams } = new URL(request.url);
+
+  // Pagination defaults
+  const skip = Math.max(0, parseInt(searchParams.get("skip") || "0", 10));
+  const take = Math.min(
+    5000,
+    Math.max(1, parseInt(searchParams.get("take") || "500", 10)),
+  );
+
+  // Optional server-side filters
+  const location = searchParams.get("location");
+  const search = searchParams.get("search");
+  const dateFrom = searchParams.get("dateFrom");
+  const dateTo = searchParams.get("dateTo");
+  const zoneId = searchParams.get("zoneId");
+  const financialStatus = searchParams.get("financialStatus");
+  const isArchived = searchParams.get("isArchived");
+
+  // Build where clause from filters
+  const where: Record<string, unknown> = {};
+  if (location) where.location = location;
+  // Archive filter: only include the currently-viewed set (active vs archived)
+  if (isArchived === "true" || isArchived === "false") {
+    where.isArchived = isArchived === "true";
+  }
+  if (financialStatus) {
+    // Support comma-separated statuses (e.g. "RWD,EWD") for combined views
+    const statuses = financialStatus
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (statuses.length === 1) {
+      where.financialStatus = statuses[0];
+    } else if (statuses.length > 1) {
+      where.financialStatus = { in: statuses };
+    }
+  }
+  if (zoneId) where.zoneId = zoneId;
+  if (dateFrom || dateTo) {
+    const createdAt: Record<string, Date> = {};
+    if (dateFrom) createdAt.gte = new Date(dateFrom);
+    if (dateTo) createdAt.lte = new Date(dateTo);
+    where.createdAt = createdAt;
+  }
+  if (search) {
+    where.OR = [
+      { orderId: { contains: search, mode: "insensitive" } },
+      { customerName: { contains: search, mode: "insensitive" } },
+      { customerPhone: { contains: search, mode: "insensitive" } },
+    ];
+  }
+
   try {
-    const { searchParams } = new URL(request.url);
-
-    // Pagination defaults
-    const skip = Math.max(0, parseInt(searchParams.get("skip") || "0", 10));
-    const take = Math.min(
-      5000,
-      Math.max(1, parseInt(searchParams.get("take") || "500", 10)),
-    );
-
-    // Optional server-side filters
-    const location = searchParams.get("location");
-    const search = searchParams.get("search");
-    const dateFrom = searchParams.get("dateFrom");
-    const dateTo = searchParams.get("dateTo");
-    const zoneId = searchParams.get("zoneId");
-    const financialStatus = searchParams.get("financialStatus");
-    const isArchived = searchParams.get("isArchived");
-
-    // Build where clause from filters
-    const where: Record<string, unknown> = {};
-    if (location) where.location = location;
-    // Archive filter: only include the currently-viewed set (active vs archived)
-    if (isArchived === "true" || isArchived === "false") {
-      where.isArchived = isArchived === "true";
-    }
-    if (financialStatus) {
-      // Support comma-separated statuses (e.g. "RWD,EWD") for combined views
-      const statuses = financialStatus
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (statuses.length === 1) {
-        where.financialStatus = statuses[0];
-      } else if (statuses.length > 1) {
-        where.financialStatus = { in: statuses };
-      }
-    }
-    if (zoneId) where.zoneId = zoneId;
-    if (dateFrom || dateTo) {
-      const createdAt: Record<string, Date> = {};
-      if (dateFrom) createdAt.gte = new Date(dateFrom);
-      if (dateTo) createdAt.lte = new Date(dateTo);
-      where.createdAt = createdAt;
-    }
-    if (search) {
-      where.OR = [
-        { orderId: { contains: search, mode: "insensitive" } },
-        { customerName: { contains: search, mode: "insensitive" } },
-        { customerPhone: { contains: search, mode: "insensitive" } },
-      ];
-    }
-
     // Tab badges need totals from the database, not only the current page of
     // orders returned below. Keep the archive scope consistent with the view.
     const summaryWhere: Record<string, unknown> = {};
@@ -181,13 +184,60 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     console.error("[GET /api/orders] Query failed:", error.message);
 
-    // Fallback: Fetch basic order records if a relation field name changed in schema.prisma
+    // Fallback: if the full query failed (e.g. a relation field name changed
+    // in schema.prisma), serve the same response contract — { data, meta } —
+    // with a flat order list (relations omitted), so clients can still render
+    // and paginate. Do NOT change the shape to a bare array.
     try {
       const basicOrders = await prisma.order.findMany({
+        where,
         orderBy: { createdAt: "desc" },
-        take: 200,
+        skip,
+        take,
+        select: {
+          id: true,
+          orderId: true,
+          customerName: true,
+          customerPhone: true,
+          customerAddress: true,
+          zoneId: true,
+          hasExchange: true,
+          location: true,
+          financialStatus: true,
+          amountUsd: true,
+          amountLbp: true,
+          collectedUsd: true,
+          collectedLbp: true,
+          notes: true,
+          merchantId: true,
+          driverId: true,
+          waybillUrl: true,
+          trackToken: true,
+          isArchived: true,
+          packages: true,
+          extraShipping: true,
+          createdAt: true,
+          updatedAt: true,
+          dispatchedAt: true,
+          deliveredAt: true,
+        },
       });
-      return NextResponse.json(basicOrders, { status: 200 });
+      const basicTotal = await prisma.order.count({ where });
+      return NextResponse.json(
+        {
+          data: basicOrders,
+          meta: {
+            total: basicTotal,
+            rwdTotal: 0,
+            cpTotal: 0,
+            skip,
+            take,
+            hasMore: skip + basicOrders.length < basicTotal,
+            degraded: true,
+          },
+        },
+        { status: 200 },
+      );
     } catch (fallbackError: any) {
       console.error(
         "[GET /api/orders] Fallback query failed:",
@@ -286,7 +336,7 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json(
-      { error: "Internal Server Error", details: error.message },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }
@@ -822,9 +872,9 @@ export async function PATCH(request: Request) {
 
     return NextResponse.json(updatedOrder, { status: 200 });
   } catch (error: any) {
-    console.error("[PATCH /api/orders] Error:", error.message);
+    console.error("[PATCH /api/orders] Error:", error);
     return NextResponse.json(
-      { error: "Internal Server Error", details: error.message },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }

@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
+import { nextTreasuryReference } from "@/lib/sequences";
+import { withConcurrencyRetries, ConcurrencyConflictError } from "@/lib/concurrency";
+
+/** Thrown when a row was already processed by another request (CAS claim lost). */
+class AlreadyProcessedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AlreadyProcessedError";
+  }
+}
 
 // POST /api/statements/[id]/pay — Phase 1 (Pay) a statement into a cashbox.
 //
@@ -59,82 +69,113 @@ export async function POST(
     }
 
     // ── Execute pay in a transaction ───────────────────────────────────────
-    const result = await prisma.$transaction(async (tx) => {
-      // 1. Fetch the statement and guard against double payment
-      const statement = await tx.merchantPayout.findUnique({
-        where: { id: statementId },
-      });
+    const result = await withConcurrencyRetries(() =>
+      prisma.$transaction(async (tx) => {
+        // 1. Fetch the statement (error-message read; the atomic guard is the
+        //    CAS claim below, which re-evaluates the status under a row lock).
+        const statement = await tx.merchantPayout.findUnique({
+          where: { id: statementId },
+        });
 
-      if (!statement) {
-        throw new Error("Statement not found");
-      }
+        if (!statement) {
+          throw new Error("Statement not found");
+        }
 
-      if (
-        statement.paymentStatus === "PAID" ||
-        statement.paymentStatus === "PENDING_APPROVAL"
-      ) {
-        throw new Error(
-          "This statement is already paid or has a payment pending approval and cannot be paid twice.",
-        );
-      }
+        if (
+          statement.paymentStatus === "PAID" ||
+          statement.paymentStatus === "PENDING_APPROVAL"
+        ) {
+          throw new AlreadyProcessedError(
+            "This statement is already paid or has a payment pending approval and cannot be paid twice.",
+          );
+        }
 
-      // 2. Fetch the cashbox to determine transaction direction.
-      const box = await tx.treasuryBox.findUnique({
-        where: { id: treasuryBoxId },
-      });
+        // 2. Fetch the cashbox to determine transaction direction.
+        const box = await tx.treasuryBox.findUnique({
+          where: { id: treasuryBoxId },
+        });
 
-      if (!box) {
-        throw new Error("Treasury box not found");
-      }
+        if (!box) {
+          throw new Error("Treasury box not found");
+        }
 
-      // Sequential numeric reference (1, 2, 3, …) shared with the treasury ledger.
-      const existing = await tx.treasuryTransaction.findMany({
-        select: { reference: true },
-      });
-      const maxNum = existing.reduce((max, t) => {
-        const n = parseInt(String(t.reference ?? ""), 10);
-        return Number.isFinite(n) && n > max ? n : max;
-      }, 0);
-      const reference = String(maxNum + 1);
+        // 3. CLAIM the statement with a conditional update (compare-and-swap):
+        //    only UNPAID / REJECTED statements can be paid. Concurrent pay
+        //    requests serialize on the statement row lock; exactly one sees
+        //    count === 1. The loser rolls back with nothing persisted, and —
+        //    crucially — no treasury transaction was created for it yet.
+        const claimed = await tx.merchantPayout.updateMany({
+          where: {
+            id: statementId,
+            paymentStatus: { in: ["UNPAID", "REJECTED"] },
+          },
+          data: {
+            paymentStatus: "PENDING_APPROVAL",
+            amountPaidUsd: safeAmountUsd,
+            amountPaidLbp: safeAmountLbp,
+            treasuryBoxId,
+          },
+        });
 
-      // 3. Create the PENDING treasury transaction.
-      //    - Asset/income box (isPositive): paying the seller is money OUT.
-      //    - Liability/expense box (!isPositive): paying the seller reduces the
-      //      liability, recorded as IN. Either way, on approval the box balance
-      //      is deducted (see approve route).
-      const type = box.isPositive ? "OUT" : "IN";
-      const transaction = await tx.treasuryTransaction.create({
-        data: {
-          boxId: treasuryBoxId,
+        if (claimed.count !== 1) {
+          throw new AlreadyProcessedError(
+            "This statement is already paid or has a payment pending approval and cannot be paid twice.",
+          );
+        }
+
+        // 4. Allocate the reference from the DB sequence (O(1), atomic) —
+        //    only the winning claimant ever gets here, so no gap is created by
+        //    double-pay attempts.
+        const reference = await nextTreasuryReference(tx);
+
+        // 5. Create the PENDING treasury transaction.
+        //    - Asset/income box (isPositive): paying the seller is money OUT.
+        //    - Liability/expense box (!isPositive): paying the seller reduces the
+        //      liability, recorded as IN. Either way, on approval the box balance
+        //      is deducted (see approve route).
+        const type = box.isPositive ? "OUT" : "IN";
+        const transaction = await tx.treasuryTransaction.create({
+          data: {
+            boxId: treasuryBoxId,
+            type,
+            amountUsd: safeAmountUsd,
+            amountLbp: safeAmountLbp,
+            description: `Statement #${statement.sequentialIndex} payment`.trim(),
+            reference,
+            referenceId: statement.id,
+            userId: user.id,
+            status: "PENDING_APPROVAL",
+          },
+        });
+
+        // 6. Link the statement to the transaction. CAS again so a concurrent
+        //    rejection (which nulls treasuryTransactionId and returns the
+        //    statement to UNPAID) cannot be silently overwritten — if it
+        //    happens we roll back, including the transaction we just created.
+        const linked = await tx.merchantPayout.updateMany({
+          where: {
+            id: statementId,
+            paymentStatus: "PENDING_APPROVAL",
+            treasuryTransactionId: null,
+          },
+          data: { treasuryTransactionId: transaction.id },
+        });
+
+        if (linked.count !== 1) {
+          throw new ConcurrencyConflictError("Statement was modified during payment");
+        }
+
+        const updatedStatement = await tx.merchantPayout.findUniqueOrThrow({
+          where: { id: statementId },
+        });
+
+        return {
+          statement: updatedStatement,
+          transaction,
           type,
-          amountUsd: safeAmountUsd,
-          amountLbp: safeAmountLbp,
-          description: `Statement #${statement.sequentialIndex} payment`.trim(),
-          reference,
-          referenceId: statement.id,
-          userId: user.id,
-          status: "PENDING_APPROVAL",
-        },
-      });
-
-      // 4. Link the statement to the transaction and mark it pending approval.
-      const updatedStatement = await tx.merchantPayout.update({
-        where: { id: statementId },
-        data: {
-          paymentStatus: "PENDING_APPROVAL",
-          amountPaidUsd: safeAmountUsd,
-          amountPaidLbp: safeAmountLbp,
-          treasuryBoxId,
-          treasuryTransactionId: transaction.id,
-        },
-      });
-
-      return {
-        statement: updatedStatement,
-        transaction,
-        type,
-      };
-    });
+        };
+      })
+    );
 
     return NextResponse.json(
       {
@@ -146,9 +187,15 @@ export async function POST(
       { status: 200 },
     );
   } catch (error: any) {
+    if (error instanceof AlreadyProcessedError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 409 },
+      );
+    }
     console.error("POST /api/statements/[id]/pay error:", error);
     return NextResponse.json(
-      { error: error.message || "Internal Server Error" },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }

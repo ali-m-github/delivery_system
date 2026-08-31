@@ -1,30 +1,19 @@
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import { redirect } from "next/navigation";
 import prisma from "@/lib/prisma";
+import { getSessionUser } from "@/lib/server-permissions";
 import DriverClient from "./DriverClient";
 
 export default async function DriverPage() {
   // ── Read & verify session cookie ──────────────────────────────────────
-  const cookieStore = await cookies();
-  const token = cookieStore.get("session")?.value;
-
-  if (!token) {
-    redirect("/login");
-  }
-
-  let userId: string;
-  try {
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-    const { payload } = await jwtVerify(token, secret);
-    userId = payload.id as string;
-  } catch {
+  // Verifies the session and loads the CURRENT user record from the database.
+  const user = await getSessionUser();
+  if (!user) {
     redirect("/login");
   }
 
   // ── Fetch driver profile with zone assignments (with zone names) ────────
   const driverWithZones = await prisma.driverProfile.findUnique({
-    where: { userId },
+    where: { userId: user.id },
     include: {
       assignedZones: {
         include: {
@@ -92,7 +81,7 @@ export default async function DriverPage() {
 
   // ── Fetch driver profile with active deliveries & zone rates ──────────
   const driver = await prisma.driverProfile.findUnique({
-    where: { userId },
+    where: { userId: user.id },
     include: {
       deliveries: {
         where: deliveryWhere,
@@ -123,7 +112,7 @@ export default async function DriverPage() {
   // override. This keeps the driver's payout preview in sync with the
   // server-side commission calculation.
   const cashSellerRates = await prisma.driverCashSellerRate.findMany({
-    where: { driverId: userId },
+    where: { driverId: user.id },
     select: { merchantId: true, rateUsd: true },
   });
   const sellerRateMap = new Map<string, number>();

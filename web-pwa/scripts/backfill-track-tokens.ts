@@ -7,12 +7,15 @@
  * - Uses unique-constraint collision retry so no token is ever duplicated
  * - Idempotent: safe to re-run (only touches rows where trackToken IS NULL)
  */
+import { randomInt } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+// CSPRNG-backed 8-digit token (same shape as existing tokens, so issued
+// links are unguessable while legacy links keep working).
 function randomTrackToken(): string {
-  return String(10000000 + Math.floor(Math.random() * 90000000));
+  return String(10000000 + randomInt(0, 90000000));
 }
 
 async function uniqueToken(excludeId: string): Promise<string> {
@@ -24,10 +27,9 @@ async function uniqueToken(excludeId: string): Promise<string> {
     });
     if (!existing || existing.id === excludeId) return token;
   }
-  // Last resort: timestamp-derived suffix, retry on collision
+  // Last resort: another round of crypto-random 8-digit draws
   for (let attempt = 0; attempt < 20; attempt++) {
-    const token =
-      String(Date.now() % 90000000) + String(Math.floor(Math.random() * 10));
+    const token = randomTrackToken();
     const existing = await prisma.order.findUnique({
       where: { trackToken: token },
       select: { id: true },

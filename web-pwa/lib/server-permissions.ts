@@ -1,25 +1,19 @@
 import { cookies } from "next/headers";
 import prisma from "@/lib/prisma";
-import { verifySessionToken } from "@/helpers/auth";
+import {
+  SESSION_COOKIE,
+  getSessionToken,
+  verifySessionToken,
+} from "@/lib/jwt";
 import {
   hasPermission,
   isValidPermission,
   type PermissionedUser,
 } from "@/lib/permissions";
 
-// ─── Server-side session token extraction ─────────────────────────────────────
-// Extracts the `session` cookie from an incoming Next.js Request. Used instead
-// of `next/headers().cookies()` so this guard works in any route handler that
-// receives a raw `Request`.
-function getSessionToken(req: Request): string | null {
-  const cookieHeader = req.headers.get("cookie");
-  if (!cookieHeader) return null;
-  const match = cookieHeader.match(/(?:^|;\s*)session=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
 export type AuthenticatedUser = PermissionedUser & {
   id: string;
+  username: string;
   role: string;
 };
 
@@ -55,6 +49,7 @@ async function loadSessionUser(
     where: { id: payload.id },
     select: {
       id: true,
+      username: true,
       role: true,
       permissionGroup: { select: { permissions: true } },
       customPermissions: true,
@@ -118,6 +113,74 @@ export async function requireAuthenticatedSession(
   return loadSessionUser(req);
 }
 
+/**
+ * Role gate evaluated against the user's CURRENT database role (not the stale
+ * `role` claim baked into the 24-hour token). Use this whenever an endpoint's
+ * authorization depends on a role, so an admin's role change takes effect
+ * immediately without waiting for the token to expire.
+ *
+ * Returns a 401 `Response` when unauthenticated, a 403 `Response` when the
+ * user's DB role does not match, or `{ user }` when it does.
+ */
+export async function requireServerRole(
+  req: Request,
+  requiredRole: string,
+): Promise<Response | { user: AuthenticatedUser }> {
+  const auth = await loadSessionUser(req);
+  if (auth instanceof Response) return auth;
+  if (auth.user.role !== requiredRole) {
+    return forbiddenResponse();
+  }
+  return auth;
+}
+
+/**
+ * Authenticates the session token on a raw Request and loads the user record
+ * (with the current DB role + permissions) from the database.
+ *
+ * Returns the user on success, or `null` when the session is missing, invalid,
+ * expired, or the user no longer exists. Intended for server components that
+ * cannot return a `Response` (they redirect instead) — e.g. the `/zones` page.
+ */
+export async function getSessionUserFromToken(
+  req: Request,
+): Promise<AuthenticatedUser | null> {
+  const auth = await loadSessionUser(req);
+  return auth instanceof Response ? null : auth.user;
+}
+
+/**
+ * Like `getSessionUserFromToken`, but reads the `session` cookie from
+ * `next/headers` instead of a raw Request, for use in Server Components (and
+ * Server Actions) where no `Request` object is in scope.
+ *
+ * Returns the database user (current role + permissions) on success, or
+ * `null` when the session is missing, invalid, expired, or the user no longer
+ * exists. The role is the CURRENT database value, so a role change is
+ * reflected immediately.
+ */
+export async function getSessionUser(): Promise<AuthenticatedUser | null> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE)?.value;
+  if (!token) return null;
+
+  const payload = await verifySessionToken(token);
+  if (!payload?.id) return null;
+
+  const user = await prisma.user.findUnique({
+    where: { id: payload.id },
+    select: {
+      id: true,
+      username: true,
+      role: true,
+      permissionGroup: { select: { permissions: true } },
+      customPermissions: true,
+    },
+  });
+
+  return user ?? null;
+}
+
 // ─── Server-action guards ─────────────────────────────────────────────────────
 // Server actions cannot receive a raw `Request`, so these read the `session`
 // cookie via `next/headers` and surface failures by throwing `Error` — the
@@ -125,7 +188,7 @@ export async function requireAuthenticatedSession(
 
 async function loadActionUser(): Promise<AuthenticatedUser> {
   const cookieStore = await cookies();
-  const token = cookieStore.get("session")?.value;
+  const token = cookieStore.get(SESSION_COOKIE)?.value;
   if (!token) throw new Error("Unauthorized");
 
   const payload = await verifySessionToken(token);
@@ -135,6 +198,7 @@ async function loadActionUser(): Promise<AuthenticatedUser> {
     where: { id: payload.id },
     select: {
       id: true,
+      username: true,
       role: true,
       permissionGroup: { select: { permissions: true } },
       customPermissions: true,

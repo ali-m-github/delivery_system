@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { PrismaClient, VehicleType } from "@prisma/client";
+import { VehicleType } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { hashPassword } from "@/helpers/auth";
 import { requireServerPermission } from "@/lib/server-permissions";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // GET /api/admin/drivers — Fetch all drivers with user & zoneRates
 export async function GET(request: Request) {

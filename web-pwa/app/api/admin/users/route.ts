@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { hashPassword } from "@/helpers/auth";
 import { isImageFile, saveMerchantLogo } from "@/lib/logoUpload";
 import { requireServerPermission } from "@/lib/server-permissions";
@@ -9,7 +9,7 @@ import {
   unknownPermissions,
 } from "@/lib/permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 // Helper: read a string field from a FormData payload (empty → null)
 function formString(formData: FormData, key: string): string | null {

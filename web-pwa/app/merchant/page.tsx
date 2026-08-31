@@ -1,7 +1,6 @@
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { jwtVerify } from "jose";
 import prisma from "@/lib/prisma";
+import { getSessionUser } from "@/lib/server-permissions";
 import MerchantClient from "./MerchantClient";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -30,23 +29,10 @@ function normalizeSheetImportConfig(
 // 3. Fetches payout statements (non-cash sellers) / cash payout batches
 export default async function MerchantPage() {
   // ── Authenticate ────────────────────────────────────────────────────────
-  const cookieStore = await cookies();
-  const token = cookieStore.get("session")?.value;
-
-  if (!token) {
-    redirect("/login");
-  }
-
-  const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-  let payload: { id: string; role: string };
-  try {
-    const verified = await jwtVerify(token, secret);
-    payload = verified.payload as { id: string; role: string };
-  } catch {
-    redirect("/login");
-  }
-
-  if (payload.role !== "MERCHANT") {
+  // Verifies the session and loads the CURRENT user record from the database
+  // (the role is not trusted from the stale 24-hour token claim).
+  const user = await getSessionUser();
+  if (!user || user.role !== "MERCHANT") {
     redirect("/login");
   }
 
@@ -54,7 +40,7 @@ export default async function MerchantPage() {
   // merchant.findUnique by userId ensures this seller only sees their own data.
   // Full dataset fetched; all filtering now happens client-side.
   const merchant = await prisma.merchant.findUnique({
-    where: { userId: payload.id },
+    where: { userId: user.id },
     include: {
       orders: {
         include: {

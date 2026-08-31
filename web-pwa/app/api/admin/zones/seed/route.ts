@@ -243,12 +243,11 @@ export async function POST(request: Request) {
       },
       { status: 200 },
     );
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[POST /api/admin/zones/seed] Error:", error);
     return NextResponse.json(
       {
         error: "Seeding failed",
-        details: error.message || String(error),
       },
       { status: 500 },
     );

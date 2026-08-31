@@ -1,13 +1,22 @@
+import { randomInt } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 
 export const TRACKING_BASE =
   process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
 
 /**
- * Generate a random 8-digit token (10000000–99999999).
+ * Generate a cryptographically random 8-digit token (10000000–99999999).
+ *
+ * Uses `crypto.randomInt` (CSPRNG, unbiased) instead of `Math.random` so
+ * issued tokens cannot be predicted from previously observed ones.
+ *
+ * Compatibility: the token is still exactly 8 digits (same shape as every
+ * existing token in the database), so all existing tracking links
+ * `/track/<token>/<orderId>` continue to work unchanged — no migration or
+ * invalidation is needed. New orders simply get an unguessable token.
  */
 export function randomTrackToken(): string {
-  return String(10000000 + Math.floor(Math.random() * 90000000));
+  return String(10000000 + randomInt(0, 90000000));
 }
 
 /**
@@ -22,8 +31,17 @@ export async function generateTrackToken(): Promise<string> {
     });
     if (!existing) return token;
   }
-  // Extremely unlikely: fall back to a longer-ish random suffix of digits
-  return String(Date.now() % 90000000) + String(Math.floor(Math.random() * 10));
+  // Extremely unlikely: fall back to a crypto-random token with the same
+  // 8-digit shape (never a timestamp — that was guessable).
+  const fallback = (10000000 + randomInt(0, 90000000)).toString();
+  const existing = await prisma.order.findUnique({
+    where: { trackToken: fallback },
+    select: { id: true },
+  });
+  if (!existing) return fallback;
+  // Collision after 11 draws of a 90M space: surface loudly instead of
+  // returning a duplicate token.
+  throw new Error("Could not generate a unique tracking token");
 }
 
 /**
@@ -46,8 +64,7 @@ export async function generateTrackTokens(count: number): Promise<string[]> {
     });
     if (taken.length === 0) break;
     const takenSet = new Set(taken.map((t) => t.trackToken!));
-    // Replace colliding tokens with fresh ones
-    const replaced: string[] = [];
+    // Replace colliding tokens with fresh ones.
     let innerGuard = 0;
     for (const colliding of takenSet) {
       pool.delete(colliding);

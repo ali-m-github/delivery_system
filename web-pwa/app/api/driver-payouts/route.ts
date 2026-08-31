@@ -7,6 +7,7 @@ import {
   PAID_OUT_ELIGIBLE_STATUSES,
 } from "@/lib/commission";
 import { getSessionUserId } from "@/helpers/auth";
+import { withConcurrencyRetries } from "@/lib/concurrency";
 import { requireServerPermission } from "@/lib/server-permissions";
 
 /**
@@ -94,7 +95,12 @@ export async function POST(request: Request) {
       driverProfile?.userId,
     );
 
-    const result = await prisma.$transaction(async (tx) => {
+    // The per-driver @@unique([driverId, sequentialIndex]) constraint makes a
+    // max+1 race impossible: if two concurrent clear-batches both read the
+    // same max, the loser's INSERT gets P2002 and this whole attempt is
+    // retried with a fresh max (see lib/concurrency.ts).
+    const result = await withConcurrencyRetries(() =>
+      prisma.$transaction(async (tx) => {
       // All financial validation and totals computation happen INSIDE the
       // transaction, on rows locked for the duration of the batch. This is the
       // authoritative path: client-supplied money values are never read.
@@ -172,7 +178,8 @@ export async function POST(request: Request) {
       });
     }, {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-    });
+    })
+    );
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {

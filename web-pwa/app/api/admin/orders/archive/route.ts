@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
 export async function DELETE(request: Request) {
   const auth = await requireServerPermission(request, "MANAGE_ORDERS");
@@ -44,7 +44,7 @@ export async function DELETE(request: Request) {
   } catch (error: any) {
     console.error("Permanent Archive Deletion Error:", error);
     return NextResponse.json(
-      { error: error.message || "Failed to delete archived orders." },
+      { error: "Failed to delete archived orders." },
       { status: 500 },
     );
   }

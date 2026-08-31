@@ -1,8 +1,18 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
+import { nextTreasuryReference } from "@/lib/sequences";
+import { withConcurrencyRetries } from "@/lib/concurrency";
 
-const prisma = new PrismaClient();
+// Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
+
+/** Thrown when a row was already processed by another request (CAS claim lost). */
+class AlreadyProcessedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AlreadyProcessedError";
+  }
+}
 
 // POST /api/admin/drivers/payouts/[id]/approve — Phase 2 (Approve)
 // Moves a PENDING_APPROVAL payout to SETTLED and flips all associated orders
@@ -24,7 +34,8 @@ export async function POST(
       return NextResponse.json({ error: "Missing payoutId" }, { status: 400 });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await withConcurrencyRetries(() =>
+      prisma.$transaction(async (tx) => {
       // 1. Fetch the payout (with driver + treasury box) and verify it is
       //    awaiting approval.
       const payout = await tx.driverPayout.findUnique({
@@ -42,19 +53,29 @@ export async function POST(
       }
 
       if (payout.status !== "PENDING_APPROVAL") {
-        throw new Error(
+        throw new AlreadyProcessedError(
           "Payout is not awaiting approval. Only PENDING_APPROVAL payouts can be approved.",
         );
       }
 
-      // 2. Mark the payout as SETTLED
-      const updatedPayout = await tx.driverPayout.update({
-        where: { id: payoutId },
+      // 2. CLAIM the payout with a conditional update (compare-and-swap):
+      //    only a PENDING_APPROVAL payout can be approved. Concurrent approvals
+      //    serialize on the payout row lock; exactly one sees count === 1 and
+      //    posts the money, the losers roll back with nothing persisted — so
+      //    the cashbox can never be credited twice for the same payout.
+      const claimedPayout = await tx.driverPayout.updateMany({
+        where: { id: payoutId, status: "PENDING_APPROVAL" },
         data: {
           status: "SETTLED",
           clearedAt: new Date(),
         },
       });
+
+      if (claimedPayout.count !== 1) {
+        throw new AlreadyProcessedError(
+          "Payout is not awaiting approval. Only PENDING_APPROVAL payouts can be approved.",
+        );
+      }
 
       // 3. Update all orders tied to this payout: WD -> WO (With Office)
       const ordersUpdated = await tx.order.updateMany({
@@ -71,18 +92,10 @@ export async function POST(
       //    statement posts its own full amount to the cashbox chosen for it.
       //    Statements are only marked PAID here, in Phase 2.
       let transactionId: string | null = null;
-      let statementTransactionIds: string[] = [];
+      const statementTransactionIds: string[] = [];
 
-      // Sequential numeric reference: next number after the highest existing
-      // one (1, 2, 3, …). Resistant to deletions leaving gaps.
-      const existing = await tx.treasuryTransaction.findMany({
-        select: { reference: true },
-      });
-      const maxNum = existing.reduce((max, t) => {
-        const n = parseInt(String(t.reference ?? ""), 10);
-        return Number.isFinite(n) && n > max ? n : max;
-      }, 0);
-      let nextReference = maxNum + 1;
+      // References are allocated from a PostgreSQL sequence (O(1), atomic,
+      // deletion-tolerant) — one call per treasury transaction created below.
 
       const driverName = `${payout.driver?.firstName ?? ""} ${
         payout.driver?.lastName ?? ""
@@ -113,26 +126,22 @@ export async function POST(
               (statementDetail
                 ? ` — statements paid within: ${statementDetail}.`
                 : ""),
-            reference: String(nextReference),
+            reference: await nextTreasuryReference(tx),
             referenceId: payout.id,
             userId: user.id,
           },
         });
-        nextReference += 1;
         transactionId = created.id;
 
-        const box = await tx.treasuryBox.findUnique({
+        // Credit the box ATOMICALLY (increment) — the ledger record and the
+        // balance change commit or roll back together.
+        await tx.treasuryBox.update({
           where: { id: payout.treasuryBoxId },
+          data: {
+            balanceUsd: { increment: fullPayoutUsd },
+            balanceLbp: { increment: fullPayoutLbp },
+          },
         });
-        if (box) {
-          await tx.treasuryBox.update({
-            where: { id: payout.treasuryBoxId },
-            data: {
-              balanceUsd: box.balanceUsd + fullPayoutUsd,
-              balanceLbp: box.balanceLbp + fullPayoutLbp,
-            },
-          });
-        }
       } else {
         // Payouts settled before the treasuryBoxId field existed have no box
         // stored. Surface it so the missing posting is not silent.
@@ -165,36 +174,46 @@ export async function POST(
             amountLbp: stmt.netLbp ?? 0,
             description:
               `Statement #${stmt.sequentialIndex} — paid by Driver ${driverName} (${driverId}) via payout ${payoutLabel}.`.trim(),
-            reference: String(nextReference),
+            reference: await nextTreasuryReference(tx),
             referenceId: stmt.id,
             userId: user.id,
           },
         });
-        nextReference += 1;
         statementTransactionIds.push(created.id);
 
-        const stmtBox = await tx.treasuryBox.findUnique({
+        // Credit the statement's box ATOMICALLY (increment).
+        await tx.treasuryBox.update({
           where: { id: stmt.treasuryBoxId },
+          data: {
+            balanceUsd: { increment: stmt.netUsd ?? 0 },
+            balanceLbp: { increment: stmt.netLbp ?? 0 },
+          },
         });
-        if (stmtBox) {
-          await tx.treasuryBox.update({
-            where: { id: stmt.treasuryBoxId },
-            data: {
-              balanceUsd: stmtBox.balanceUsd + (stmt.netUsd ?? 0),
-              balanceLbp: stmtBox.balanceLbp + (stmt.netLbp ?? 0),
-            },
-          });
-        }
 
         // Mark the statement PAID and link the transaction that paid it.
-        await tx.merchantPayout.update({
-          where: { id: stmt.id },
+        // CAS: only statements still in PENDING_APPROVAL (held by the payout
+        // settle step) are transitioned, so a concurrent statement payment
+        // cannot be silently overwritten.
+        const claimedStmt = await tx.merchantPayout.updateMany({
+          where: {
+            id: stmt.id,
+            paymentStatus: "PENDING_APPROVAL",
+          },
           data: {
             paymentStatus: "PAID",
             treasuryTransactionId: created.id,
           },
         });
+        if (claimedStmt.count !== 1) {
+          throw new Error(
+            `Statement #${stmt.sequentialIndex} was modified concurrently during payout approval`,
+          );
+        }
       }
+
+      const updatedPayout = await tx.driverPayout.findUniqueOrThrow({
+        where: { id: payoutId },
+      });
 
       return {
         payout: updatedPayout,
@@ -202,7 +221,8 @@ export async function POST(
         transactionId,
         statementTransactionIds,
       };
-    });
+      })
+    );
 
     return NextResponse.json(
       {
@@ -217,9 +237,15 @@ export async function POST(
       { status: 200 },
     );
   } catch (error: any) {
+    if (error instanceof AlreadyProcessedError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 409 },
+      );
+    }
     console.error("POST /api/admin/drivers/payouts/[id]/approve error:", error);
     return NextResponse.json(
-      { error: error.message || "Internal Server Error" },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { computeOrderProfit, resolveDriverSellerException } from "@/lib/profit";
+import { grossUsd, grossLbp } from "@/lib/commission";
+import { withConcurrencyRetries } from "@/lib/concurrency";
 import {
   requireAuthenticatedSession,
   requireServerPermission,
@@ -120,13 +122,12 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. Generate a GLOBALLY-unique sequential index so statement numbers never
-    //    collide across sellers (e.g., CashTest #1 vs Tloba #1). The next index
-    //    is the max across ALL statements + 1.
-    const lastPayout = await prisma.merchantPayout.findFirst({
-      orderBy: { sequentialIndex: "desc" },
-    });
-    const nextIndex = lastPayout ? lastPayout.sequentialIndex + 1 : 1;
+    // 2. The GLOBALLY-unique sequential index (so statement numbers never
+    //    collide across sellers, e.g., CashTest #1 vs Tloba #1) is computed
+    //    INSIDE the transaction below — max across ALL statements + 1 — so a
+    //    concurrent creation cannot land between the read and the INSERT.
+    //    The new MerchantPayout.sequentialIndex unique constraint turns any
+    //    remaining race into a P2002, which withConcurrencyRetries re-runs.
 
     // 3. Execute the Atomic Transaction
     // An atomic transaction ensures that if the orders fail to update, the statement is NOT created (preventing ghost ledgers).
@@ -141,8 +142,8 @@ export async function POST(req: Request) {
     // requested order ID does not belong to the merchant or is not in the
     // eligible WO state, the whole batch is rejected and rolled back — a
     // statement is never created from a partial match.
-    const transaction = await prisma.$transaction(
-      async (tx) => {
+    const transaction = await withConcurrencyRetries(() =>
+      prisma.$transaction(async (tx) => {
         // A0. Merchant must exist (also rejects cross-merchant spoofing early).
         const merchant = await tx.merchant.findUnique({
           where: { id: merchantId },
@@ -180,13 +181,15 @@ export async function POST(req: Request) {
         }
 
         // ── Server-derived financials (client values are NEVER trusted) ─────
-        // Gross collected per order: DB `collected*`, falling back to the
-        // order amount — the same rule the UI and the delivery flow apply.
+        // Gross collected per order via the authoritative grossUsd/grossLbp
+        // rule (lib/commission.ts): a POSITIVE `collected*` is authoritative,
+        // otherwise the order amount — the schema default for collected* is 0,
+        // so a `??` fallback alone would under-report the ledger total.
         let totalUsd = 0;
         let totalLbp = 0;
         for (const o of orders) {
-          totalUsd += o.collectedUsd ?? o.amountUsd ?? 0;
-          totalLbp += o.collectedLbp ?? o.amountLbp ?? 0;
+          totalUsd += grossUsd(o);
+          totalLbp += grossLbp(o);
         }
 
         // Shipping deducted from the seller, per order, from the merchant's
@@ -244,6 +247,14 @@ export async function POST(req: Request) {
         }
 
         // A. Create the Payout Ledger Entry
+        // Next global index, read inside the transaction (max + 1 across all
+        // statements). The unique constraint on sequentialIndex plus the P2002
+        // retry guarantee two concurrent statements never get the same number.
+        const lastPayout = await tx.merchantPayout.findFirst({
+          orderBy: { sequentialIndex: "desc" },
+        });
+        const nextIndex = lastPayout ? lastPayout.sequentialIndex + 1 : 1;
+
         const payout = await tx.merchantPayout.create({
           data: {
             merchantId,
@@ -280,7 +291,8 @@ export async function POST(req: Request) {
       },
       {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      },
+      }
+    )
     );
 
     return NextResponse.json(transaction, { status: 201 });
