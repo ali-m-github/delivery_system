@@ -1,14 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import { notifyCustomerStatusChange } from "@/lib/notifications";
 import { generateTrackToken } from "@/lib/tracking";
 import { createExchangeOrderFromDelivered } from "@/lib/exchange";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
+import {
+  loadDriverRateTable,
+  recalcPayoutTotals,
+} from "@/lib/commission";
+import {
+  requireAuthenticatedSession,
+  requireServerPermission,
+} from "@/lib/server-permissions";
 
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
 export async function GET(request: NextRequest) {
+  const auth = await requireAuthenticatedSession(request);
+  if (auth instanceof Response) return auth;
   try {
     const { searchParams } = new URL(request.url);
 
@@ -194,6 +203,8 @@ export async function GET(request: NextRequest) {
 
 // ─── POST /api/orders ─────────────────────────────────────────────────────────
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "ORDERS_CREATE");
+  if (auth instanceof Response) return auth;
   try {
     const body = await request.json();
     const finalZoneId = body.zoneId || body.selectedZoneId;
@@ -212,12 +223,8 @@ export async function POST(request: Request) {
         { status: 400 },
       );
 
-    const adminUser = await prisma.user.findFirst({ where: { role: "ADMIN" } });
-    if (!adminUser)
-      return NextResponse.json(
-        { error: "System Admin not found" },
-        { status: 400 },
-      );
+    // Attribute the order to the authenticated creator (server-side).
+    const creatorId = auth.user.id;
 
     const parsedPrice = parseFloat(finalPrice);
     const amountUsd = isNaN(parsedPrice) ? 0 : parsedPrice;
@@ -249,7 +256,7 @@ export async function POST(request: Request) {
         hasExchange: body.hasExchange === true || body.hasExchange === "true",
         amountUsd: amountUsd,
         extraShipping: extraShipping,
-        creatorId: adminUser.id,
+        creatorId,
         notes: body.notes || null,
         merchantId: body.merchantId || null,
         driverId: body.driverId || null,
@@ -258,7 +265,7 @@ export async function POST(request: Request) {
           create: {
             action: "Order Created",
             location: "WAREHOUSE",
-            userId: adminUser.id,
+            userId: creatorId,
           },
         },
       },
@@ -286,20 +293,110 @@ export async function POST(request: Request) {
 }
 
 // ─── PATCH /api/orders ────────────────────────────────────────────────────────
-export async function PATCH(request: Request) {
-  try {
-    const body = await request.json();
-    const {
-      id,
-      price,
-      status,
-      extraShipping,
-      currentUserActionId,
-      driverActionLog,
-      ...updateData
-    } = body;
+//
+// Security model:
+// - The request must be authenticated. The actor (user id + role) is taken
+//   exclusively from the database user behind the verified session. No field
+//   in the body is authoritative for who is acting (`currentUserActionId` and
+//   `status` are accepted for compatibility but never trusted).
+// - Only the whitelisted fields below are written. Everything else in the body
+//   is ignored — payout/identity fields (driverPayoutId, merchantPayoutId,
+//   cashPayoutBatchId, returnDeductionBatchId, creatorId, trackToken, ...) are
+//   owned by the payout/returns admin workflows and can never be set here.
+// - `financialStatus` and `orderId` are derived server-side from the resulting
+//   location. Client-sent values are ignored. `orderIdForFinancialStatus` is
+//   kept because the admin returns / cash-payout workflows rely on the RTS "R"
+//   suffix. The response returns the full updated order, including the result.
+// - WO (cleared payout) orders and orders tied to an open driver payout can
+//   only be modified here by an ADMIN — otherwise a crafted field could
+//   silently unlink the order from a pending payout or fabricate a status.
+// - DRIVERS may only touch their own orders (or unassigned orders being
+//   assigned to themselves). MERCHANTS may only touch their own orders.
 
-    if (!id)
+const STAFF_UPDATABLE_FIELDS = new Set<string>([
+  "customerName",
+  "customerPhone",
+  "customerAddress",
+  "notes",
+  "packages",
+  "extraShipping",
+  "amountUsd",
+  "amountLbp",
+  "collectedUsd",
+  "collectedLbp",
+  "location",
+  "driverId",
+  "merchantId",
+  "zoneId",
+  "hasExchange",
+  "isArchived",
+  "deliveredAt",
+  "dispatchedAt",
+]);
+
+const DRIVER_UPDATABLE_FIELDS = new Set<string>([
+  "location",
+  "driverId",
+  "collectedUsd",
+  "collectedLbp",
+  "notes",
+]);
+
+const DRIVER_ALLOWED_LOCATIONS = new Set<string>([
+  "DELIVERED",
+  "RETURN",
+  "WITH_DRIVER",
+  "ASSIGNED",
+]);
+
+const MERCHANT_UPDATABLE_FIELDS = new Set<string>([
+  "customerName",
+  "customerPhone",
+  "customerAddress",
+  "notes",
+  "packages",
+  "amountUsd",
+  "amountLbp",
+]);
+
+function parseFiniteNumber(value: unknown): number | null {
+  let num: number;
+  if (typeof value === "number") {
+    num = value;
+  } else if (typeof value === "string" && value.trim() !== "") {
+    num = parseFloat(value);
+  } else {
+    return null;
+  }
+  return Number.isFinite(num) ? num : null;
+}
+
+export async function PATCH(request: Request) {
+  const auth = await requireAuthenticatedSession(request);
+  if (auth instanceof Response) return auth;
+  try {
+    let body: Record<string, unknown>;
+    try {
+      const parsed: unknown = await request.json();
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return NextResponse.json(
+          { error: "Request body must be a JSON object" },
+          { status: 400 },
+        );
+      }
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid JSON body" },
+        { status: 400 },
+      );
+    }
+
+    const { id, price, driverActionLog } = body;
+    // NOTE: `status` and `currentUserActionId` may arrive in the body for
+    // legacy/compat reasons; they are intentionally never read or written.
+
+    if (!id || typeof id !== "string")
       return NextResponse.json(
         { error: "Order id is required" },
         { status: 400 },
@@ -309,11 +406,184 @@ export async function PATCH(request: Request) {
     if (!existing)
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
 
-    // ── Block driver reassignment on delivered / paid-out orders ─────────
+    const actor = auth.user; // DB-verified user: { id, role, ... }
+    const actorIsAdmin = actor.role === "ADMIN";
+
+    // ── Role scoping: which orders this actor may touch, with which fields ─
+    let allowedFields: Set<string>;
+    let actionDriverId: string | null = null;
+
+    if (actor.role === "DRIVER") {
+      const driverProfile = await prisma.driverProfile.findUnique({
+        where: { userId: actor.id },
+        select: { id: true },
+      });
+      if (!driverProfile) {
+        return NextResponse.json(
+          { error: "Driver account has no driver profile" },
+          { status: 403 },
+        );
+      }
+      actionDriverId = driverProfile.id;
+      const isOwnOrder = existing.driverId === driverProfile.id;
+      const isSelfPickup =
+        existing.driverId === null && body.driverId === driverProfile.id;
+      if (!isOwnOrder && !isSelfPickup) {
+        return NextResponse.json(
+          { error: "Drivers can only update their own orders" },
+          { status: 403 },
+        );
+      }
+      allowedFields = DRIVER_UPDATABLE_FIELDS;
+    } else if (actor.role === "MERCHANT") {
+      const merchant = await prisma.merchant.findUnique({
+        where: { userId: actor.id },
+        select: { id: true },
+      });
+      if (!merchant || existing.merchantId !== merchant.id) {
+        return NextResponse.json(
+          { error: "Merchants can only update their own orders" },
+          { status: 403 },
+        );
+      }
+      allowedFields = MERCHANT_UPDATABLE_FIELDS;
+    } else {
+      // ADMIN and staff (USER) share the staff whitelist.
+      allowedFields = STAFF_UPDATABLE_FIELDS;
+    }
+
+    // ── Financial state protection (evaluated before any mutation) ─────────
+    // WO = cleared in the payout workflow. Any change here must be an explicit
+    // admin action (the returns endpoint is the normal path).
+    if (existing.financialStatus === "WO" && !actorIsAdmin) {
+      return NextResponse.json(
+        {
+          error: `Only administrators can modify orders with status "WO" (cleared payout). Contact an admin to roll back this order.`,
+        },
+        { status: 403 },
+      );
+    }
+    // Orders tied to an open driver payout are owned by the payout workflow:
+    // a location change here would silently unlink them from the PENDING
+    // payout and recalculate totals, so only admins may do it via this endpoint.
+    if (existing.driverPayoutId !== null && !actorIsAdmin) {
+      return NextResponse.json(
+        {
+          error:
+            "Orders in a pending driver payout can only be modified by administrators. Use the payout or returns section first.",
+        },
+        { status: 403 },
+      );
+    }
+
+    // ── Whitelist extraction (unknown / forbidden fields are ignored) ──────
+    // Unchecked update input: scalar FKs (driverId, merchantId, ...) directly.
+    const data: Prisma.OrderUncheckedUpdateInput = {};
+    for (const key of allowedFields) {
+      const value = body[key];
+      if (value !== undefined) {
+        (data as Record<string, unknown>)[key] = value;
+      }
+    }
+
+    // ── Numeric validation (reject NaN / non-finite / negative values) ─────
+    const numericFields = [
+      "amountUsd",
+      "amountLbp",
+      "extraShipping",
+      "collectedUsd",
+      "collectedLbp",
+    ] as const;
+    for (const field of numericFields) {
+      if (data[field] !== undefined) {
+        const parsed = parseFiniteNumber(data[field]);
+        if (parsed === null || parsed < 0) {
+          return NextResponse.json(
+            { error: `Invalid value for ${field}` },
+            { status: 400 },
+          );
+        }
+        (data as Record<string, unknown>)[field] = parsed;
+      }
+    }
+
+    // Legacy `price` alias → amountUsd (only when amountUsd was not sent).
+    if (price !== undefined && data.amountUsd === undefined) {
+      const parsed = parseFiniteNumber(price);
+      if (parsed === null || parsed < 0) {
+        return NextResponse.json(
+          { error: "Invalid value for price" },
+          { status: 400 },
+        );
+      }
+      data.amountUsd = parsed;
+    }
+
+    if (data.packages !== undefined) {
+      const parsed = Number(data.packages);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1000000) {
+        return NextResponse.json(
+          { error: "Invalid value for packages" },
+          { status: 400 },
+        );
+      }
+      data.packages = parsed;
+    }
+
+    if (data.location !== undefined) {
+      if (typeof data.location !== "string" || data.location.trim() === "") {
+        return NextResponse.json(
+          { error: "Invalid value for location" },
+          { status: 400 },
+        );
+      }
+      data.location = data.location.trim();
+    }
+
+    // ── Role-specific field constraints ────────────────────────────────────
+    if (actor.role === "DRIVER") {
+      if (
+        data.location !== undefined &&
+        !DRIVER_ALLOWED_LOCATIONS.has(data.location)
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Drivers can only move their orders to DELIVERED, RETURN, WITH_DRIVER or ASSIGNED",
+          },
+          { status: 403 },
+        );
+      }
+      if (data.driverId === null) {
+        return NextResponse.json(
+          { error: "Drivers cannot unassign an order" },
+          { status: 403 },
+        );
+      }
+      if (
+        data.driverId !== undefined &&
+        data.driverId !== null &&
+        data.driverId !== actionDriverId
+      ) {
+        return NextResponse.json(
+          { error: "Drivers can only assign orders to themselves" },
+          { status: 403 },
+        );
+      }
+    }
+
+    if (data.isArchived === true && !actorIsAdmin) {
+      return NextResponse.json(
+        { error: "Only administrators can archive orders" },
+        { status: 403 },
+      );
+    }
+
+    // Block driver reassignment on delivered / paid-out orders (non-admins).
     if (
-      updateData.driverId !== undefined &&
-      existing.driverId !== updateData.driverId &&
-      existing.financialStatus &&
+      data.driverId !== undefined &&
+      data.driverId !== existing.driverId &&
+      !actorIsAdmin &&
       ["WD", "WO"].includes(existing.financialStatus)
     ) {
       return NextResponse.json(
@@ -324,111 +594,73 @@ export async function PATCH(request: Request) {
       );
     }
 
-    // ── Resolve authenticated userId, role & driverId from session cookie ─
-    const adminUser = await prisma.user.findFirst({ where: { role: "ADMIN" } });
-    let actionUserId = currentUserActionId || adminUser?.id;
-    let actionDriverId: string | null | undefined = undefined;
-    let sessionRole: string | null = null;
-
-    try {
-      const cookieStore = await cookies();
-      const token = cookieStore.get("session")?.value;
-      if (token) {
-        const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-        const { payload } = await jwtVerify(token, secret);
-        const sessionUserId = payload.id as string;
-        sessionRole = (payload.role as string) || null;
-        if (sessionUserId) {
-          if (!currentUserActionId) actionUserId = sessionUserId;
-          const driverProfile = await prisma.driverProfile.findUnique({
-            where: { userId: sessionUserId },
-            select: { id: true },
-          });
-          if (driverProfile) actionDriverId = driverProfile.id;
-        }
-      }
-    } catch {
-      // Session lookup is best-effort; fall back to body-supplied ids
-    }
-
-    // ── Admin-only guard: WO status change (cleared payout rollback) ──────
-    // Only admins can modify orders that are in a cleared payout (WO).
-    // Any non-admin attempt to update a WO order is rejected.
-    if (existing.financialStatus === "WO") {
-      const isAdmin = sessionRole === "ADMIN" || adminUser?.id === actionUserId;
-      if (!isAdmin) {
-        return NextResponse.json(
-          {
-            error: `Only administrators can modify orders with status "WO" (cleared payout). Contact an admin to roll back this order.`,
-          },
-          { status: 403 },
-        );
-      }
-    }
-
-    if (price !== undefined) updateData.amountUsd = parseFloat(price);
-    if (extraShipping !== undefined)
-      updateData.extraShipping = parseFloat(extraShipping);
-
-    if (updateData.collectedUsd !== undefined)
-      updateData.collectedUsd = parseFloat(updateData.collectedUsd) ?? 0;
-    if (updateData.collectedLbp !== undefined)
-      updateData.collectedLbp = parseFloat(updateData.collectedLbp) ?? 0;
-
     // --- SERVER-SIDE FINANCIAL STATUS SYNCHRONIZATION ---
-    // Enforce the correct financialStatus when location transitions,
-    // so the UI filter expectations (location + financialStatus) are always met.
-    // This is a safety net even if the client omits the field.
+    // financialStatus is derived from the resulting location. The value the
+    // client sends is ignored (accepted only for compatibility), so a crafted
+    // financialStatus can no longer fabricate WO/RTS/... states here.
     const changes: string[] = [];
-    if (updateData.location && updateData.location !== existing.location) {
-      if (updateData.location === "DELIVERED") {
+    const newLocation =
+      typeof data.location === "string" ? data.location : existing.location;
+    const locationChanged = newLocation !== existing.location;
+    const effectiveDriverId =
+      data.driverId !== undefined ? data.driverId : existing.driverId;
+
+    let newFinancialStatus = existing.financialStatus;
+    if (locationChanged) {
+      if (newLocation === "DELIVERED") {
         changes.push("Marked as Delivered");
         // Enforce WD (With Driver) — cash is now with driver upon delivery
-        updateData.financialStatus = "WD";
-        if (!updateData.deliveredAt) {
-          updateData.deliveredAt = new Date();
+        newFinancialStatus = "WD";
+        if (data.deliveredAt === undefined) {
+          data.deliveredAt = new Date();
         }
-        // Collected defaults to the original order amount unless the driver
+        // Collected defaults to the original order amount unless the caller
         // explicitly recorded a different collected price.
-        if (updateData.collectedUsd === undefined) {
-          updateData.collectedUsd = existing.amountUsd ?? 0;
+        if (data.collectedUsd === undefined) {
+          data.collectedUsd = existing.amountUsd ?? 0;
         }
-        if (updateData.collectedLbp === undefined) {
-          updateData.collectedLbp = existing.amountLbp ?? 0;
+        if (data.collectedLbp === undefined) {
+          data.collectedLbp = existing.amountLbp ?? 0;
         }
-      } else if (
-        updateData.location === "ASSIGNED" ||
-        updateData.location === "WITH_DRIVER"
-      ) {
+      } else if (newLocation === "ASSIGNED" || newLocation === "WITH_DRIVER") {
         // Order returned to driver (e.g., rolled back from payout).
         // Enforce UD — order is assigned to driver but not delivered.
         // WD is only for delivered orders in pending payout.
         // WO is for orders cleared from payout.
-        updateData.financialStatus = "UD";
+        newFinancialStatus = "UD";
         changes.push("Returned to Driver");
         // Clear delivered timestamp since the order is no longer delivered
-        if (existing.deliveredAt) {
-          updateData.deliveredAt = null;
+        if (existing.deliveredAt && data.deliveredAt === undefined) {
+          data.deliveredAt = null;
         }
-      } else if (updateData.location === "RETURN") {
+      } else if (newLocation === "RETURN") {
         changes.push("Marked as Return");
-        // Always enforce correct financialStatus based on driverId presence:
         // RWD = Return With Driver (driver still has the package)
         // Re  = Returned to warehouse (package is back at warehouse)
-        updateData.financialStatus = existing.driverId ? "RWD" : "Re";
-      } else if (updateData.location === "WAREHOUSE") {
+        // Use the effective driver (a same-request unassignment wins).
+        newFinancialStatus = effectiveDriverId ? "RWD" : "Re";
+      } else if (newLocation === "WAREHOUSE") {
         changes.push("Returned to Warehouse");
+        // Back in the warehouse => not delivered, back in the normal flow.
+        newFinancialStatus = "UD";
+      } else if (newLocation === "Archive" && data.isArchived === true) {
+        // Archiving is admin-only (see guard above). Keep the legacy behavior
+        // of marking archived orders with financialStatus "Arc" — the driver
+        // page excludes them via `financialStatus notIn [..., "Arc"]`.
+        changes.push("Archived");
+        newFinancialStatus = "Arc";
       } else {
-        changes.push(`Location changed to ${updateData.location}`);
+        changes.push(`Location changed to ${newLocation}`);
       }
     }
 
-    // Keep the persisted display ID synchronized with the current financial status.
-    const requestedOrderId =
-      typeof updateData.orderId === "string" ? updateData.orderId : existing.orderId;
-    updateData.orderId = orderIdForFinancialStatus(
-      requestedOrderId,
-      updateData.financialStatus ?? existing.financialStatus,
+    // Keep the persisted display ID synchronized with the current financial
+    // status. `orderId` is never writable from the client: it is always
+    // recomputed from the stored ID, so the RTS "R" suffix (relied on by the
+    // admin returns / cash-payout workflows) can never be forged or renamed.
+    const newOrderId = orderIdForFinancialStatus(
+      existing.orderId,
+      newFinancialStatus,
     );
 
     // ── Payout cleanup: Unlink + recalc when order removed from pending payout ─
@@ -436,11 +668,10 @@ export async function PATCH(request: Request) {
     // unlink it from the payout and recalculate totals.
     if (
       existing.driverPayoutId &&
-      updateData.location &&
-      updateData.location !== existing.location &&
-      updateData.location !== "DELIVERED"
+      locationChanged &&
+      newLocation !== "DELIVERED"
     ) {
-      updateData.driverPayoutId = null;
+      data.driverPayoutId = null;
       changes.push("Removed from Payout");
 
       // Fetch the payout to verify it's PENDING before recalculating
@@ -459,6 +690,8 @@ export async function PATCH(request: Request) {
             id: true,
             amountUsd: true,
             amountLbp: true,
+            collectedUsd: true,
+            collectedLbp: true,
             zoneId: true,
             merchantId: true,
           },
@@ -471,63 +704,24 @@ export async function PATCH(request: Request) {
           });
           changes.push("Payout deleted (no remaining orders)");
         } else {
-          // Recalculate totals from remaining orders
-          const newTotalUsd = remainingOrders.reduce(
-            (sum, o) => sum + (o.amountUsd ?? 0),
-            0,
+          // Recalculate totals from remaining orders through the
+          // authoritative commission module (same figures the payout
+          // creation wrote): gross = collected > 0 else amount,
+          // commission = seller exception → zone → $0, net = gross − fee.
+          const rateTable = await loadDriverRateTable(
+            prisma,
+            currentPayout.driverId,
           );
-          const newTotalLbp = remainingOrders.reduce(
-            (sum, o) => sum + (o.amountLbp ?? 0),
-            0,
-          );
-
-          // Recalculate commission using 3-tier logic
-          const zoneRates = await prisma.driverZoneRate.findMany({
-            where: { driverId: currentPayout.driverId || undefined },
-          });
-          const zoneRateMap = new Map(
-            zoneRates.map((zr) => [zr.zoneId, zr.rate]),
-          );
-
-          const driverProfile = await prisma.driverProfile.findUnique({
-            where: { id: currentPayout.driverId || undefined },
-            select: { userId: true },
-          });
-
-          const sellerRates = driverProfile?.userId
-            ? await prisma.driverSellerRate.findMany({
-                where: { driverId: currentPayout.driverId || undefined },
-              })
-            : [];
-
-          const sellerExceptionMap = new Map<string, number>();
-          // A $0 seller exception is still a valid override of the zonal rate.
-          for (const sr of sellerRates) {
-            sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
-          }
-
-          const newCommissionUsd = remainingOrders.reduce((sum, o) => {
-            const merchantId = String(o.merchantId ?? "");
-            const exceptionRate = merchantId
-              ? sellerExceptionMap.get(merchantId)
-              : undefined;
-            const commission =
-              exceptionRate !== undefined
-                ? exceptionRate
-                : (zoneRateMap.get(o.zoneId) ?? 0);
-            return sum + commission;
-          }, 0);
-
-          const newNetUsd = newTotalUsd - newCommissionUsd;
+          const recalced = recalcPayoutTotals(rateTable, remainingOrders);
 
           await prisma.driverPayout.update({
             where: { id: currentPayout.id },
             data: {
-              totalUsd: newTotalUsd,
-              totalLbp: newTotalLbp,
-              commissionUsd: newCommissionUsd,
-              netUsd: newNetUsd,
-              totalCollected: newTotalUsd,
+              totalUsd: recalced.totalUsd,
+              totalLbp: recalced.totalLbp,
+              commissionUsd: recalced.commissionUsd,
+              netUsd: recalced.netUsd,
+              totalCollected: recalced.totalCollected,
             },
           });
           changes.push("Payout totals recalculated");
@@ -538,83 +732,85 @@ export async function PATCH(request: Request) {
     // --- GRANULAR HISTORY LOGGING ---
 
     if (
-      updateData.driverId !== undefined &&
-      updateData.driverId !== existing.driverId
+      data.driverId !== undefined &&
+      data.driverId !== existing.driverId
     ) {
-      if (updateData.driverId === null) changes.push("Driver Unassigned");
+      if (data.driverId === null) changes.push("Driver Unassigned");
       else changes.push("Assigned to Driver");
     }
 
     if (
-      updateData.customerAddress !== undefined &&
-      updateData.customerAddress !== existing.customerAddress
+      data.customerAddress !== undefined &&
+      data.customerAddress !== existing.customerAddress
     ) {
       changes.push(
-        `Address: '${existing.customerAddress}' -> '${updateData.customerAddress}'`,
+        `Address: '${existing.customerAddress}' -> '${data.customerAddress}'`,
       );
     }
     if (
-      updateData.customerPhone !== undefined &&
-      updateData.customerPhone !== existing.customerPhone
+      data.customerPhone !== undefined &&
+      data.customerPhone !== existing.customerPhone
     ) {
       changes.push(
-        `Phone: '${existing.customerPhone}' -> '${updateData.customerPhone}'`,
+        `Phone: '${existing.customerPhone}' -> '${data.customerPhone}'`,
       );
     }
-    if (
-      updateData.amountUsd !== undefined &&
-      updateData.amountUsd !== existing.amountUsd
-    ) {
-      changes.push(`Price$: ${existing.amountUsd} -> ${updateData.amountUsd}`);
+    if (data.amountUsd !== undefined && data.amountUsd !== existing.amountUsd) {
+      changes.push(`Price$: ${existing.amountUsd} -> ${data.amountUsd}`);
+    }
+    if (data.amountLbp !== undefined && data.amountLbp !== existing.amountLbp) {
+      changes.push(`PriceLL: ${existing.amountLbp} -> ${data.amountLbp}`);
     }
     if (
-      updateData.amountLbp !== undefined &&
-      updateData.amountLbp !== existing.amountLbp
-    ) {
-      changes.push(`PriceLL: ${existing.amountLbp} -> ${updateData.amountLbp}`);
-    }
-    if (
-      updateData.collectedUsd !== undefined ||
-      updateData.collectedLbp !== undefined
+      data.collectedUsd !== undefined ||
+      data.collectedLbp !== undefined
     ) {
       changes.push(
-        `Collected: $${updateData.collectedUsd ?? existing.collectedUsd} | LL${updateData.collectedLbp ?? existing.collectedLbp}`,
+        `Collected: $${data.collectedUsd ?? existing.collectedUsd} | LL${data.collectedLbp ?? existing.collectedLbp}`,
       );
     }
-    if (updateData.notes !== undefined && updateData.notes !== existing.notes) {
-      changes.push(`Note Added/Edited: ${updateData.notes}`);
+    if (data.notes !== undefined && data.notes !== existing.notes) {
+      changes.push(`Note Added/Edited: ${data.notes}`);
     }
 
-    const actionNote = driverActionLog
-      ? driverActionLog
-      : changes.length > 0
-        ? changes.join(" | ")
-        : "Order Updated";
+    const actionNote =
+      typeof driverActionLog === "string" && driverActionLog.trim() !== ""
+        ? driverActionLog
+        : changes.length > 0
+          ? changes.join(" | ")
+          : "Order Updated";
+
+    // History attribution: the acting user comes from the session; the
+    // driver recorded is the effective (post-update) driver of the order.
+    const historyDriverId: string | null =
+      data.driverId !== undefined
+        ? (data.driverId as string | null)
+        : existing.driverId;
 
     const updatedOrder = await prisma.order.update({
       where: { id },
       data: {
-        ...updateData,
+        ...data,
+        location: newLocation,
+        financialStatus: newFinancialStatus,
+        orderId: newOrderId,
         history: {
           create: {
             action: actionNote,
-            location: updateData.location || existing.location,
-            driverId:
-              actionDriverId ?? updateData.driverId ?? existing.driverId,
-            userId: actionUserId,
+            location: newLocation,
+            driverId: historyDriverId,
+            userId: actor.id,
           },
         },
       },
     });
 
-    const newLocation = updateData.location || existing.location;
-
     // ── Exchange orders ──────────────────────────────────────────────
     // When an exchange order (hasExchange) is delivered, create the
     // "<orderId>-Exchange" proof order (idempotent) so it shows up in the
     // driver's Returns/Exchange tab and can be moved to the returns warehouse.
-    if (newLocation === "DELIVERED" && existing.hasExchange && actionUserId) {
-      await createExchangeOrderFromDelivered(existing, actionUserId);
+    if (newLocation === "DELIVERED" && existing.hasExchange && actor.id) {
+      await createExchangeOrderFromDelivered(existing, actor.id);
     }
 
     notifyCustomerStatusChange(

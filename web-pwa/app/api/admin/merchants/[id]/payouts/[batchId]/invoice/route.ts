@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string; batchId: string }> },
 ) {
+  const auth = await requireServerPermission(request, "MANAGE_FINANCE");
+  if (auth instanceof Response) return auth;
   try {
     const { id: merchantId, batchId } = await context.params;
     const batchIdInt = parseInt(batchId, 10);

@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
 import { createExchangeOrderFromDelivered } from "@/lib/exchange";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
+import { requireAuthenticatedSession } from "@/lib/server-permissions";
 
 // ─── PATCH /api/orders/bulk ───────────────────────────────────────────────────
 export async function PATCH(request: Request) {
+  const auth = await requireAuthenticatedSession(request);
+  if (auth instanceof Response) return auth;
   try {
     const body = await request.json();
     const { items } = body as { items?: Array<Record<string, unknown>> };
@@ -18,37 +19,17 @@ export async function PATCH(request: Request) {
       );
     }
 
-    // ── Resolve authenticated user from session cookie ────────────────────
-    const adminUser = await prisma.user.findFirst({ where: { role: "ADMIN" } });
-    let actionUserId = adminUser?.id;
+    // ── Resolve authenticated user from the (required) session ────────────
+    // A valid session is mandatory (see guard above); unauthenticated requests
+    // can no longer fall back to acting as an admin.
+    const actionUserId = auth.user.id;
     let actionDriverId: string | null | undefined = undefined;
 
-    try {
-      const cookieStore = await cookies();
-      const token = cookieStore.get("session")?.value;
-      if (token) {
-        const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-        const { payload } = await jwtVerify(token, secret);
-        const sessionUserId = payload.id as string;
-        if (sessionUserId) {
-          actionUserId = sessionUserId;
-          const driverProfile = await prisma.driverProfile.findUnique({
-            where: { userId: sessionUserId },
-            select: { id: true },
-          });
-          if (driverProfile) actionDriverId = driverProfile.id;
-        }
-      }
-    } catch {
-      // Session lookup is best-effort; fall back to admin user
-    }
-
-    if (!actionUserId) {
-      return NextResponse.json(
-        { error: "Unable to resolve action user" },
-        { status: 401 },
-      );
-    }
+    const driverProfile = await prisma.driverProfile.findUnique({
+      where: { userId: actionUserId },
+      select: { id: true },
+    });
+    if (driverProfile) actionDriverId = driverProfile.id;
 
     // ── Process each item independently ───────────────────────────────────
     const results: Array<{

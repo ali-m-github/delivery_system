@@ -1,79 +1,57 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
+import {
+  loadDriverRateTable,
+  enrichPayoutOrdersWithCommission,
+} from "@/lib/commission";
 
-// Enrich orders with per-order driver commission (3-tier logic)
+// Enrich orders with per-order driver commission (authoritative precedence
+// from lib/commission.ts: seller exception (cash wins) → zone → $0).
+// Rate tables are loaded ONCE PER DRIVER (grouped), not per payout, so the
+// old N+1 per-payout rate loading is gone.
 async function enrichOrdersWithCommission(payouts: any[]) {
-  return Promise.all(
-    payouts.map(async (payout) => {
-      const driverId = payout.driverId;
-      const userId = payout.driver?.userId;
+  // Group payouts by driver so each driver's rate table is loaded once.
+  const byDriver = new Map<string, any[]>();
+  for (const payout of payouts) {
+    const group = byDriver.get(payout.driverId) ?? [];
+    group.push(payout);
+    byDriver.set(payout.driverId, group);
+  }
 
-      const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
-        prisma.driverZoneRate.findMany({ where: { driverId } }),
-        prisma.driverSellerRate.findMany({ where: { driverId } }),
-        userId
-          ? prisma.driverCashSellerRate.findMany({
-              where: { driverId: userId },
-            })
-          : Promise.resolve([]),
-      ]);
-
-      const zoneRateMap = new Map(
-        zoneRates.map((zr: any) => [zr.zoneId, zr.rate]),
+  // Load all rate tables in parallel (one per driver).
+  const tableByDriver = new Map<string, Awaited<ReturnType<typeof loadDriverRateTable>>>();
+  await Promise.all(
+    Array.from(byDriver.entries()).map(async ([driverId, driverPayouts]) => {
+      const userId = driverPayouts[0]?.driver?.userId;
+      tableByDriver.set(
+        driverId,
+        await loadDriverRateTable(prisma, driverId, userId),
       );
-      const sellerExceptionMap = new Map<string, number>();
-      // A $0 seller exception is still a valid override — it must override
-      // the zonal/default rate rather than falling through to it.
-      for (const sr of sellerRates) {
-        sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
-      }
-      for (const cr of cashSellerRates) {
-        sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
-      }
-
-      const ordersWithCommission = (payout.orders || []).map((order: any) => {
-        const orderMerchantId = String(order.merchantId ?? "");
-        const orderZoneId = String(order.zoneId);
-        const exceptionRate = orderMerchantId
-          ? sellerExceptionMap.get(orderMerchantId)
-          : undefined;
-        const driverCommissionUsd =
-          exceptionRate !== undefined
-            ? exceptionRate
-            : (zoneRateMap.get(orderZoneId) ?? 0);
-
-        // Normalize collected amounts — fallback to order amount when not explicitly set
-        const collectedUsd =
-          (order.collectedUsd ?? 0) > 0
-            ? order.collectedUsd
-            : (order.amountUsd ?? 0);
-        const collectedLbp =
-          (order.collectedLbp ?? 0) > 0
-            ? order.collectedLbp
-            : (order.amountLbp ?? 0);
-
-        return {
-          ...order,
-          collectedUsd,
-          collectedLbp,
-          driverCommissionUsd,
-          payoutId: payout.id,
-          payoutReference: payout.payoutReference || null,
-        };
-      });
-
-      return {
-        ...payout,
-        orders: ordersWithCommission,
-      };
     }),
   );
+
+  // Enrich while preserving the original payout order.
+  return payouts.map((payout) => {
+    const rateTable = tableByDriver.get(payout.driverId)!;
+    return {
+      ...payout,
+      orders: enrichPayoutOrdersWithCommission(rateTable, payout.orders || []).map(
+        (order: any) => ({
+          ...order,
+          payoutId: payout.id,
+          payoutReference: payout.payoutReference || null,
+        }),
+      ),
+    };
+  });
 }
 
 // GET /api/admin/drivers/settlements — Fetch PENDING DriverPayouts only.
 // Cleared payouts (PENDING_APPROVAL / SETTLED) are handled on the Cleared Payouts page.
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "DRIVERS_VIEW");
+  if (auth instanceof Response) return auth;
   try {
     // Fetch Active (Pending) Payouts
     const pendingPayouts = await prisma.driverPayout.findMany({

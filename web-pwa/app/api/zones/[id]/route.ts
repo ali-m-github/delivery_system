@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 // PATCH /api/zones/[id] — update zone base prices
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireServerPermission(request, "MANAGE_ZONES");
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await params;
     const body = await request.json();

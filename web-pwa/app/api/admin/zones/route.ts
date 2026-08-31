@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ZONES");
+  if (auth instanceof Response) return auth;
   try {
     const zones = await prisma.zone.findMany({
       include: {
@@ -30,6 +33,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ZONES");
+  if (auth instanceof Response) return auth;
   try {
     const { name, basePriceUsd, basePriceLbp } = await request.json();
 

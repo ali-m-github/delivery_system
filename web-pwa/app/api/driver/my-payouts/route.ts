@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
 import prisma from "@/lib/prisma";
+import { loadDriverRateTable, enrichPayoutOrdersWithCommission } from "@/lib/commission";
 
 // GET /api/driver/my-payouts — Fetch payouts for the logged-in driver only
 export async function GET(request: Request) {
@@ -95,47 +96,15 @@ export async function GET(request: Request) {
       orderBy,
     });
 
-    // Calculate per-order driver commission using the same 3-tier logic.
-    // A $0 seller exception is still a valid override of the zonal rate.
-    const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
-      prisma.driverZoneRate.findMany({ where: { driverId } }),
-      prisma.driverSellerRate.findMany({ where: { driverId } }),
-      prisma.driverCashSellerRate.findMany({ where: { driverId: userId } }),
-    ]);
+    // Per-order commission via the authoritative module (seller exception ∪
+    // cash-seller exception → zone → $0 default). A $0 seller exception is
+    // still a valid override of the zonal rate.
+    const rateTable = await loadDriverRateTable(prisma, driverId, userId);
 
-    const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
-    const sellerExceptionMap = new Map<string, number>();
-    for (const sr of sellerRates) {
-      sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
-    }
-    for (const cr of cashSellerRates) {
-      sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
-    }
-
-    const enrichedPayouts = payouts.map((payout) => {
-      const ordersWithCommission = payout.orders.map((order) => {
-        const orderMerchantId = String(order.merchantId ?? "");
-        const orderZoneId = String(order.zoneId);
-
-        const exceptionRate = orderMerchantId
-          ? sellerExceptionMap.get(orderMerchantId)
-          : undefined;
-        const driverCommissionUsd =
-          exceptionRate !== undefined
-            ? exceptionRate
-            : (zoneRateMap.get(orderZoneId) ?? 0);
-
-        return {
-          ...order,
-          driverCommissionUsd,
-        };
-      });
-
-      return {
-        ...payout,
-        orders: ordersWithCommission,
-      };
-    });
+    const enrichedPayouts = payouts.map((payout) => ({
+      ...payout,
+      orders: enrichPayoutOrdersWithCommission(rateTable, payout.orders),
+    }));
 
     return NextResponse.json(enrichedPayouts, { status: 200 });
   } catch (error) {

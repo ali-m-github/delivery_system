@@ -2,7 +2,13 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { DEFAULT_DRIVER_USD } from "@/lib/commission";
+import {
+  buildRateTableFromRates,
+  computeOrderCommission,
+  grossUsd,
+  grossLbp,
+  type DriverRateTable,
+} from "@/lib/commission";
 import SellerRateForm from "@/components/drivers/SellerRateForm";
 import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
@@ -295,44 +301,33 @@ export default function DriverProfilePage() {
     0,
   );
 
-  // ─── Zone-Based Commission Calculation ─────────────────────────────────
+  // ─── Commission Rate Table (authoritative module) ──────────────────────
+  // Built once per driver from the already-loaded rate rows, with the same
+  // precedence as every server-side ledger path: seller exception (cash-
+  // seller wins, $0 is a valid override) → zone rate → $0 system default.
   const driverZoneRates: {
     zoneId: string;
     zone: { id: string; name: string } | null;
     rate: number;
   }[] = driver?.zoneRates || [];
 
-  const zoneRateMap = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const zr of driverZoneRates) {
-      map.set(zr.zoneId, zr.rate);
-    }
-    return map;
-  }, [driverZoneRates]);
-
-  // ─── Seller Rate Exceptions Map (merchantId -> rateUsd) ────────────────
-  // Merges both DriverSellerRate AND DriverCashSellerRate exceptions.
-  // DriverCashSellerRate takes precedence for cash sellers.
-  const sellerExceptionMap = useMemo(() => {
-    const map = new Map<string, number>();
-    // First: DriverSellerRate (from "Seller Rate Exceptions" tab).
-    // A $0 exception is still a valid override — it must override the zonal
-    // rate rather than falling through to it.
-    const safeSellerRates = sellerRates || [];
-    for (const sr of safeSellerRates) {
-      map.set(sr.merchantId, sr.rateUsd);
-    }
-    // Second: DriverCashSellerRate (from driver.user, overrides for cash sellers)
-    const cashRates = driver?.user?.driverCashSellerRates || [];
-    for (const cr of cashRates) {
-      map.set(cr.merchantId, cr.rateUsd);
-    }
-    console.log(
-      "[Payout Pipeline] Seller Exception Map (merchantId → rateUsd):",
-      Array.from(map.entries()),
-    );
-    return map;
-  }, [sellerRates, driver]);
+  const rateTable: DriverRateTable = useMemo(
+    () =>
+      buildRateTableFromRates(String(driver?.id ?? ""), {
+        driverZoneRates: driver?.zoneRates || [],
+        driverSellerRates: (sellerRates || []).map((sr) => ({
+          merchantId: String(sr.merchantId),
+          rateUsd: sr.rateUsd,
+        })),
+        driverCashSellerRates: (driver?.user?.driverCashSellerRates || []).map(
+          (cr: { merchantId: unknown; rateUsd: number }) => ({
+            merchantId: String(cr.merchantId),
+            rateUsd: cr.rateUsd,
+          }),
+        ),
+      }),
+    [driver, sellerRates],
+  );
 
   const totalCommission = useMemo(() => {
     console.log(
@@ -341,29 +336,16 @@ export default function DriverProfilePage() {
       "delivered orders",
     );
     return deliveredOrders.reduce((sum: number, o: any) => {
-      // Force string conversion to prevent integer/string mismatch failures
-      const orderMerchantId = String(o.merchantId ?? o.merchant?.id);
-      const orderZoneId = String(o.zoneId);
-      // Tier 1: Seller Exception
-      const exceptionRate = orderMerchantId
-        ? sellerExceptionMap.get(orderMerchantId)
-        : undefined;
-      if (exceptionRate !== undefined) {
-        console.log(
-          `[Payout Pipeline] Order ${o.orderId} → Merch: ${orderMerchantId}, Using EXCEPTION rate: $${exceptionRate}`,
-        );
-        return sum + Number(exceptionRate || 0);
-      }
-      // Tier 2: Zone Rate
-      const zoneRate = zoneRateMap.get(orderZoneId);
-      // Tier 3: System default fallback
-      const rate = zoneRate !== undefined ? zoneRate : DEFAULT_DRIVER_USD;
+      const { usd, tier } = computeOrderCommission(rateTable, {
+        merchantId: o.merchantId ?? o.merchant?.id,
+        zoneId: String(o.zoneId),
+      });
       console.log(
-        `[Payout Pipeline] Order ${o.orderId} → Zone: ${orderZoneId}, Using ${zoneRate !== undefined ? "ZONE" : "DEFAULT"} rate: $${rate}`,
+        `[Payout Pipeline] Order ${o.orderId} → Merch: ${o.merchantId ?? o.merchant?.id ?? "—"}, Using ${tier.toUpperCase()} rate: $${usd}`,
       );
-      return sum + rate;
+      return sum + usd;
     }, 0);
-  }, [deliveredOrders, zoneRateMap, sellerExceptionMap]);
+  }, [deliveredOrders, rateTable]);
 
   const netPayoutUsd = totalDeliveredUsd - totalCommission;
 
@@ -385,32 +367,49 @@ export default function DriverProfilePage() {
   const hasValidClearSelection = selectedWdOrders?.length > 0;
 
   const settlement = useMemo(() => {
+    // Gross = collected when positive, else order amount (ledger rule).
     const totalCollectedUsd = selectedWdOrders.reduce(
-      (sum: number, o: any) => sum + (o.collectedUsd ?? o.amountUsd ?? 0),
+      (sum: number, o) => sum + grossUsd(o),
       0,
     );
     const totalCollectedLbp = selectedWdOrders.reduce(
-      (sum: number, o: any) => sum + (o.collectedLbp ?? o.amountLbp ?? 0),
+      (sum: number, o) => sum + grossLbp(o),
       0,
     );
     const commission = selectedWdOrders.reduce((sum: number, o: any) => {
-      // Seller Rate Exception overrides zone rate
-      const orderMerchantId = String(o.merchantId ?? o.merchant?.id ?? "");
-      const orderZoneId = String(o.zoneId ?? "");
-      const exceptionRate = orderMerchantId
-        ? sellerExceptionMap.get(orderMerchantId)
-        : undefined;
-      const zoneRate = zoneRateMap.get(orderZoneId);
-      // Tier 3: System default fallback
-      const rate = exceptionRate ?? zoneRate ?? DEFAULT_DRIVER_USD;
+      const { usd, tier } = computeOrderCommission(rateTable, {
+        merchantId: o.merchantId ?? o.merchant?.id,
+        zoneId: String(o.zoneId ?? ""),
+      });
       console.log(
-        `[Settlement Pipeline] Order ${o.orderId} → Merch: ${orderMerchantId}, Zone: ${orderZoneId}, Rate: $${rate}${exceptionRate !== undefined ? " (EXCEPTION)" : zoneRate !== undefined ? " (ZONE)" : " (DEFAULT)"}`,
+        `[Settlement Pipeline] Order ${o.orderId} → Merch: ${o.merchantId ?? o.merchant?.id ?? "—"}, Zone: ${o.zoneId ?? "—"}, Rate: $${usd} (${tier.toUpperCase()})`,
       );
-      return sum + rate;
+      return sum + usd;
     }, 0);
     const net = totalCollectedUsd - commission;
     return { totalCollectedUsd, totalCollectedLbp, commission, net };
-  }, [selectedWdOrders, zoneRateMap, sellerExceptionMap]);
+  }, [selectedWdOrders, rateTable]);
+
+  // ─── Payout-preview modal inputs ───────────────────────────────────────
+  // Gross-based totals (not raw amount) so the modal preview matches the
+  // server-computed payout totals exactly.
+  const deliveredGrossUsd = deliveredOrders.reduce(
+    (sum: number, o) => sum + grossUsd(o),
+    0,
+  );
+  const deliveredGrossLbp = deliveredOrders.reduce(
+    (sum: number, o) => sum + grossLbp(o),
+    0,
+  );
+  // Merged seller-exception list (cash wins) for the modal breakdown —
+  // the raw sellerRates list alone would omit cash-seller exceptions.
+  const mergedSellerRates = useMemo(
+    () =>
+      Array.from(rateTable.sellerExceptionMap.entries()).map(
+        ([merchantId, rateUsd]) => ({ merchantId, rateUsd }),
+      ),
+    [rateTable],
+  );
 
   // ─── Payout Submission ──────────────────────────────────────────────────
   const handleGeneratePayout = async () => {
@@ -2599,10 +2598,10 @@ export default function DriverProfilePage() {
         {showPayoutModal && (
           <ConfirmPayoutModal
             orders={deliveredOrders}
-            driverSellerRates={sellerRates}
+            driverSellerRates={mergedSellerRates}
             driverZoneRates={driverZoneRates}
-            totalUsd={totalDeliveredUsd}
-            totalLbp={totalDeliveredLbp}
+            totalUsd={deliveredGrossUsd}
+            totalLbp={deliveredGrossLbp}
             carriedDebtUsd={driver?.carriedDebtUsd ?? 0}
             carriedDebtLbp={driver?.carriedDebtLbp ?? 0}
             onConfirm={handleGeneratePayout}

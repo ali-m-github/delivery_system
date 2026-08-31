@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import {
+  loadDriverRateTable,
+  recalcPayoutTotals,
+} from "@/lib/commission";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -8,20 +13,17 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ orderId: string }> },
 ) {
+  const auth = await requireServerPermission(request, "DRIVERS_PAYOUT");
+  if (auth instanceof Response) return auth;
   try {
     const resolvedParams = await params;
     const { orderId } = resolvedParams;
 
-    // Fetch the order with its zone and driver info to calculate commission
+    // Fetch the order with its driver info (needed to build the commission
+    // rate table for the recalculation below)
     const order = await prisma.order.findUnique({
       where: { id: orderId },
-      include: {
-        driver: {
-          include: {
-            zoneRates: true,
-          },
-        },
-      },
+      select: { id: true, driverId: true, driverPayoutId: true },
     });
 
     if (!order) {
@@ -37,15 +39,12 @@ export async function POST(
 
     const driverPayoutId = order.driverPayoutId;
     const driverId = order.driverId;
-
-    // Calculate commission for this order using 3-tier logic:
-    // Tier 1: Seller exception rate, Tier 2: Zone rate, Tier 3: $0
-    const orderMerchantId = String(order.merchantId ?? "");
-    const orderZoneId = String(order.zoneId);
-    const zoneRate = order.driver?.zoneRates?.find(
-      (zr: { zoneId: string; rate: number }) => zr.zoneId === orderZoneId,
-    );
-    const orderCommission = zoneRate?.rate ?? 0;
+    if (!driverId) {
+      return NextResponse.json(
+        { error: "Order has no assigned driver" },
+        { status: 400 },
+      );
+    }
 
     // Execute the rollback in a transaction
     const result = await prisma.$transaction(async (tx) => {
@@ -61,9 +60,19 @@ export async function POST(
         },
       });
 
-      // 2. Fetch remaining orders still linked to this payout
+      // 2. Fetch remaining orders still linked to this payout (only the
+      // financial fields the recalculation needs)
       const remainingOrders = await tx.order.findMany({
         where: { driverPayoutId },
+        select: {
+          id: true,
+          amountUsd: true,
+          amountLbp: true,
+          collectedUsd: true,
+          collectedLbp: true,
+          zoneId: true,
+          merchantId: true,
+        },
       });
 
       if (remainingOrders.length === 0) {
@@ -74,62 +83,21 @@ export async function POST(
         return { deleted: true, payoutId: driverPayoutId };
       }
 
-      // 3b. Orders remain — recalculate sums from the remaining orders
-      const newTotalUsd = remainingOrders.reduce(
-        (sum, o) => sum + (o.amountUsd ?? 0),
-        0,
-      );
-      const newTotalLbp = remainingOrders.reduce(
-        (sum, o) => sum + (o.amountLbp ?? 0),
-        0,
-      );
-      const newTotalCollected = newTotalUsd;
-
-      // Recalculate commission using 3-tier logic: seller exception > zone rate > $0
-      const zoneRates = await tx.driverZoneRate.findMany({
-        where: { driverId: driverId || undefined },
-      });
-      const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
-
-      // Also fetch seller exception rates for the driver
-      const driverProfile = await tx.driverProfile.findUnique({
-        where: { id: driverId || undefined },
-        select: { userId: true },
-      });
-
-      const sellerRates = driverProfile?.userId
-        ? await tx.driverSellerRate.findMany({
-            where: { driverId: driverId || undefined },
-          })
-        : [];
-
-      const sellerExceptionMap = new Map<string, number>();
-      // A $0 seller exception is still a valid override of the zonal rate.
-      for (const sr of sellerRates) {
-        sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
-      }
-
-      const newCommissionUsd = remainingOrders.reduce((sum, o) => {
-        const merchantId = String(o.merchantId ?? "");
-        const exceptionRate = merchantId
-          ? sellerExceptionMap.get(merchantId)
-          : undefined;
-        const commission =
-          exceptionRate !== undefined
-            ? exceptionRate
-            : (zoneRateMap.get(o.zoneId) ?? 0);
-        return sum + commission;
-      }, 0);
-      const newNetUsd = newTotalUsd - newCommissionUsd;
+      // 3b. Orders remain — recalculate sums from the remaining orders via
+      // the authoritative commission module (same figures as payout creation):
+      // gross = collected > 0 else amount; commission = seller exception
+      // (cash-seller wins) → zone → $0; net = gross − commission.
+      const rateTable = await loadDriverRateTable(tx, driverId);
+      const recalced = recalcPayoutTotals(rateTable, remainingOrders);
 
       await tx.driverPayout.update({
         where: { id: driverPayoutId },
         data: {
-          totalUsd: newTotalUsd,
-          totalLbp: newTotalLbp,
-          commissionUsd: newCommissionUsd,
-          netUsd: newNetUsd,
-          totalCollected: newTotalCollected,
+          totalUsd: recalced.totalUsd,
+          totalLbp: recalced.totalLbp,
+          commissionUsd: recalced.commissionUsd,
+          netUsd: recalced.netUsd,
+          totalCollected: recalced.totalCollected,
         },
       });
 

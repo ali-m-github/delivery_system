@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireServerPermission } from "@/lib/server-permissions";
 import { computeOrderProfit, buildDriverExceptionMaps } from "@/lib/profit";
 
 // ============================================================
@@ -27,6 +28,8 @@ import { computeOrderProfit, buildDriverExceptionMaps } from "@/lib/profit";
 //   merchantId    — optional; restrict to a single seller
 // ============================================================
 export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_FINANCE");
+  if (auth instanceof Response) return auth;
   try {
     const { searchParams } = new URL(request.url);
     const from = searchParams.get("from");

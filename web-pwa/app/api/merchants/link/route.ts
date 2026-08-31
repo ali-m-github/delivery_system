@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 // GET — fetch orphaned MERCHANT users (not linked to any Merchant record)
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+  if (auth instanceof Response) return auth;
   try {
     const unlinkedUsers = await prisma.user.findMany({
       where: {
@@ -29,6 +32,8 @@ export async function GET() {
 
 // PATCH — link a user to a merchant
 export async function PATCH(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+  if (auth instanceof Response) return auth;
   try {
     const body = await request.json();
     const { merchantId, userId } = body;

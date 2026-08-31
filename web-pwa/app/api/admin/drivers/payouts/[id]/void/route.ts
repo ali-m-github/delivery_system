@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
 // DELETE /api/admin/drivers/payouts/[id]/void — Void a PENDING driver payout batch
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireServerPermission(request, "DRIVERS_PAYOUT");
+  if (auth instanceof Response) return auth;
   try {
     const resolvedParams = await params;
     const { id: payoutId } = resolvedParams;

@@ -1,10 +1,17 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import {
+  loadDriverRateTable,
+  enrichPayoutOrdersWithCommission,
+} from "@/lib/commission";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
 // GET /api/drivers/payouts — Fetch all global payout history with advanced filtering
 export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "DRIVERS_VIEW");
+  if (auth instanceof Response) return auth;
   try {
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
@@ -127,61 +134,35 @@ export async function GET(request: Request) {
       orderBy,
     });
 
-    // Calculate per-order driver commission using the same 3-tier logic
-    const enrichedPayouts = await Promise.all(
-      payouts.map(async (payout) => {
-        const driverId = payout.driverId;
-        const userId = payout.driver.userId;
+    // Calculate per-order driver commission using the authoritative
+    // precedence from lib/commission.ts. Rate tables are loaded ONCE PER
+    // DRIVER (grouped) instead of per payout — this removes the N+1
+    // rate-loading the old enrichment performed.
+    const byDriver = new Map<string, (typeof payouts)[number][]>();
+    for (const payout of payouts) {
+      const group = byDriver.get(payout.driverId) ?? [];
+      group.push(payout);
+      byDriver.set(payout.driverId, group);
+    }
 
-        // Fetch driver zone rates, seller exception rates, and cash seller rates
-        const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
-          prisma.driverZoneRate.findMany({ where: { driverId } }),
-          prisma.driverSellerRate.findMany({ where: { driverId } }),
-          userId
-            ? prisma.driverCashSellerRate.findMany({
-                where: { driverId: userId },
-              })
-            : Promise.resolve([]),
-        ]);
-
-        const zoneRateMap = new Map(
-          zoneRates.map((zr) => [zr.zoneId, zr.rate]),
+    const tableByDriver = new Map<string, Awaited<ReturnType<typeof loadDriverRateTable>>>();
+    await Promise.all(
+      Array.from(byDriver.entries()).map(async ([driverId, driverPayouts]) => {
+        const userId = driverPayouts[0]?.driver?.userId;
+        tableByDriver.set(
+          driverId,
+          await loadDriverRateTable(prisma, driverId, userId),
         );
-        const sellerExceptionMap = new Map<string, number>();
-        // A $0 seller exception is still a valid override — it must override
-        // the zonal/default rate rather than falling through to it.
-        for (const sr of sellerRates) {
-          sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
-        }
-        for (const cr of cashSellerRates) {
-          sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
-        }
-
-        const ordersWithCommission = payout.orders.map((order) => {
-          const orderMerchantId = String(order.merchantId ?? "");
-          const orderZoneId = String(order.zoneId);
-
-          // Tier 1: Seller Exception
-          const exceptionRate = orderMerchantId
-            ? sellerExceptionMap.get(orderMerchantId)
-            : undefined;
-          const driverCommissionUsd =
-            exceptionRate !== undefined
-              ? exceptionRate
-              : (zoneRateMap.get(orderZoneId) ?? 0);
-
-          return {
-            ...order,
-            driverCommissionUsd,
-          };
-        });
-
-        return {
-          ...payout,
-          orders: ordersWithCommission,
-        };
       }),
     );
+
+    const enrichedPayouts = payouts.map((payout) => {
+      const rateTable = tableByDriver.get(payout.driverId)!;
+      return {
+        ...payout,
+        orders: enrichPayoutOrdersWithCommission(rateTable, payout.orders),
+      };
+    });
 
     return NextResponse.json(enrichedPayouts, { status: 200 });
   } catch (error) {

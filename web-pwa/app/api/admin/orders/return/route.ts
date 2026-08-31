@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
+import {
+  loadDriverRateTable,
+  recalcPayoutTotals,
+} from "@/lib/commission";
 
 // ─── PATCH /api/admin/orders/return ──────────────────────────────────────────
 // Permission-gated endpoint that returns a DELIVERED order (financialStatus WO
@@ -36,6 +40,8 @@ async function recalcDriverPayout(payoutId: string) {
       id: true,
       amountUsd: true,
       amountLbp: true,
+      collectedUsd: true,
+      collectedLbp: true,
       zoneId: true,
       merchantId: true,
     },
@@ -47,58 +53,20 @@ async function recalcDriverPayout(payoutId: string) {
     return;
   }
 
-  const newTotalUsd = remainingOrders.reduce(
-    (sum, o) => sum + (o.amountUsd ?? 0),
-    0,
-  );
-  const newTotalLbp = remainingOrders.reduce(
-    (sum, o) => sum + (o.amountLbp ?? 0),
-    0,
-  );
-
-  // Recalculate commission using 3-tier logic (zone rates + seller exceptions).
-  const zoneRates = await prisma.driverZoneRate.findMany({
-    where: { driverId: payout.driverId || undefined },
-  });
-  const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
-
-  const driverProfile = await prisma.driverProfile.findUnique({
-    where: { id: payout.driverId || undefined },
-    select: { userId: true },
-  });
-  const sellerRates = driverProfile?.userId
-    ? await prisma.driverSellerRate.findMany({
-        where: { driverId: payout.driverId || undefined },
-      })
-    : [];
-  const sellerExceptionMap = new Map<string, number>();
-  // A $0 seller exception is still a valid override of the zonal rate.
-  for (const sr of sellerRates) {
-    sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
-  }
-
-  const newCommissionUsd = remainingOrders.reduce((sum, o) => {
-    const merchantId = String(o.merchantId ?? "");
-    const exceptionRate = merchantId
-      ? sellerExceptionMap.get(merchantId)
-      : undefined;
-    const commission =
-      exceptionRate !== undefined
-        ? exceptionRate
-        : (zoneRateMap.get(o.zoneId) ?? 0);
-    return sum + commission;
-  }, 0);
-
-  const newNetUsd = newTotalUsd - newCommissionUsd;
+  // Recalculate via the authoritative commission module — the exact same
+  // figures payout creation wrote (gross = collected > 0 else amount;
+  // commission = seller exception (cash wins) → zone → $0; net = gross − fee).
+  const rateTable = await loadDriverRateTable(prisma, payout.driverId);
+  const recalced = recalcPayoutTotals(rateTable, remainingOrders);
 
   await prisma.driverPayout.update({
     where: { id: payout.id },
     data: {
-      totalUsd: newTotalUsd,
-      totalLbp: newTotalLbp,
-      commissionUsd: newCommissionUsd,
-      netUsd: newNetUsd,
-      totalCollected: newTotalUsd,
+      totalUsd: recalced.totalUsd,
+      totalLbp: recalced.totalLbp,
+      commissionUsd: recalced.commissionUsd,
+      netUsd: recalced.netUsd,
+      totalCollected: recalced.totalCollected,
     },
   });
 }

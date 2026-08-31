@@ -2,8 +2,13 @@
 
 import prisma from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireActionPermission } from "@/lib/server-permissions";
 
 export async function createTreasuryBox(formData: FormData) {
+  // Server-side authorization: creating treasury boxes is a financial action.
+  // Mirrors POST /api/admin/treasury (ACTION_TREASURY_TRANSACT).
+  await requireActionPermission("ACTION_TREASURY_TRANSACT");
+
   const name = (formData.get("name") as string)?.trim();
   const isPositive = formData.get("isPositive") === "on";
 

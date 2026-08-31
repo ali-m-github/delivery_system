@@ -4,6 +4,7 @@ import sharp from "sharp";
 import Tesseract from "tesseract.js";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -13,6 +14,9 @@ const SEVEN_DIGIT_RE = /(?<!\d)\d{7}(?!\d)/g;
 
 // ─── POST /api/orders/waybill ───────────────────────────────────────────────
 export async function POST(request: Request) {
+  // Waybill OCR extraction links images to live orders — staff-only action.
+  const auth = await requireServerPermission(request, "ORDERS_EDIT");
+  if (auth instanceof Response) return auth;
   try {
     const formData = await request.formData();
     // Accept both singular "file" (sequential client) and plural "files" (batch client)

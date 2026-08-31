@@ -13,6 +13,7 @@ import GlobalSheetImportModal from "@/components/orders/GlobalSheetImportModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import BarcodeScannerModal from "@/components/BarcodeScannerModal";
 import PermissionGuard from "@/components/PermissionGuard";
+import { hasPermission } from "@/lib/permissions";
 
 // ─── Header Alias Mapping for Bulk Upload ─────────────────────────────────────
 const HEADER_ALIASES: Record<string, string> = {
@@ -420,6 +421,9 @@ function OrdersPageInner() {
     username: string;
     role: string;
     permissions: string[];
+    permissionGroup?: { id: string; name: string; permissions: string[] } | null;
+    customPermissions?: string[];
+    effectivePermissions?: string[];
   } | null>(null);
 
   // ── Filters ──
@@ -1067,10 +1071,9 @@ function OrdersPageInner() {
   }, []);
 
   // ── Permission helper ──
-  const hasPermission = (perm: string) =>
-    currentUser?.role === "ADMIN" ||
-    currentUser?.permissions?.includes(perm) ||
-    false;
+  // Shared composite check: ADMIN bypass ∪ group permissions ∪ custom
+  // permissions (single source of truth with the server-side guards).
+  const userHasPermission = (perm: string) => hasPermission(currentUser, perm);
 
   // Auto-select first zone when zones load and none is selected
   useEffect(() => {
@@ -2304,7 +2307,7 @@ function OrdersPageInner() {
               label: `Return w/ Driver (${rwdTotal})`,
             },
             { key: "returns" as Tab, label: "Returns & Exchange" },
-            ...(hasPermission("ORDERS_CREATE")
+            ...(userHasPermission("ORDERS_CREATE")
               ? [{ key: "order-entry" as Tab, label: "Order Entry" }]
               : []),
           ].map((tab) => (
@@ -2593,7 +2596,7 @@ function OrdersPageInner() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {hasPermission("ORDERS_CREATE") && (
+                  {userHasPermission("ORDERS_CREATE") && (
                     <button
                       onClick={() => setIsCreateModalOpen(true)}
                       className="px-5 py-2.5 text-sm font-semibold rounded-xl

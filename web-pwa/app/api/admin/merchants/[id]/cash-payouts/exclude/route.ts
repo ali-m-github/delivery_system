@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -12,6 +13,8 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+  if (auth instanceof Response) return auth;
   try {
     const resolvedParams = await params;
     const merchantId = resolvedParams.id;

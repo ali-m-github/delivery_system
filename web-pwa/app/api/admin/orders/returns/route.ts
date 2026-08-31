@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
+import { requireServerPermission } from "@/lib/server-permissions";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
 
 const prisma = new PrismaClient();
@@ -13,27 +12,15 @@ const prisma = new PrismaClient();
 //   Re  -> RTS (Warehouse return returns to seller)
 //   EX  -> RTS (Warehouse exchange returns to seller)
 export async function PATCH(request: Request) {
+  // ── Auth guard ──────────────────────────────────────────────────────────
+  // Moving delivered orders (RWD/EWD/Re/EX) through the return lifecycle is a
+  // financial action — same permission as the sibling /api/admin/orders/return.
+  // A valid session is mandatory; unauthenticated requests can no longer fall
+  // back to acting as an admin.
+  const auth = await requireServerPermission(request, "ACTION_ORDER_RETURN");
+  if (auth instanceof Response) return auth;
+  const actionUserId = auth.user.id;
   try {
-    // ── Auth guard ──────────────────────────────────────────────────────────
-    let userId: string | null = null;
-    try {
-      const cookieStore = await cookies();
-      const token = cookieStore.get("session")?.value;
-      if (token) {
-        const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-        const { payload } = await jwtVerify(token, secret);
-        userId = payload.id as string;
-      }
-    } catch {
-      // Auth is best-effort; continue if no session
-    }
-
-    const adminUser = await prisma.user.findFirst({ where: { role: "ADMIN" } });
-    const actionUserId = userId || adminUser?.id;
-    if (!actionUserId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const body = await request.json();
     const { orderIds, newStatus } = body as {
       orderIds: string[];

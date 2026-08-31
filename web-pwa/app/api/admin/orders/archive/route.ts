@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
 export async function DELETE(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ORDERS");
+  if (auth instanceof Response) return auth;
   try {
     const body = await request.json();
     const { orderIds, deleteAll } = body;

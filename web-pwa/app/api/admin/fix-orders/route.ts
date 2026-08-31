@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireServerPermission } from "@/lib/server-permissions";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ORDERS");
+  if (auth instanceof Response) return auth;
   const csvTrackingIds = [
     "9935233",
     "9935237",

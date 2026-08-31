@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 // GET /api/admin/drivers/[id]/zones — Fetch zones assigned to a driver
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireServerPermission(request, "MANAGE_DRIVERS");
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await params;
 
@@ -40,6 +43,8 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireServerPermission(request, "MANAGE_DRIVERS");
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await params;
     const body = await request.json();

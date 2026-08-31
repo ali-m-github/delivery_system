@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { normalizeAddress, similarityScore } from "@/lib/addressNormalizer";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const FUZZY_THRESHOLD = 0.82;
 
@@ -24,6 +25,8 @@ const FUZZY_THRESHOLD = 0.82;
  * Returns: { totalOrdersScanned, assignedCount, unassignedCount, unassignedOrders }
  */
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ZONES");
+  if (auth instanceof Response) return auth;
   try {
     const body = await request.json();
     const { defaultZoneId } = body;

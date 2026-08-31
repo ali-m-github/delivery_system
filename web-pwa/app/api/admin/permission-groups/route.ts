@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireServerPermission } from "@/lib/server-permissions";
+import { unknownPermissions } from "@/lib/permissions";
 
 // GET /api/admin/permission-groups — Fetch all permission groups
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_USERS");
+  if (auth instanceof Response) return auth;
   try {
     const groups = await prisma.permissionGroup.findMany({
       include: {
@@ -20,8 +24,20 @@ export async function GET() {
   }
 }
 
-// POST /api/admin/permission-groups — Create a permission group
+// POST /api/admin/permission-groups — Create a permission group.
+// Groups are the privilege-assignment mechanism, so creating them is
+// restricted to the ADMIN role (not merely MANAGE_USERS).
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_USERS");
+  if (auth instanceof Response) return auth;
+
+  if (auth.user.role !== "ADMIN") {
+    return NextResponse.json(
+      { error: "Only an ADMIN can create permission groups." },
+      { status: 403 },
+    );
+  }
+
   try {
     const body = await request.json();
     const { name, permissions } = body;
@@ -33,10 +49,20 @@ export async function POST(request: Request) {
       );
     }
 
+    // Validate every permission string against the SYSTEM_PERMISSIONS catalog.
+    const permList = Array.isArray(permissions) ? permissions : [];
+    const badPermissions = unknownPermissions(permList);
+    if (badPermissions.length > 0) {
+      return NextResponse.json(
+        { error: `Invalid permissions: ${badPermissions.join(", ")}` },
+        { status: 400 },
+      );
+    }
+
     const group = await prisma.permissionGroup.create({
       data: {
         name: name.trim(),
-        permissions: Array.isArray(permissions) ? permissions : [],
+        permissions: permList,
       },
     });
 

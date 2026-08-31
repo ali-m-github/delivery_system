@@ -1,19 +1,43 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
+import {
+  loadDriverRateTable,
+  recalcPayoutTotals,
+  PAID_OUT_ELIGIBLE_STATUSES,
+} from "@/lib/commission";
 import { getSessionUserId } from "@/helpers/auth";
+import { requireServerPermission } from "@/lib/server-permissions";
+
+/**
+ * Raised when one or more requested order IDs are missing or ineligible for a
+ * driver payout batch. Carries the rejected IDs so the client receives a
+ * precise, actionable error instead of a generic 500.
+ */
+class InvalidPayoutOrdersError extends Error {
+  readonly rejectedIds: string[];
+
+  constructor(rejectedIds: string[]) {
+    super(
+      `The following order ID(s) are not eligible for a payout (must belong to the driver, be DELIVERED, and have financial status WD or UD): ${rejectedIds.join(", ")}`,
+    );
+    this.name = "InvalidPayoutOrdersError";
+    this.rejectedIds = rejectedIds;
+  }
+}
 
 // POST /api/driver-payouts — Clear WD orders to WO (With Office)
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "DRIVERS_PAYOUT");
+  if (auth instanceof Response) return auth;
   try {
     const body = await request.json();
-    const {
-      driverId: identifier,
-      orderIds,
-      totalCollectedUsd,
-      totalCollectedLbp,
-      commissionUsd,
-      netUsd,
-    } = body;
+    // NOTE: only IDs are accepted from the client. The client may also send
+    // totalCollectedUsd/totalCollectedLbp/commissionUsd/netUsd for display
+    // convenience, but they are deliberately NOT destructured here — all
+    // financial figures are re-derived from the database inside the
+    // transaction below. Client-computed money is never the source of truth.
+    const { driverId: identifier, orderIds } = body;
 
     if (
       !identifier ||
@@ -47,88 +71,61 @@ export async function POST(request: Request) {
     // Attribute this payout to the authenticated user who created it
     const createdById = await getSessionUserId(request);
 
-    // Validate orders belong to the driver, are delivered, and in WD status
-    const orders = await prisma.order.findMany({
-      where: {
-        id: { in: orderIds },
-        driverId,
-        location: "DELIVERED",
-        financialStatus: "WD",
-      },
-    });
-
-    if (orders.length === 0) {
+    // Deduplicate the requested IDs so a hostile client cannot double-count an
+    // order by repeating its id in the array.
+    if (orderIds.some((id) => typeof id !== "string")) {
       return NextResponse.json(
-        {
-          error: "No valid WD (With Driver) orders found for the provided IDs",
-        },
+        { error: "orderIds must be an array of strings" },
         { status: 400 },
       );
     }
+    const requestedIds: string[] = Array.from(new Set(orderIds));
 
-    // Recalculate totals server-side from actual DB values (collectedUsd ?? amountUsd)
-    const dbTotalUsd = orders.reduce(
-      (sum, o) => sum + (o.collectedUsd ?? o.amountUsd ?? 0),
-      0,
-    );
-    const dbTotalLbp = orders.reduce(
-      (sum, o) => sum + (o.collectedLbp ?? o.amountLbp ?? 0),
-      0,
-    );
-
-    // Fetch driver zone rates AND seller exception rates for server-side commission fallback
+    // Load the driver's full commission rate table once (3 bulk queries),
+    // outside the transaction. See lib/commission.ts for the documented
+    // precedence: seller exception (cash-seller wins) → zone rate → $0.
     const driverProfile = await prisma.driverProfile.findUnique({
       where: { id: driverId },
       select: { userId: true },
     });
-    const userId = driverProfile?.userId;
-
-    const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
-      prisma.driverZoneRate.findMany({ where: { driverId } }),
-      prisma.driverSellerRate.findMany({ where: { driverId } }),
-      userId
-        ? prisma.driverCashSellerRate.findMany({ where: { driverId: userId } })
-        : Promise.resolve([]),
-    ]);
-
-    const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
-    const sellerExceptionMap = new Map<string, number>();
-    // A $0 seller exception is still a valid override — it must override
-    // the zonal/default rate rather than falling through to it.
-    for (const sr of sellerRates) {
-      sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
-    }
-    for (const cr of cashSellerRates) {
-      sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
-    }
-
-    const dbCommission = orders.reduce((sum, o) => {
-      const orderMerchantId = String(o.merchantId ?? "");
-      const orderZoneId = String(o.zoneId);
-      // Tier 1: Seller Exception (includes DriverSellerRate + DriverCashSellerRate)
-      const exceptionRate = orderMerchantId
-        ? sellerExceptionMap.get(orderMerchantId)
-        : undefined;
-      if (exceptionRate !== undefined) return sum + exceptionRate;
-      // Tier 2: Zone Rate
-      return sum + (zoneRateMap.get(orderZoneId) ?? 0);
-    }, 0);
-
-    // Sanitize values
-    const safeTotalUsd =
-      parseFloat(String(totalCollectedUsd ?? dbTotalUsd)) || 0;
-    const safeTotalLbp =
-      parseFloat(String(totalCollectedLbp ?? dbTotalLbp)) || 0;
-    const safeCommission =
-      typeof commissionUsd === "number" && commissionUsd >= 0
-        ? parseFloat(String(commissionUsd)) || 0
-        : dbCommission;
-    const safeNetUsd =
-      typeof netUsd === "number"
-        ? parseFloat(String(netUsd)) || 0
-        : safeTotalUsd - safeCommission;
+    const rateTable = await loadDriverRateTable(
+      prisma,
+      driverId,
+      driverProfile?.userId,
+    );
 
     const result = await prisma.$transaction(async (tx) => {
+      // All financial validation and totals computation happen INSIDE the
+      // transaction, on rows locked for the duration of the batch. This is the
+      // authoritative path: client-supplied money values are never read.
+      // Eligibility (concern B, unified in lib/commission.ts): DELIVERED and
+      // financial status WD or UD. UD is the state the void flow restores
+      // returned-from-payout orders to, so it must be re-settleable here.
+      const orders = await tx.order.findMany({
+        where: {
+          id: { in: requestedIds },
+          driverId,
+          location: "DELIVERED",
+          financialStatus: { in: PAID_OUT_ELIGIBLE_STATUSES },
+        },
+        orderBy: { id: "asc" },
+      });
+
+      // Reject the whole batch if ANY requested ID is missing or ineligible
+      // (wrong driver, not DELIVERED, or no longer WD/UD). Never create a
+      // partial financial record from a partial match.
+      if (orders.length !== requestedIds.length) {
+        const validIds = new Set(orders.map((o) => o.id));
+        const rejectedIds = requestedIds.filter((id) => !validIds.has(id));
+        throw new InvalidPayoutOrdersError(rejectedIds);
+      }
+
+      // ── Server-derived financials (client values are NEVER trusted) ─────
+      // Gross (concern C): positive collected* wins, else order amount.
+      // Commission (concern A): seller exception → zone → $0 default.
+      const totals = recalcPayoutTotals(rateTable, orders);
+      const { totalUsd, totalLbp, commissionUsd, netUsd } = totals;
+
       // Fetch the highest sequentialIndex for this driver
       const lastPayout = await tx.driverPayout.findFirst({
         where: { driverId },
@@ -142,24 +139,26 @@ export async function POST(request: Request) {
         data: {
           driverId,
           sequentialIndex: nextIndex,
-          totalUsd: safeTotalUsd,
-          totalLbp: safeTotalLbp,
-          commissionUsd: safeCommission,
-          netUsd: safeNetUsd,
-          totalCollected: safeTotalUsd,
+          totalUsd,
+          totalLbp,
+          commissionUsd,
+          netUsd,
+          totalCollected: totalUsd,
           status: "CLEARED",
           clearedAt: new Date(),
           createdById: createdById ?? undefined,
         },
       });
 
-      // Update orders: change financialStatus to WO and link driverPayoutId
+      // Update orders: change financialStatus to WO and link driverPayoutId.
+      // The WHERE clause re-checks the lifecycle state so a concurrent status
+      // change cannot be silently swept into this batch.
       await tx.order.updateMany({
         where: {
-          id: { in: orderIds },
+          id: { in: requestedIds },
           driverId,
           location: "DELIVERED",
-          financialStatus: "WD",
+          financialStatus: { in: PAID_OUT_ELIGIBLE_STATUSES },
         },
         data: {
           driverPayoutId: payout.id,
@@ -171,10 +170,19 @@ export async function POST(request: Request) {
         where: { id: payout.id },
         include: { orders: true },
       });
+    }, {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     });
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof InvalidPayoutOrdersError) {
+      // The transaction was rolled back; nothing was created.
+      return NextResponse.json(
+        { error: error.message, rejectedOrderIds: error.rejectedIds },
+        { status: 400 },
+      );
+    }
     console.error("POST /api/driver-payouts Error:", error);
     return NextResponse.json(
       { error: "Internal Server Error" },

@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 // GET — fetch pending merchant approvals data for admin dashboard
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
+  if (auth instanceof Response) return auth;
   try {
     // Users with role MERCHANT who are not linked to any merchant
     const pendingUsers = await prisma.user.findMany({

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { normalizeAddress } from "@/lib/addressNormalizer";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 // We use the xlsx library already in the project for parsing Excel/CSV
 import * as XLSX from "xlsx";
@@ -24,6 +25,8 @@ const VERIFICATION_THRESHOLD = 5;
  * { newAddressesAdded, existingAddressesUpdated, newlyVerifiedCount, totalVerifiedCount }
  */
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ZONES");
+  if (auth instanceof Response) return auth;
   try {
     // ── Debug: verify prisma client state ───────────────────────────────
     console.log("[POST /api/admin/zones/train] prisma:", typeof prisma);

@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 // GET /api/zones/overrides — list all merchant zone rate overrides
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ZONES");
+  if (auth instanceof Response) return auth;
   try {
     const overrides = await prisma.merchantZoneRate.findMany({
       include: {
@@ -23,6 +26,8 @@ export async function GET() {
 
 // POST /api/zones/overrides — create a merchant-specific zone rate override
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ZONES");
+  if (auth instanceof Response) return auth;
   try {
     const { merchantId, zoneId, rateUsd, rateLbp } = await request.json();
 

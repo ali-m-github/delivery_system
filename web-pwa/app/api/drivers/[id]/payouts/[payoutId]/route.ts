@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -8,6 +9,8 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string; payoutId: string }> },
 ) {
+  const auth = await requireServerPermission(request, "DRIVERS_PAYOUT");
+  if (auth instanceof Response) return auth;
   try {
     const resolvedParams = await params;
     const { id: identifier, payoutId } = resolvedParams;

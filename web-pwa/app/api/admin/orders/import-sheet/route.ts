@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import Papa from "papaparse";
 import { generateTrackTokens } from "@/lib/tracking";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -9,6 +10,8 @@ const prisma = new PrismaClient();
 // Imports orders from a public Google Sheet CSV for a Cash Seller.
 // Expects JSON body: { url, merchantId, startRow?, colMapping?, zoneId?, creatorId?, receivedDate? }
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "ORDERS_CREATE");
+  if (auth instanceof Response) return auth;
   try {
     const body = await request.json();
 
@@ -173,20 +176,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // Resolve creator (admin user)
-    const adminUser = body.creatorId
-      ? await prisma.user.findUnique({ where: { id: body.creatorId } })
-      : await prisma.user.findFirst({ where: { role: "ADMIN" } });
-
-    if (!adminUser) {
-      return NextResponse.json(
-        {
-          error:
-            "No admin user found to assign as order creator. Provide creatorId.",
-        },
-        { status: 400 },
-      );
-    }
+    // ── Resolve the acting user for the creator field ─────────────────────
+    // A valid session is mandatory (see guard above); the creator is always
+    // the authenticated user, never a client-supplied id or an arbitrary
+    // admin fallback.
+    const adminUser = { id: auth.user.id };
 
     // ── Step 4: Map & sanitize rows ─────────────────────────────────────
     const trackTokens = await generateTrackTokens(dataRows.length);

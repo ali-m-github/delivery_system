@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { generateTrackToken } from "@/lib/tracking";
+import { requireServerPermission } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "ORDERS_FINANCIAL");
+  if (auth instanceof Response) return auth;
   try {
-    const { orderId, newMerchantId, adminUserId } = await request.json();
+    // The creator is always the authenticated user; the client-supplied
+    // adminUserId is no longer accepted.
+    const { orderId, newMerchantId } = await request.json();
+    const adminUserId = auth.user.id;
 
     const originalOrder = await prisma.order.findUnique({
       where: { id: orderId },

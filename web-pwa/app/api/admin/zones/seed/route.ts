@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { normalizeAddress } from "@/lib/addressNormalizer";
+import { requireServerPermission } from "@/lib/server-permissions";
 import * as XLSX from "xlsx";
 
 /**
@@ -19,6 +20,8 @@ import * as XLSX from "xlsx";
  * { success, upsertedCount, createdCount, updatedCount, skippedCount, errors }
  */
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ZONES");
+  if (auth instanceof Response) return auth;
   try {
     // ── Parse FormData ──────────────────────────────────────────────────
     const formData = await request.formData();

@@ -1,10 +1,58 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { computeOrderProfit, resolveDriverSellerException } from "@/lib/profit";
+import {
+  requireAuthenticatedSession,
+  requireServerPermission,
+} from "@/lib/server-permissions";
+
+/**
+ * Raised when one or more requested order IDs do not belong to the target
+ * merchant or are not in the eligible WO lifecycle state. Carries the
+ * rejected IDs so the client receives a precise, actionable error.
+ */
+class InvalidStatementOrdersError extends Error {
+  readonly rejectedIds: string[];
+
+  constructor(rejectedIds: string[]) {
+    super(
+      `The following order ID(s) are not eligible for a merchant statement (must belong to the merchant, be DELIVERED, and have financial status WO): ${rejectedIds.join(", ")}`,
+    );
+    this.name = "InvalidStatementOrdersError";
+    this.rejectedIds = rejectedIds;
+  }
+}
+
+/** Raised when the requested merchant record does not exist. */
+class MerchantNotFoundError extends Error {
+  constructor() {
+    super("Merchant not found");
+    this.name = "MerchantNotFoundError";
+  }
+}
 export async function GET(req: Request) {
+  const auth = await requireAuthenticatedSession(req);
+  if (auth instanceof Response) return auth;
   const { searchParams } = new URL(req.url);
-  const merchantId = searchParams.get("merchantId");
+  let merchantId = searchParams.get("merchantId");
   const paymentStatus = searchParams.get("paymentStatus");
+
+  // Merchant users can only view statements for their own merchant record;
+  // the requested merchantId is always overridden server-side.
+  if (auth.user.role === "MERCHANT") {
+    const merchant = await prisma.merchant.findFirst({
+      where: { userId: auth.user.id },
+      select: { id: true },
+    });
+    if (!merchant) {
+      return NextResponse.json(
+        { error: "Merchant record not found for this account" },
+        { status: 403 },
+      );
+    }
+    merchantId = merchant.id;
+  }
 
   try {
     const statements = await prisma.merchantPayout.findMany({
@@ -33,7 +81,7 @@ export async function GET(req: Request) {
       orderBy: { createdAt: "desc" },
     });
     return NextResponse.json(statements, { status: 200 });
-  } catch (error: any) {
+  } catch {
     return NextResponse.json(
       { error: "Failed to fetch statements." },
       { status: 500 },
@@ -42,23 +90,32 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireServerPermission(req, "MANAGE_FINANCE");
+  if (auth instanceof Response) return auth;
   try {
     const body = await req.json();
-    const {
-      merchantId,
-      orderIds,
-      totalUsd,
-      totalLbp,
-      shippingUsd,
-      shippingLbp,
-      netUsd,
-      netLbp,
-    } = body;
+    // NOTE: only IDs are accepted from the client. The client may also send
+    // totalUsd/totalLbp/shippingUsd/shippingLbp/netUsd/netLbp/profitUsd for
+    // display convenience, but they are deliberately NOT destructured here —
+    // every financial figure is re-derived from the database inside the
+    // transaction below. Client-computed money is never the source of truth.
+    const { merchantId, orderIds } = body;
 
     // 1. Validate Input
-    if (!merchantId || !orderIds || orderIds.length === 0) {
+    if (
+      !merchantId ||
+      !orderIds ||
+      !Array.isArray(orderIds) ||
+      orderIds.length === 0
+    ) {
       return NextResponse.json(
-        { error: "Missing required payload data." },
+        { error: "merchantId and orderIds (non-empty array) are required" },
+        { status: 400 },
+      );
+    }
+    if (orderIds.some((id) => typeof id !== "string")) {
+      return NextResponse.json(
+        { error: "orderIds must be an array of strings" },
         { status: 400 },
       );
     }
@@ -73,66 +130,174 @@ export async function POST(req: Request) {
 
     // 3. Execute the Atomic Transaction
     // An atomic transaction ensures that if the orders fail to update, the statement is NOT created (preventing ghost ledgers).
-    const transaction = await prisma.$transaction(async (tx) => {
-      // A1. Fetch the merchant + selected orders to compute the company profit.
-      // Profit = profitRate per delivered/PS order, EXCEPT orders where the
-      // driver's seller rate exception equals (sellerRate + profitRate) — those
-      // contribute 0 profit (the driver keeps the whole fee).
-      const merchant = await tx.merchant.findUnique({
-        where: { id: merchantId },
-        select: { defaultSellerRate: true, defaultProfitRate: true },
-      });
-      const profitOrders = await tx.order.findMany({
-        where: { id: { in: orderIds } },
-        select: { id: true, driverId: true },
-      });
-
-      let profitUsd = 0;
-      for (const o of profitOrders) {
-        const driverException = await resolveDriverSellerException(
-          o.driverId,
-          merchantId,
-        );
-        profitUsd += computeOrderProfit(
-          {
-            defaultSellerRate: merchant?.defaultSellerRate ?? 0,
-            defaultProfitRate: merchant?.defaultProfitRate ?? 0,
+    //
+    // SECURITY: every financial figure (total / shipping / net / profit) is
+    // derived INSIDE this transaction from the authoritative DB rows — the
+    // orders themselves, the merchant's configured rates, and the driver
+    // exceptions. Client-supplied money values (totalUsd, totalLbp, shippingUsd,
+    // shippingLbp, netUsd, netLbp, profitUsd) are intentionally ignored.
+    //
+    // The transaction also performs a strict completeness check: if ANY
+    // requested order ID does not belong to the merchant or is not in the
+    // eligible WO state, the whole batch is rejected and rolled back — a
+    // statement is never created from a partial match.
+    const transaction = await prisma.$transaction(
+      async (tx) => {
+        // A0. Merchant must exist (also rejects cross-merchant spoofing early).
+        const merchant = await tx.merchant.findUnique({
+          where: { id: merchantId },
+          select: {
+            id: true,
+            isCashSeller: true,
+            defaultSellerRate: true,
+            defaultProfitRate: true,
+            zoneRates: true,
           },
-          driverException,
-        );
-      }
+        });
+        if (!merchant) throw new MerchantNotFoundError();
 
-      // A. Create the Payout Ledger Entry
-      const payout = await tx.merchantPayout.create({
-        data: {
-          merchantId,
-          sequentialIndex: nextIndex,
-          totalUsd,
-          totalLbp,
-          shippingUsd,
-          shippingLbp,
-          netUsd,
-          netLbp,
-          profitUsd,
-          status: "PAID",
-        },
-      });
+        // Deduplicate requested IDs so a hostile client cannot double-count.
+        const requestedIds: string[] = Array.from(new Set(orderIds));
 
-      // B. Update the Selected Orders
-      // Locks them to the new payout ID and changes financial status to PS (Paid to Seller)
-      await tx.order.updateMany({
-        where: { id: { in: orderIds } },
-        data: {
-          financialStatus: "PS",
-          merchantPayoutId: payout.id,
-        },
-      });
+        // A1. Fetch only the orders that are genuinely eligible for this
+        // merchant's statement: must belong to this merchant, be DELIVERED,
+        // and have financial status WO (With Office = cleared by the driver).
+        const orders = await tx.order.findMany({
+          where: {
+            id: { in: requestedIds },
+            merchantId,
+            location: "DELIVERED",
+            financialStatus: "WO",
+          },
+          orderBy: { id: "asc" },
+        });
 
-      return payout;
-    });
+        // Reject the whole batch if ANY requested ID is missing or ineligible.
+        if (orders.length !== requestedIds.length) {
+          const validIds = new Set(orders.map((o) => o.id));
+          const rejectedIds = requestedIds.filter((id) => !validIds.has(id));
+          throw new InvalidStatementOrdersError(rejectedIds);
+        }
+
+        // ── Server-derived financials (client values are NEVER trusted) ─────
+        // Gross collected per order: DB `collected*`, falling back to the
+        // order amount — the same rule the UI and the delivery flow apply.
+        let totalUsd = 0;
+        let totalLbp = 0;
+        for (const o of orders) {
+          totalUsd += o.collectedUsd ?? o.amountUsd ?? 0;
+          totalLbp += o.collectedLbp ?? o.amountLbp ?? 0;
+        }
+
+        // Shipping deducted from the seller, per order, from the merchant's
+        // own configured rates:
+        //  - Cash sellers: flat fee = defaultSellerRate + defaultProfitRate.
+        //  - Otherwise: the merchant's zone rate (USD + LBP) for the order's
+        //    zone; 0 when the merchant has no rate configured for that zone
+        //    (mirrors the live UI calculator).
+        const zoneRateMap = new Map<string, { usd: number; lbp: number }>();
+        for (const zr of merchant.zoneRates) {
+          zoneRateMap.set(String(zr.zoneId), {
+            usd: Number(zr.rate) || 0,
+            lbp: Number(zr.rateLbp) || 0,
+          });
+        }
+        const cashFeeUsd = merchant.isCashSeller
+          ? (Number(merchant.defaultSellerRate) || 0) +
+            (Number(merchant.defaultProfitRate) || 0)
+          : 0;
+
+        let shippingUsd = 0;
+        let shippingLbp = 0;
+        for (const o of orders) {
+          if (merchant.isCashSeller) {
+            shippingUsd += cashFeeUsd;
+            continue;
+          }
+          const zr = zoneRateMap.get(String(o.zoneId));
+          if (zr) {
+            shippingUsd += zr.usd;
+            shippingLbp += zr.lbp;
+          }
+        }
+
+        const netUsd = totalUsd - shippingUsd;
+        const netLbp = totalLbp - shippingLbp;
+
+        // A2. Company profit: profitRate per order, EXCEPT orders where the
+        // driver's seller rate exception equals (sellerRate + profitRate) —
+        // those contribute 0 profit (the driver keeps the whole fee).
+        // Profit rules live in lib/profit.ts and are unchanged.
+        let profitUsd = 0;
+        for (const o of orders) {
+          const driverException = await resolveDriverSellerException(
+            o.driverId,
+            merchantId,
+          );
+          profitUsd += computeOrderProfit(
+            {
+              defaultSellerRate: merchant.defaultSellerRate ?? 0,
+              defaultProfitRate: merchant.defaultProfitRate ?? 0,
+            },
+            driverException,
+          );
+        }
+
+        // A. Create the Payout Ledger Entry
+        const payout = await tx.merchantPayout.create({
+          data: {
+            merchantId,
+            sequentialIndex: nextIndex,
+            totalUsd,
+            totalLbp,
+            shippingUsd,
+            shippingLbp,
+            netUsd,
+            netLbp,
+            profitUsd,
+            status: "PAID",
+          },
+        });
+
+        // B. Update the Selected Orders
+        // Locks them to the new payout ID and changes financial status to PS (Paid to Seller).
+        // The WHERE clause re-checks the lifecycle state so a concurrent
+        // status change cannot be silently swept into this statement.
+        await tx.order.updateMany({
+          where: {
+            id: { in: requestedIds },
+            merchantId,
+            location: "DELIVERED",
+            financialStatus: "WO",
+          },
+          data: {
+            financialStatus: "PS",
+            merchantPayoutId: payout.id,
+          },
+        });
+
+        return payout;
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
 
     return NextResponse.json(transaction, { status: 201 });
-  } catch (error: any) {
+  } catch (error) {
+    if (error instanceof InvalidStatementOrdersError) {
+      // The transaction was rolled back; nothing was created.
+      return NextResponse.json(
+        { error: error.message, rejectedOrderIds: error.rejectedIds },
+        { status: 400 },
+      );
+    }
+    if (error instanceof MerchantNotFoundError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 404 },
+      );
+    }
     console.error("Payout Transaction Error:", error);
     return NextResponse.json(
       { error: "Failed to process settlement." },

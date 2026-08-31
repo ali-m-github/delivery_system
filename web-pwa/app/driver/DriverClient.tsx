@@ -2,6 +2,12 @@
 
 import { useState, useMemo, useEffect, useCallback, Fragment } from "react";
 import { useRouter } from "next/navigation";
+import {
+  buildRateTableFromRates,
+  computeOrderCommission,
+  grossUsd,
+  grossLbp,
+} from "@/lib/commission";
 import SettingsModal from "@/components/SettingsModal";
 import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
@@ -423,33 +429,37 @@ export default function DriverClient({
   );
 
   // ── Payout Receipt (Settlement Calculator) ────────────────────────────
+  // Authoritative module: gross = collected > 0 else amount; commission =
+  // seller exception (server already merged cash-seller rates into
+  // driver.driverSellerRates, cash wins, $0 valid) → zone → $0 default.
+  const driverRateTable = useMemo(
+    () =>
+      buildRateTableFromRates(driver.id, {
+        driverZoneRates: driver.zoneRates,
+        driverSellerRates: driver.driverSellerRates || [],
+        driverCashSellerRates: [],
+      }),
+    [driver.id, driver.zoneRates, driver.driverSellerRates],
+  );
+
   const payoutReceipt = useMemo(() => {
     const totalUsdCollected = deliveredOrders.reduce(
-      (sum, o) => sum + (o.collectedUsd ?? 0),
+      (sum, o) => sum + grossUsd(o),
       0,
     );
     const totalLbpCollected = deliveredOrders.reduce(
-      (sum, o) => sum + (o.collectedLbp ?? 0),
+      (sum, o) => sum + grossLbp(o),
       0,
     );
 
     const totalCommissionUsd = deliveredOrders.reduce((sum, o) => {
-      // Force string conversion to prevent integer/string mismatch failures
-      const orderMerchantId = String(o.merchantId || "");
-      const orderZoneId = String(o.zoneId);
-      // Tier 1: Seller Exception
-      const exception = driver.driverSellerRates?.find(
-        (rate) =>
-          String(rate.merchantId) === orderMerchantId && orderMerchantId !== "",
+      return (
+        sum +
+        computeOrderCommission(driverRateTable, {
+          merchantId: o.merchantId,
+          zoneId: String(o.zoneId),
+        }).usd
       );
-      if (exception) {
-        return sum + Number(exception.rateUsd || 0);
-      }
-      // Tier 2: Zone Rate
-      const zoneRate = driver.zoneRates.find(
-        (zr) => String(zr.zoneId) === orderZoneId,
-      );
-      return sum + Number(zoneRate?.rate || 0);
     }, 0);
 
     const netToOfficeUsd = totalUsdCollected - totalCommissionUsd;
@@ -462,7 +472,7 @@ export default function DriverClient({
       netToOfficeUsd,
       netToOfficeLbp,
     };
-  }, [deliveredOrders, driver.zoneRates, driver.driverSellerRates]);
+  }, [deliveredOrders, driverRateTable]);
 
   const activeCount = activeOrders.length;
 

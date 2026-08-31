@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { cookies } from "next/headers";
-import { jwtVerify } from "jose";
+import { requireServerPermission } from "@/lib/server-permissions";
 import { resolveZoneForAddress } from "@/lib/zoneMatcher";
 
 // ─── POST /api/admin/orders/move-from-cp ──────────────────────────────────────
@@ -15,6 +14,8 @@ import { resolveZoneForAddress } from "@/lib/zoneMatcher";
 // Returns: { movedCount, skippedCount, results: [{ id, orderId, zoneId, zone, status }] }
 
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_ORDERS");
+  if (auth instanceof Response) return auth;
   try {
     const body = await request.json();
     const orderIds = (body?.orderIds ?? []) as string[];
@@ -27,25 +28,9 @@ export async function POST(request: Request) {
     }
 
     // ── Resolve the acting user for history entries ─────────────────────
-    let actionUserId: string | null = null;
-    try {
-      const cookieStore = await cookies();
-      const token = cookieStore.get("session")?.value;
-      if (token) {
-        const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-        const { payload } = await jwtVerify(token, secret);
-        actionUserId = (payload.id as string) || null;
-      }
-    } catch {
-      // fall through
-    }
-    if (!actionUserId) {
-      const admin = await prisma.user.findFirst({
-        where: { role: "ADMIN" },
-        select: { id: true },
-      });
-      actionUserId = admin?.id ?? null;
-    }
+    // A valid session is mandatory (see guard above); unauthenticated
+    // requests can no longer fall back to acting as an admin.
+    const actionUserId = auth.user.id;
 
     // ── Load the target CP orders ────────────────────────────────────────
     const orders = await prisma.order.findMany({
@@ -86,7 +71,7 @@ export async function POST(request: Request) {
               create: {
                 action: "Moved from CP to Warehouse",
                 location: "WAREHOUSE",
-                userId: actionUserId ?? "",
+                userId: actionUserId,
               },
             },
           },

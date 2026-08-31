@@ -1,5 +1,9 @@
 import { PrismaClient } from "@prisma/client";
-import { DEFAULT_DRIVER_USD } from "@/lib/commission";
+import {
+  computeOrderCommission,
+  loadDriverRateTable,
+  type DriverRateTable,
+} from "@/lib/commission";
 import { PdfDownloadTrigger } from "./PdfDownloadTrigger";
 
 const prisma = new PrismaClient();
@@ -55,16 +59,12 @@ export default async function PrintOrdersPage({
 
   const orderIds = ids.split(",").filter(Boolean);
 
-  // ── Fetch driver rates if driverId is present (Driver-Mode) ──
-  let driverRates = null;
+  // ── Fetch driver rate table if driverId is present (Driver-Mode) ──
+  // Uses the authoritative commission module (seller exception ∪ cash-seller
+  // exception → zone → $0 default), identical to every ledger path.
+  let driverRateTable: DriverRateTable | null = null;
   if (driverId) {
-    driverRates = await prisma.driverProfile.findUnique({
-      where: { id: driverId },
-      include: {
-        driverSellerRates: true,
-        zoneRates: true,
-      },
-    });
+    driverRateTable = await loadDriverRateTable(prisma, driverId);
   }
 
   // ── Fetch payout context if payoutId is present (for debt display) ──
@@ -82,10 +82,7 @@ export default async function PrintOrdersPage({
     include: {
       merchant: true,
       driver: {
-        include: {
-          driverSellerRates: true,
-          zoneRates: true,
-        },
+        select: { id: true, userId: true },
       },
       zone: true,
     },
@@ -103,6 +100,19 @@ export default async function PrintOrdersPage({
   // ── Financial calculation logic ──────────────────────────────────────────
   const isDriverMode = !!driverId;
 
+  // Default mode: one rate table per distinct assigned driver (batch, no N+1
+  // per order).
+  const tableByDriver = new Map<string, DriverRateTable>();
+  if (!isDriverMode) {
+    const driverIds = Array.from(
+      new Set(orders.map((o) => o.driver?.id).filter(Boolean) as string[]),
+    );
+    const loaded = await Promise.all(
+      driverIds.map((did) => loadDriverRateTable(prisma, did)),
+    );
+    loaded.forEach((table) => tableByDriver.set(table.profileId, table));
+  }
+
   const enrichedOrders: EnrichedOrder[] = orders.map((order) => {
     // Shipping rate: order-specific override → merchant default → 0
     const shippingRate =
@@ -110,48 +120,24 @@ export default async function PrintOrdersPage({
         ? order.extraShipping
         : (order.merchant?.defaultSellerRate ?? 0);
 
-    // Driver commission calculation
+    // Driver commission calculation — authoritative 3-tier precedence:
+    // seller exception (cash wins, $0 valid) → zone rate → $0 default.
     let driverCommission = 0;
 
-    if (isDriverMode && driverRates) {
-      // Driver-Mode: Use the specified driver's rates
-      // Tier 1: Seller-specific rate exception
-      const exception = driverRates.driverSellerRates.find(
-        (r) => r.merchantId === order.merchantId,
-      );
-      // A $0 seller exception is still a valid override of the zonal rate.
-      if (exception) {
-        driverCommission = Number(exception.rateUsd || 0);
-      } else {
-        // Tier 2: Zone-based rate
-        const zoneRate = driverRates.zoneRates.find(
-          (r) => r.zoneId === order.zoneId,
-        );
-        driverCommission = Number(zoneRate?.rate || 0);
-      }
+    if (isDriverMode && driverRateTable) {
+      // Driver-Mode: use the specified driver's rates
+      driverCommission = computeOrderCommission(driverRateTable, {
+        merchantId: order.merchantId,
+        zoneId: order.zoneId,
+      }).usd;
     } else if (order.driver) {
-      // Default mode: Use the order's assigned driver rates (3-tier hierarchy)
-      driverCommission = DEFAULT_DRIVER_USD;
-
-      // Tier 1: Driver-Seller flat rate exception
-      if (order.merchantId) {
-        const sellerException = order.driver.driverSellerRates.find(
-          (r) => r.merchantId === order.merchantId,
-        );
-        // A $0 seller exception is still a valid override of the zonal rate.
-        if (sellerException) {
-          driverCommission = Number(sellerException.rateUsd || 0);
-        }
-      }
-
-      // Tier 2: Zone-based rate (only if no seller exception was found)
-      if (driverCommission === DEFAULT_DRIVER_USD) {
-        const zoneRate = order.driver.zoneRates.find(
-          (r) => r.zoneId === order.zoneId,
-        );
-        if (zoneRate && zoneRate.rate > 0) {
-          driverCommission = zoneRate.rate;
-        }
+      // Default mode: use the order's assigned driver's rates
+      const driverTable = tableByDriver.get(order.driver.id);
+      if (driverTable) {
+        driverCommission = computeOrderCommission(driverTable, {
+          merchantId: order.merchantId,
+          zoneId: order.zoneId,
+        }).usd;
       }
     }
 

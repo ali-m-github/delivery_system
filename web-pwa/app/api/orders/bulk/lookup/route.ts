@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireAuthenticatedSession } from "@/lib/server-permissions";
 
 // ─── POST /api/orders/bulk/lookup ─────────────────────────────────────────────
 // Accepts an array of orderId values (the human-readable orderId field, not DB UUID)
 // and returns full order records for those that exist in the database.
 // This is used by Quick Assign to find orders that may not be in the local cache.
 export async function POST(request: NextRequest) {
+  // Full order records are returned to the caller — authenticated users only.
+  const auth = await requireAuthenticatedSession(request);
+  if (auth instanceof Response) return auth;
   try {
     const body = await request.json();
     const { orderIds } = body as { orderIds?: string[] };

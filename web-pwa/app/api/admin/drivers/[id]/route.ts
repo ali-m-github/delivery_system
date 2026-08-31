@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { hashPassword } from "@/helpers/auth";
+import { requireServerPermission } from "@/lib/server-permissions";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 
@@ -10,6 +11,8 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireServerPermission(request, "MANAGE_DRIVERS");
+  if (auth instanceof Response) return auth;
   try {
     // Next.js 15 requires awaiting params
     const resolvedParams = await params;
@@ -78,6 +81,8 @@ export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireServerPermission(request, "MANAGE_DRIVERS");
+  if (auth instanceof Response) return auth;
   try {
     const resolvedParams = await params;
     const id = resolvedParams.id;
@@ -373,6 +378,8 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireServerPermission(request, "MANAGE_DRIVERS");
+  if (auth instanceof Response) return auth;
   try {
     const resolvedParams = await params;
     const id = resolvedParams.id;

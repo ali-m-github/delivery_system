@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import PermissionGuard from "@/components/PermissionGuard";
+import { hasPermission, type PermissionedUser } from "@/lib/permissions";
 
 const LOCATION_LABELS: Record<string, string> = {
   WAREHOUSE: "Warehouse",
@@ -125,7 +126,7 @@ interface SharedOrderTableProps {
   isAllSelected: boolean;
   availableDrivers?: any[];
   onUpdateOrder?: (id: string, payload: any) => void;
-  currentUser?: any;
+  currentUser?: PermissionedUser | null;
   onCopyLink?: (order: any) => void;
   /** Called with a DELIVERED (WO/WD) order to return it to the warehouse. */
   onReturnDelivered?: (order: any) => void;
@@ -149,10 +150,9 @@ export default function SharedOrderTable({
     payoutReference: string | null;
   } | null>(null);
 
-  const hasPermission = (perm: string) =>
-    currentUser?.role === "ADMIN" ||
-    currentUser?.permissions?.includes(perm) ||
-    false;
+  // Shared composite check: ADMIN bypass ∪ group permissions ∪ custom
+  // permissions (single source of truth with the server-side guards).
+  const userHasPermission = (perm: string) => hasPermission(currentUser, perm);
 
   // Select-all header checkbox. Reflects "all selected" and shows an
   // indeterminate state when only some rows are checked.

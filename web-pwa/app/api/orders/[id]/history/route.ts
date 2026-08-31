@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { requireAuthenticatedSession } from "@/lib/server-permissions";
 
 /**
  * GET /api/orders/:id/history
@@ -13,9 +14,13 @@ import prisma from "@/lib/prisma";
  * not applied here yet — it will be refined separately.
  */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // Order history exposes actor identities — any authenticated user may view,
+  // but unauthenticated access is not allowed.
+  const auth = await requireAuthenticatedSession(request);
+  if (auth instanceof Response) return auth;
   try {
     // Next.js 15 requires awaiting params
     const { id } = await params;

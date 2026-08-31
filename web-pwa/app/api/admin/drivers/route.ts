@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
 import { PrismaClient, VehicleType } from "@prisma/client";
 import { hashPassword } from "@/helpers/auth";
+import { requireServerPermission } from "@/lib/server-permissions";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 
 const prisma = new PrismaClient();
 
 // GET /api/admin/drivers — Fetch all drivers with user & zoneRates
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_DRIVERS");
+  if (auth instanceof Response) return auth;
   try {
     const drivers = await prisma.driverProfile.findMany({
       select: {
@@ -60,6 +63,8 @@ export async function GET() {
 
 // POST /api/admin/drivers — Create a driver (User + DriverProfile + ZoneRates) in a transaction
 export async function POST(request: Request) {
+  const auth = await requireServerPermission(request, "MANAGE_DRIVERS");
+  if (auth instanceof Response) return auth;
   try {
     const formData = await request.formData();
 

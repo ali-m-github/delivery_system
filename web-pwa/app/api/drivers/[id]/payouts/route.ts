@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { DEFAULT_DRIVER_USD } from "@/lib/commission";
-import { getSessionUserId } from "@/helpers/auth";
+import {
+  loadDriverRateTable,
+  recalcPayoutTotals,
+  enrichPayoutOrdersWithCommission,
+  PAID_OUT_ELIGIBLE_STATUSES,
+} from "@/lib/commission";
+import { requireAuthenticatedSession } from "@/lib/server-permissions";
 
 const prisma = new PrismaClient();
 
@@ -10,6 +15,8 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireAuthenticatedSession(request);
+  if (auth instanceof Response) return auth;
   try {
     const resolvedParams = await params;
     const identifier = resolvedParams.id;
@@ -54,44 +61,14 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
-    // Enrich each order with its per-order driver commission (3-tier logic),
-    // honoring $0 seller exceptions.
-    const driverProfileRef = await prisma.driverProfile.findUnique({
-      where: { id: driverId },
-      select: { userId: true },
-    });
-    const [zoneRates, sellerRates, cashSellerRates] = await Promise.all([
-      prisma.driverZoneRate.findMany({ where: { driverId } }),
-      prisma.driverSellerRate.findMany({ where: { driverId } }),
-      driverProfileRef?.userId
-        ? prisma.driverCashSellerRate.findMany({
-            where: { driverId: driverProfileRef.userId },
-          })
-        : Promise.resolve([]),
-    ]);
-    const zoneRateMap = new Map(zoneRates.map((zr) => [zr.zoneId, zr.rate]));
-    const sellerExceptionMap = new Map<string, number>();
-    for (const sr of sellerRates) {
-      sellerExceptionMap.set(sr.merchantId, sr.rateUsd);
-    }
-    for (const cr of cashSellerRates) {
-      sellerExceptionMap.set(cr.merchantId, cr.rateUsd);
-    }
+    // Enrich each order with its per-order driver commission (authoritative
+    // precedence from lib/commission.ts: seller exception → zone → $0),
+    // honoring $0 seller exceptions. One rate-table load for the driver.
+    const rateTable = await loadDriverRateTable(prisma, driverId);
 
     const enrichedPayouts = payouts.map((payout) => ({
       ...payout,
-      orders: payout.orders.map((order) => {
-        const orderMerchantId = String(order.merchantId ?? "");
-        const orderZoneId = String(order.zoneId);
-        const exceptionRate = orderMerchantId
-          ? sellerExceptionMap.get(orderMerchantId)
-          : undefined;
-        const driverCommissionUsd =
-          exceptionRate !== undefined
-            ? exceptionRate
-            : (zoneRateMap.get(orderZoneId) ?? DEFAULT_DRIVER_USD);
-        return { ...order, driverCommissionUsd };
-      }),
+      orders: enrichPayoutOrdersWithCommission(rateTable, payout.orders),
     }));
 
     return NextResponse.json(enrichedPayouts, { status: 200 });
@@ -109,6 +86,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const auth = await requireAuthenticatedSession(request);
+  if (auth instanceof Response) return auth;
   try {
     const resolvedParams = await params;
     const identifier = resolvedParams.id;
@@ -121,7 +100,7 @@ export async function POST(
           mode: "insensitive",
         },
       },
-      select: { id: true },
+      select: { id: true, userId: true },
     });
 
     if (!profile) {
@@ -130,8 +109,17 @@ export async function POST(
 
     const driverId = profile.id;
 
+    // Self-service scoping: a DRIVER may only create payout batches for their
+    // own profile. Other roles (staff/admin) are unrestricted.
+    if (auth.user.role === "DRIVER" && profile.userId !== auth.user.id) {
+      return NextResponse.json(
+        { error: "Drivers may only create payouts for their own account" },
+        { status: 403 },
+      );
+    }
+
     // Attribute this payout to the authenticated user who created it
-    const createdById = await getSessionUserId(request);
+    const createdById = auth.user.id;
 
     const body = await request.json();
     const { orderIds } = body;
@@ -143,13 +131,15 @@ export async function POST(
       );
     }
 
-    // Fetch the orders from the DB to prevent client-side spoofing
+    // Fetch the orders from the DB to prevent client-side spoofing.
+    // Eligibility (concern B, unified in lib/commission.ts): DELIVERED and
+    // financial status WD or UD.
     const orders = await prisma.order.findMany({
       where: {
         id: { in: orderIds },
         driverId,
         location: "DELIVERED",
-        financialStatus: { in: ["WD", "UD"] },
+        financialStatus: { in: PAID_OUT_ELIGIBLE_STATUSES },
       },
     });
 
@@ -160,76 +150,18 @@ export async function POST(
       );
     }
 
-    // Calculate totals from DB values (server-side, not trusting client)
-    const dbTotalUsd = orders.reduce((sum, o) => sum + (o.amountUsd ?? 0), 0);
-    const dbTotalLbp = orders.reduce((sum, o) => sum + (o.amountLbp ?? 0), 0);
+    // ── Server-side financial recalculation ──────────────────────────────
+    // The backend MUST NOT trust the frontend's math. Recalculate everything
+    // through the authoritative commission module: gross (collected > 0 else
+    // amount), commission (seller exception → zone → $0), net = gross − fee.
+    const rateTable = await loadDriverRateTable(prisma, driverId, profile.userId);
+    const totals = recalcPayoutTotals(rateTable, orders);
 
     // Sanitize numeric values to prevent Prisma type crashes (NaN / undefined)
-    const safeTotalUsd = parseFloat(String(dbTotalUsd)) || 0;
-    const safeTotalLbp = parseFloat(String(dbTotalLbp)) || 0;
-
-    // ── Server-side commission recalculation ─────────────────────────────
-    // The backend MUST NOT trust the frontend's math. Recalculate everything.
-    const driver = await prisma.driverProfile.findUnique({
-      where: { id: driverId },
-      include: {
-        driverSellerRates: true,
-        zoneRates: true,
-      },
-    });
-
-    if (!driver) {
-      return NextResponse.json(
-        { error: "Driver profile not found" },
-        { status: 404 },
-      );
-    }
-
-    // Build the seller-exception map (merchantId → rateUsd), merging BOTH the
-    // DriverSellerRate exceptions AND the cash-seller exceptions
-    // (DriverCashSellerRate, keyed by the linked User). Cash-seller rates take
-    // precedence. A $0 exception is still a valid override — it must override
-    // the zonal/default rate rather than falling through to it.
-    const sellerExceptionMap = new Map<string, number>();
-    for (const sr of driver.driverSellerRates) {
-      sellerExceptionMap.set(String(sr.merchantId), Number(sr.rateUsd || 0));
-    }
-    if (driver.userId) {
-      const cashSellerRates = await prisma.driverCashSellerRate.findMany({
-        where: { driverId: driver.userId },
-      });
-      for (const cr of cashSellerRates) {
-        sellerExceptionMap.set(String(cr.merchantId), Number(cr.rateUsd || 0));
-      }
-    }
-
-    let finalCommission = 0;
-
-    orders.forEach((order) => {
-      const orderMerchantId = String(order.merchantId ?? "");
-      const orderZoneId = String(order.zoneId);
-
-      // Tier 1: Seller Exception (DriverSellerRate + DriverCashSellerRate)
-      const exception = orderMerchantId
-        ? sellerExceptionMap.get(orderMerchantId)
-        : undefined;
-
-      if (exception !== undefined) {
-        finalCommission += exception;
-      } else {
-        // Tier 2: Zone Rate
-        const zoneRate = driver.zoneRates.find(
-          (rate) => String(rate.zoneId) === orderZoneId,
-        );
-        // Tier 3: System default fallback
-        finalCommission += zoneRate
-          ? Number(zoneRate.rate || 0)
-          : DEFAULT_DRIVER_USD;
-      }
-    });
-
-    const safeCommissionUsd = parseFloat(String(finalCommission)) || 0;
-    let safeNetUsd = safeTotalUsd - safeCommissionUsd;
+    const safeTotalUsd = parseFloat(String(totals.totalUsd)) || 0;
+    const safeTotalLbp = parseFloat(String(totals.totalLbp)) || 0;
+    const safeCommissionUsd = parseFloat(String(totals.commissionUsd)) || 0;
+    let safeNetUsd = parseFloat(String(totals.netUsd)) || 0;
 
     // Fetch driver's carried debt to inject into this payout
     const driverProfile = await prisma.driverProfile.findUnique({
@@ -281,7 +213,7 @@ export async function POST(
           id: { in: orderIds },
           driverId,
           location: "DELIVERED",
-          financialStatus: { in: ["WD", "UD"] },
+          financialStatus: { in: PAID_OUT_ELIGIBLE_STATUSES },
         },
         data: {
           driverPayoutId: payoutRecord.id,
