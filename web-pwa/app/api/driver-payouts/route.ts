@@ -8,7 +8,10 @@ import {
   MissingDriverRateError,
 } from "@/lib/commission";
 import { getSessionUserId } from "@/helpers/auth";
-import { withConcurrencyRetries } from "@/lib/concurrency";
+import {
+  withConcurrencyRetries,
+  ConcurrencyConflictError,
+} from "@/lib/concurrency";
 import { requireServerPermission } from "@/lib/server-permissions";
 
 /**
@@ -176,7 +179,7 @@ export async function POST(request: Request) {
       // change cannot be silently swept into this batch, and re-checks
       // driverPayoutId IS NULL so an order already claimed by another payout
       // can never be double-booked (mirrors /api/drivers/[id]/payouts).
-      await tx.order.updateMany({
+      const claimed = await tx.order.updateMany({
         where: {
           id: { in: requestedIds },
           driverId,
@@ -189,6 +192,18 @@ export async function POST(request: Request) {
           financialStatus: "WO",
         },
       });
+
+      // A conditional updateMany can match fewer rows than the step-1 read if
+      // a concurrent request changed eligibility between the read and this
+      // claim. A partial claim would create a payout whose linked orders do
+      // not match its stored totals — never persist a partial batch. Throw the
+      // shared CAS conflict so the whole transaction rolls back and the
+      // existing retry mechanism re-runs it with a fresh read.
+      if (claimed.count !== requestedIds.length) {
+        throw new ConcurrencyConflictError(
+          "One or more requested orders were not claimable at payout creation.",
+        );
+      }
 
       return tx.driverPayout.findUnique({
         where: { id: payout.id },

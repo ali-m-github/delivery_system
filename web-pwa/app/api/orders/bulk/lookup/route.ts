@@ -44,7 +44,32 @@ export async function POST(request: NextRequest) {
           { status: 403 },
         );
       }
-      authScope = { driverId: driverProfile.id };
+      // Drivers may look up (a) their own orders, and (b) ONLY unassigned
+      // WAREHOUSE orders that are legitimately available for THEM to pick
+      // up — the exact same pickup rule the driver app applies
+      // (app/driver/page.tsx → warehouseOrders): location WAREHOUSE,
+      // driverId null, and the order's zone is one of the driver's
+      // assignedZones (DriverZoneAssignment). Anything else — another
+      // driver's orders, warehouse orders outside their assigned zones, or
+      // orders already assigned to a driver — is never returned, so this
+      // endpoint cannot be used to enumerate arbitrary warehouse orders.
+      // A driver with no assigned zones gets only their own orders
+      // (empty `in: []` matches nothing, mirroring the page's behavior).
+      const zoneAssignments = await prisma.driverZoneAssignment.findMany({
+        where: { driverId: driverProfile.id },
+        select: { zoneId: true },
+      });
+      const assignedZoneIds = zoneAssignments.map((az) => az.zoneId);
+      authScope = {
+        OR: [
+          { driverId: driverProfile.id },
+          {
+            location: "WAREHOUSE",
+            driverId: null,
+            zoneId: { in: assignedZoneIds },
+          },
+        ],
+      };
     } else if (actor.role === "MERCHANT") {
       const merchant = await prisma.merchant.findUnique({
         where: { userId: actor.id },
