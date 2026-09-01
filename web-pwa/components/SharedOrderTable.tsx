@@ -334,8 +334,6 @@ export default function SharedOrderTable({
                         driverId: matchedDriver.id,
                         location: "ASSIGNED",
                         financialStatus: "UD",
-                        collectedUsd: 0,
-                        collectedLbp: 0,
                       });
                       (e.target as HTMLInputElement).value = "";
                     }

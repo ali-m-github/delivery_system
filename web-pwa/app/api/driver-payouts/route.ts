@@ -5,6 +5,7 @@ import {
   loadDriverRateTable,
   recalcPayoutTotals,
   PAID_OUT_ELIGIBLE_STATUSES,
+  MissingDriverRateError,
 } from "@/lib/commission";
 import { getSessionUserId } from "@/helpers/auth";
 import { withConcurrencyRetries } from "@/lib/concurrency";
@@ -84,7 +85,10 @@ export async function POST(request: Request) {
 
     // Load the driver's full commission rate table once (3 bulk queries),
     // outside the transaction. See lib/commission.ts for the documented
-    // precedence: seller exception (cash-seller wins) → zone rate → $0.
+    // precedence: seller exception (cash-seller wins) → zone rate → MISSING
+    // (a configuration error — there is no $0 default). recalcPayoutTotals
+    // below throws MissingDriverRateError inside the transaction when any
+    // order has no configured rate, which rolls back the ENTIRE batch.
     const driverProfile = await prisma.driverProfile.findUnique({
       where: { id: driverId },
       select: { userId: true },
@@ -107,12 +111,22 @@ export async function POST(request: Request) {
       // Eligibility (concern B, unified in lib/commission.ts): DELIVERED and
       // financial status WD or UD. UD is the state the void flow restores
       // returned-from-payout orders to, so it must be re-settleable here.
+      // Eligible = this driver's, DELIVERED, WD/UD, and NOT already claimed
+      // by any other payout. The driverPayoutId check keeps the totals
+      // computed below consistent with the links written by the updateMany.
       const orders = await tx.order.findMany({
         where: {
           id: { in: requestedIds },
           driverId,
           location: "DELIVERED",
           financialStatus: { in: PAID_OUT_ELIGIBLE_STATUSES },
+          driverPayoutId: null,
+        },
+        // Human-readable labels for the fail-closed missing-rate error
+        // (zone/seller names) when recalcPayoutTotals throws.
+        include: {
+          zone: { select: { name: true } },
+          merchant: { select: { merchantName: true } },
         },
         orderBy: { id: "asc" },
       });
@@ -128,7 +142,9 @@ export async function POST(request: Request) {
 
       // ── Server-derived financials (client values are NEVER trusted) ─────
       // Gross (concern C): positive collected* wins, else order amount.
-      // Commission (concern A): seller exception → zone → $0 default.
+      // Commission (concern A): seller exception (cash wins) → zone rate, NO
+      // default. Throws MissingDriverRateError if ANY order has no configured
+      // rate — the whole tx rolls back and nothing is created.
       const totals = recalcPayoutTotals(rateTable, orders);
       const { totalUsd, totalLbp, commissionUsd, netUsd } = totals;
 
@@ -158,13 +174,16 @@ export async function POST(request: Request) {
 
       // Update orders: change financialStatus to WO and link driverPayoutId.
       // The WHERE clause re-checks the lifecycle state so a concurrent status
-      // change cannot be silently swept into this batch.
+      // change cannot be silently swept into this batch, and re-checks
+      // driverPayoutId IS NULL so an order already claimed by another payout
+      // can never be double-booked (mirrors /api/drivers/[id]/payouts).
       await tx.order.updateMany({
         where: {
           id: { in: requestedIds },
           driverId,
           location: "DELIVERED",
           financialStatus: { in: PAID_OUT_ELIGIBLE_STATUSES },
+          driverPayoutId: null,
         },
         data: {
           driverPayoutId: payout.id,
@@ -187,6 +206,15 @@ export async function POST(request: Request) {
       // The transaction was rolled back; nothing was created.
       return NextResponse.json(
         { error: error.message, rejectedOrderIds: error.rejectedIds },
+        { status: 400 },
+      );
+    }
+    if (error instanceof MissingDriverRateError) {
+      // The transaction was rolled back; nothing was created. Surface the
+      // actionable missing-rate message so the employee can configure the
+      // driver's rate (a $0 rate is a valid override) and retry.
+      return NextResponse.json(
+        { error: error.message, missingRateOrders: error.missingOrders },
         { status: 400 },
       );
     }

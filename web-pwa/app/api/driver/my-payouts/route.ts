@@ -94,8 +94,9 @@ export async function GET(request: Request) {
     });
 
     // Per-order commission via the authoritative module (seller exception ∪
-    // cash-seller exception → zone → $0 default). A $0 seller exception is
-    // still a valid override of the zonal rate.
+    // cash-seller exception → zone rate → MISSING). An explicitly configured
+    // $0 is a valid figure; a missing rate yields driverCommissionUsd: null
+    // ("Rate not configured") — never a silent $0.
     const rateTable = await loadDriverRateTable(prisma, driverId, userId);
 
     const enrichedPayouts = payouts.map((payout) => ({

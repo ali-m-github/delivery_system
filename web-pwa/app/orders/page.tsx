@@ -1227,8 +1227,6 @@ function OrdersPageInner() {
               driverId: matchedDriver.id,
               location: "ASSIGNED",
               financialStatus: "UD",
-              collectedUsd: 0,
-              collectedLbp: 0,
             }),
           }),
         ),
@@ -1328,8 +1326,6 @@ function OrdersPageInner() {
               driverId: matchedDriver.id,
               location: "ASSIGNED",
               financialStatus: "UD",
-              collectedUsd: 0,
-              collectedLbp: 0,
             }),
           }),
         ),
@@ -1739,15 +1735,11 @@ function OrdersPageInner() {
       financialStatus: "UD",
       driverId: null,
       isArchived: false,
-      collectedUsd: 0,
-      collectedLbp: 0,
     });
   const handleDeliver = (order: Order) =>
     patchOrder(order.id, {
       location: "DELIVERED",
       financialStatus: "WD",
-      collectedUsd: order.amountUsd,
-      collectedLbp: order.amountLbp,
     });
   const handleReturn = (id: string) =>
     patchOrder(id, { location: "RETURN", status: "Re" });
@@ -1887,8 +1879,6 @@ function OrdersPageInner() {
                 financialStatus: "UD",
                 driverId: null,
                 isArchived: false,
-                collectedUsd: 0,
-                collectedLbp: 0,
               }),
             }),
           ),
@@ -2224,16 +2214,21 @@ function OrdersPageInner() {
 
   const submitEdit = async () => {
     if (!editModal) return;
-    const success = await patchOrder(editModal.id, {
+    const payload: Record<string, unknown> = {
       customerName: editFormData.customerName,
       customerPhone: editFormData.customerPhone,
       customerAddress: editFormData.customerAddress,
       zoneId: editFormData.zoneId,
-      amountUsd: parseFloat(editFormData.amountUsd) || 0,
-      amountLbp: parseFloat(editFormData.amountLbp) || 0,
       hasExchange: editFormData.hasExchange,
-      extraShipping: parseFloat(editFormData.extraShipping) || 0,
-    });
+    };
+    // Monetary fields require ORDERS_FINANCIAL (ADMIN bypasses); staff
+    // without the permission submit the non-financial fields only.
+    if (userHasPermission("ORDERS_FINANCIAL")) {
+      payload.amountUsd = parseFloat(editFormData.amountUsd) || 0;
+      payload.amountLbp = parseFloat(editFormData.amountLbp) || 0;
+      payload.extraShipping = parseFloat(editFormData.extraShipping) || 0;
+    }
+    const success = await patchOrder(editModal.id, payload);
     if (success) setEditModal(null);
   };
 
@@ -4945,62 +4940,67 @@ function OrdersPageInner() {
                   </select>
                 </div>
 
-                {/* Amount $ */}
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1.5">
-                    Amount $
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={editFormData.amountUsd}
-                    onChange={(e) =>
-                      setEditFormData((p) => ({
-                        ...p,
-                        amountUsd: e.target.value,
-                      }))
-                    }
-                    className="w-full px-4 py-2.5 text-sm rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500/50 transition-all duration-200"
-                  />
-                </div>
+                {/* Financial fields — ORDERS_FINANCIAL only (ADMIN bypasses) */}
+                {userHasPermission("ORDERS_FINANCIAL") && (
+                  <>
+                    {/* Amount $ */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1.5">
+                        Amount $
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={editFormData.amountUsd}
+                        onChange={(e) =>
+                          setEditFormData((p) => ({
+                            ...p,
+                            amountUsd: e.target.value,
+                          }))
+                        }
+                        className="w-full px-4 py-2.5 text-sm rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500/50 transition-all duration-200"
+                      />
+                    </div>
 
-                {/* Amount LL */}
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1.5">
-                    Amount LL
-                  </label>
-                  <input
-                    type="number"
-                    step="1"
-                    value={editFormData.amountLbp}
-                    onChange={(e) =>
-                      setEditFormData((p) => ({
-                        ...p,
-                        amountLbp: e.target.value,
-                      }))
-                    }
-                    className="w-full px-4 py-2.5 text-sm rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500/50 transition-all duration-200"
-                  />
-                </div>
+                    {/* Amount LL */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1.5">
+                        Amount LL
+                      </label>
+                      <input
+                        type="number"
+                        step="1"
+                        value={editFormData.amountLbp}
+                        onChange={(e) =>
+                          setEditFormData((p) => ({
+                            ...p,
+                            amountLbp: e.target.value,
+                          }))
+                        }
+                        className="w-full px-4 py-2.5 text-sm rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500/50 transition-all duration-200"
+                      />
+                    </div>
 
-                {/* Extra Shipping */}
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1.5">
-                    Extra Shipping
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={editFormData.extraShipping}
-                    onChange={(e) =>
-                      setEditFormData((p) => ({
-                        ...p,
-                        extraShipping: e.target.value,
-                      }))
-                    }
-                    className="w-full px-4 py-2.5 text-sm rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500/50 transition-all duration-200"
-                  />
-                </div>
+                    {/* Extra Shipping */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1.5">
+                        Extra Shipping
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={editFormData.extraShipping}
+                        onChange={(e) =>
+                          setEditFormData((p) => ({
+                            ...p,
+                            extraShipping: e.target.value,
+                          }))
+                        }
+                        className="w-full px-4 py-2.5 text-sm rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500/50 transition-all duration-200"
+                      />
+                    </div>
+                  </>
+                )}
 
                 {/* Has Exchange */}
                 <label className="flex items-center gap-3 cursor-pointer group">

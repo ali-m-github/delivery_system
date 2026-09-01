@@ -19,7 +19,9 @@ class AlreadyProcessedError extends Error {
 }
 
 // Enrich orders with per-order driver commission (authoritative precedence
-// from lib/commission.ts: seller exception (cash wins) → zone → $0).
+// from lib/commission.ts: seller exception (cash wins) → zone rate → MISSING).
+// A configured $0 is valid; a missing rate yields driverCommissionUsd: null
+// ("Rate not configured"), never a silent $0.
 // Rate tables are loaded ONCE PER DRIVER (grouped), not per payout, so the
 // old N+1 per-payout rate loading is gone.
 async function enrichOrdersWithCommission(payouts: any[]) {

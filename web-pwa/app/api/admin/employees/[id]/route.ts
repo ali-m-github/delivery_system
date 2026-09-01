@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { hashPassword } from "@/helpers/auth";
 import { isImageFile, saveMerchantLogo } from "@/lib/logoUpload";
 import { requireServerPermission } from "@/lib/server-permissions";
+import { withConcurrencyRetries, ConcurrencyConflictError } from "@/lib/concurrency";
 import {
   PRIVILEGED_PERMISSIONS,
   VALID_USER_ROLES,
@@ -15,6 +17,23 @@ import {
 function formString(formData: FormData, key: string): string | null {
   const value = formData.get(key);
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** Raised inside the role-change transaction when the target is the final
+ *  remaining ADMIN. The transaction rolls back; surfaces as a 400. */
+class LastAdminError extends Error {
+  constructor() {
+    super("Cannot change the role of the last ADMIN user.");
+    this.name = "LastAdminError";
+  }
+}
+
+/** Raised inside the role-change transaction when the target row is gone. */
+class EmployeeNotFoundError extends Error {
+  constructor() {
+    super("Employee not found");
+    this.name = "EmployeeNotFoundError";
+  }
 }
 
 // PUT /api/admin/employees/[id] — Update an employee (user)
@@ -185,32 +204,112 @@ export async function PUT(
       );
     }
 
-    const user = await prisma.user.update({
-      where: { id },
-      data: updateData,
-      select: {
-        id: true,
-        username: true,
-        email: true,
-        role: true,
-        permissionGroupId: true,
-        permissionGroup: {
-          select: { id: true, name: true, permissions: true },
+    // Role-change authorization (equivalent to the DELETE guard above):
+    // changing an ADMIN's role away from ADMIN is only permitted while at
+    // least one other ADMIN remains. This must not be check-then-act — two
+    // simultaneous demotions must not both observe "another ADMIN exists"
+    // and leave zero admins. The update therefore runs inside a SERIALIZABLE
+    // transaction (same pattern as the statements and driver-payout flows):
+    // the COUNT reads every ADMIN's role, so concurrent demotions of two
+    // different admins are a write-skew anomaly that Postgres SSI aborts
+    // with a serialization failure (P2034). withConcurrencyRetries re-runs
+    // the unit of work, which then sees the updated count and either
+    // proceeds (>= 2 admins) or refuses (1 admin left).
+    const demotesAdmin =
+      target.role === "ADMIN" && role !== "" && role !== "ADMIN";
+
+    try {
+      const user = await withConcurrencyRetries(() =>
+        prisma.$transaction(async (tx) => {
+          if (demotesAdmin) {
+            // Re-read the target inside the transaction: it may have been
+            // deleted or re-roled between the read at the top of the request
+            // and now. The inner check is the authoritative one.
+            const current = await tx.user.findUnique({
+              where: { id },
+              select: { id: true, role: true },
+            });
+            if (!current) throw new EmployeeNotFoundError();
+            if (current.role === "ADMIN") {
+              const adminCount = await tx.user.count({
+                where: { role: "ADMIN" },
+              });
+              if (adminCount <= 1) throw new LastAdminError();
+            }
+          }
+
+          // CAS: apply the update only if the row still has the role
+          // observed at the top of the request. A concurrent role change (or
+          // deletion) invalidates that observation — refuse instead of
+          // stacking a stale update on top of the new state.
+          const updated = await tx.user.updateMany({
+            where: { id, role: target.role },
+            data: updateData,
+          });
+          if (updated.count === 0) {
+            const stillThere = await tx.user.findUnique({
+              where: { id },
+              select: { id: true },
+            });
+            if (!stillThere) throw new EmployeeNotFoundError();
+            // Row exists but changed concurrently — let the retry loop
+            // re-run with a fresh observation.
+            throw new ConcurrencyConflictError();
+          }
+
+          const fresh = await tx.user.findUnique({
+            where: { id },
+            select: {
+              id: true,
+              username: true,
+              email: true,
+              role: true,
+              permissionGroupId: true,
+              permissionGroup: {
+                select: { id: true, name: true, permissions: true },
+              },
+              customPermissions: true,
+            },
+          });
+          if (!fresh) throw new EmployeeNotFoundError();
+          return fresh;
         },
-        customPermissions: true,
-      },
-    });
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        }
+      ));
 
-    // Persist the logo on the merchant record linked to this user
-    if (role === "MERCHANT" && logoUrl) {
-      await prisma.merchant.upsert({
-        where: { userId: user.id },
-        create: { userId: user.id, merchantName: user.username, logoUrl },
-        update: { logoUrl },
-      });
+      // Persist the logo on the merchant record linked to this user
+      if (role === "MERCHANT" && logoUrl) {
+        await prisma.merchant.upsert({
+          where: { userId: user.id },
+          create: { userId: user.id, merchantName: user.username, logoUrl },
+          update: { logoUrl },
+        });
+      }
+
+      return NextResponse.json(user, { status: 200 });
+    } catch (error) {
+      if (error instanceof LastAdminError) {
+        return NextResponse.json(
+          { error: "Cannot change the role of the last ADMIN user." },
+          { status: 400 },
+        );
+      }
+      if (error instanceof EmployeeNotFoundError) {
+        return NextResponse.json(
+          { error: "Employee not found" },
+          { status: 404 },
+        );
+      }
+      if (error instanceof ConcurrencyConflictError) {
+        return NextResponse.json(
+          { error: "Employee was concurrently modified; retry the update." },
+          { status: 409 },
+        );
+      }
+      throw error;
     }
-
-    return NextResponse.json(user, { status: 200 });
   } catch (error) {
     console.error("PUT /api/admin/employees Error:", error);
     return NextResponse.json(

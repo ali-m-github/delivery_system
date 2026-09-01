@@ -721,9 +721,14 @@ export default function DriverClient({
 
     setSubmitting(orderId);
     try {
-      // Fetch current order to append to existing notes
+      // Fetch current order to append to existing notes. The endpoint
+      // returns { data, meta } (and now only this driver's own orders), so
+      // normalize the shape before looking the order up.
       const existingRes = await fetch(`/api/orders`);
-      const allOrders: Order[] = await existingRes.json();
+      const existingJson: unknown = await existingRes.json();
+      const allOrders: Order[] = Array.isArray(existingJson)
+        ? (existingJson as Order[])
+        : ((existingJson as { data?: Order[] })?.data ?? []);
       const existingOrder = allOrders.find((o: Order) => o.id === orderId);
       const existingNotes = existingOrder?.notes || "";
       const updatedNotes = existingNotes
@@ -766,9 +771,14 @@ export default function DriverClient({
 
     setSubmitting(orderId);
     try {
-      // Fetch current order to append to existing notes
+      // Fetch current order to append to existing notes. The endpoint
+      // returns { data, meta } (and now only this driver's own orders), so
+      // normalize the shape before looking the order up.
       const existingRes = await fetch(`/api/orders`);
-      const allOrders: Order[] = await existingRes.json();
+      const existingJson: unknown = await existingRes.json();
+      const allOrders: Order[] = Array.isArray(existingJson)
+        ? (existingJson as Order[])
+        : ((existingJson as { data?: Order[] })?.data ?? []);
       const existingOrder = allOrders.find((o: Order) => o.id === orderId);
       const existingNotes = existingOrder?.notes || "";
       const updatedNotes = existingNotes

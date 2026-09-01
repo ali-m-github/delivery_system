@@ -35,23 +35,21 @@ import prisma from "@/lib/prisma";
  *
  *   Tier 2: Zone rate — DriverZoneRate (keyed by DriverProfile.id).
  *
- *   Tier 3: Fallback — {@link DEFAULT_DRIVER_USD} ($0). No silent per-order
- *           money is invented when a rate is not configured; unconfigured
- *           rates are an ops problem, not a reason to overpay drivers.
+ *   No fallback. If an order matches NEITHER a seller exception nor a zone
+ *           rate, the driver's configuration is INCOMPLETE — a
+ *           configuration error, not a reason to invent money. There is no
+ *           $0 default and no $3 default: ledger paths fail closed with a
+ *           {@link MissingDriverRateError} (the whole operation is
+ *           rejected/rolled back, nothing is persisted), and display paths
+ *           show "Rate not configured" instead of a fake $0 figure.
  *           (The historical $3 constant was the stale/incomplete branch: it
  *           existed in payout creation but not in the recalculation paths,
  *           which broke the invariant that removing an order from a payout
- *           must leave the remaining totals consistent.)
+ *           must leave the remaining totals consistent. The later "$0
+ *           default" had the same flaw in reverse — it silently underpaid
+ *           drivers instead of surfacing the missing configuration.)
  * ─────────────────────────────────────────────────────────────────────────────
  */
-
-/**
- * System-wide fallback when neither a seller exception nor a zone rate is
- * configured for an order. $0 by design — see precedence docs above.
- * Kept as a named export for legacy importers (previews, print page).
- */
-export const DEFAULT_DRIVER_USD = 0.0;
-export const DEFAULT_DRIVER_LBP = 0;
 
 /**
  * The only financial statuses that make a delivered order payable to its
@@ -66,6 +64,41 @@ export const DEFAULT_DRIVER_LBP = 0;
  * permanently stuck in the Delivered tab.
  */
 export const PAID_OUT_ELIGIBLE_STATUSES: string[] = ["WD", "UD"];
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PAYOUT LIFECYCLE MUTABILITY — single source of truth
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DriverPayout.status observed in the codebase (no enum in the schema):
+ *
+ *   PENDING           → freshly created (generate payout / clear-to-office
+ *                        drafts). Orders are still mutable; totals are still
+ *                        recomputable. This is the ONLY mutable state.
+ *   PENDING_APPROVAL  → Phase-1 "settle" posted: amountPaid/remaining/debt
+ *                        carryover and statement deductions already derived.
+ *   SETTLED           → Phase-2 "approve" posted: orders flipped WD→WO and
+ *                        treasury IN transaction posted atomically.
+ *   CLEARED           → legacy direct-clear path: orders already WO, payout
+ *                        reference/clearedAt fixed.
+ *
+ * Anything not in MUTABLE_PAYOUT_STATUSES is a HISTORICAL financial record:
+ * settlement figures (amountPaid, remaining, carriedDebt) and/or treasury
+ * postings are already derived from its stored totals. Generic order editing
+ * must NOT detach or recompute such payouts — use the sanctioned reversal
+ * workflows instead (void while PENDING, admin orders return, treasury
+ * rejection).
+ *
+ * All guards fail CLOSED: an unknown status is treated as historical.
+ */
+export const MUTABLE_PAYOUT_STATUSES: string[] = ["PENDING"];
+
+/**
+ * Fail-closed mutability check: only statuses in {@link MUTABLE_PAYOUT_STATUSES}
+ * are mutable. Null/undefined (payout not found) is NOT mutable.
+ */
+export function isPayoutMutable(status: string | null | undefined): boolean {
+  return !!status && MUTABLE_PAYOUT_STATUSES.includes(status);
+}
 
 /**
  * A driver-facing rate table: the driver's full commission configuration in
@@ -178,14 +211,33 @@ export async function loadDriverRateTableForProfile(
   return loadDriverRateTable(prisma, profileId, profile?.userId);
 }
 
-export interface CommissionBreakdown {
-  usd: number;
-  lbp: number;
-  /** Which tier produced the USD rate: "seller" | "cashSeller" | "zone" | "default". */
-  tier: "seller" | "cashSeller" | "zone" | "default";
-  /** True for Tier 1 (a flat per-merchant override, incl. $0). */
-  isFlatOverride: boolean;
-}
+/**
+ * Result of a per-order commission lookup. Deliberately a discriminated
+ * union so callers MUST handle the missing-rate case explicitly at compile
+ * time — there is no default number to fall back to:
+ *
+ *   - `ok: true`  → a rate IS configured. An explicitly-configured $0 is a
+ *                   VALID result and must never be treated as missing.
+ *   - `ok: false` → no seller exception AND no zone rate: a configuration
+ *                   error. Ledger paths must throw {@link
+ *                   MissingDriverRateError} (via {@link validateDriverRates}
+ *                   / {@link recalcPayoutTotals}); display paths must
+ *                   render "Rate not configured".
+ */
+export type CommissionBreakdown =
+  | {
+      ok: true;
+      usd: number;
+      lbp: number;
+      /** Which tier produced the USD rate: "seller" | "cashSeller" | "zone". */
+      tier: "seller" | "cashSeller" | "zone";
+      /** True for Tier 1 (a flat per-merchant override, incl. $0). */
+      isFlatOverride: boolean;
+    }
+  | {
+      ok: false;
+      tier: "missing";
+    };
 
 export interface CommissionOrderInput {
   merchantId?: string | null | number;
@@ -193,10 +245,64 @@ export interface CommissionOrderInput {
 }
 
 /**
+ * One order for which the driver has NO configured rate (neither a seller
+ * exception nor a zone rate). Carries just enough context to name it in an
+ * employee-facing error.
+ */
+export interface MissingRateOrder {
+  /** Row id (DriverPayoutItem id) when the caller has one. */
+  id?: string;
+  /** Public order id (or other label) when the caller has one. */
+  label?: string;
+  merchantId: string | null;
+  zoneId: string;
+  merchantName?: string;
+  zoneName?: string;
+}
+
+/**
+ * Fail-closed error: at least one order in a batch has no configured driver
+ * commission rate. Ledger-writing paths throw this — inside the
+ * `$transaction` when applicable, so the ENTIRE operation rolls back (no
+ * partial payout / statement / lifecycle change is persisted) — and surface
+ * it as a 4xx response carrying the actionable message. Display/preview
+ * paths must never throw; they must render "Rate not configured" instead.
+ */
+export class MissingDriverRateError extends Error {
+  readonly driverProfileId: string;
+  readonly missingOrders: MissingRateOrder[];
+
+  constructor(driverProfileId: string, missingOrders: MissingRateOrder[]) {
+    const count = missingOrders.length;
+    const orderList = missingOrders
+      .map((o) => {
+        const which = [
+          o.merchantId ? `seller ${o.merchantName ?? o.merchantId}` : "seller not set",
+          o.zoneId ? `zone ${o.zoneName ?? o.zoneId}` : "zone not set",
+        ].join(", ");
+        return `${o.id ?? o.label ?? "an order"} (${which})`;
+      })
+      .join("; ");
+    super(
+      `Driver commission rate not configured: driver ${driverProfileId} has ` +
+        `no seller-exception or zone rate for ${count} order(s): ${orderList}. ` +
+        `Configure the missing rate(s) first — a $0 rate is a valid explicit ` +
+        `override — then retry. Nothing was saved.`,
+    );
+    this.name = "MissingDriverRateError";
+    this.driverProfileId = driverProfileId;
+    this.missingOrders = missingOrders;
+  }
+}
+
+/**
  * (A) Commission calculation for a single order against a rate table.
- * Precedence: seller exception (cash wins) → zone rate → $0 default.
+ * Precedence: seller exception (cash wins) → zone rate → MISSING (no
+ * configured rate is a configuration error, not a $0 default).
  * LBP: DriverSellerRate carries a rateLbp; zone rates and cash-seller rates
  * are USD-only (their LBP is 0), matching every historical implementation.
+ * Returns `ok: false` (with no numeric result) when neither tier is
+ * configured. An explicitly-configured $0 rate still returns `ok: true`.
  */
 export function computeOrderCommission(
   table: DriverRateTable,
@@ -210,6 +316,7 @@ export function computeOrderCommission(
       // amount, so look the LBP up from the standard (profile-keyed) map.
       const lbp = table.sellerLbpMap?.get(merchantKey) ?? 0;
       return {
+        ok: true,
         usd: rate,
         lbp,
         tier: table.cashSellerMerchantIds?.has(merchantKey) ? "cashSeller" : "seller",
@@ -219,14 +326,74 @@ export function computeOrderCommission(
   }
   const zoneRate = table.zoneRateMap.get(order.zoneId);
   if (zoneRate !== undefined) {
-    return { usd: zoneRate, lbp: 0, tier: "zone", isFlatOverride: false };
+    return { ok: true, usd: zoneRate, lbp: 0, tier: "zone", isFlatOverride: false };
   }
-  return {
-    usd: DEFAULT_DRIVER_USD,
-    lbp: DEFAULT_DRIVER_LBP,
-    tier: "default",
-    isFlatOverride: false,
-  };
+  // No seller exception and no zone rate → configuration error. There is no
+  // numeric fallback (neither $0 nor the historical $3): inventing one would
+  // silently corrupt payouts. Ledger paths must fail closed via
+  // validateDriverRates(); display paths render "Rate not configured".
+  return { ok: false, tier: "missing" };
+}
+
+/**
+ * Pure helper: the orders in `orders` for which the rate table has neither a
+ * seller exception nor a zone rate. An explicitly-configured $0 IS a
+ * configured rate and is never reported here (no truthiness on the rate
+ * value, ever).
+ */
+export function findMissingRateOrders<T extends CommissionOrderRow>(
+  table: DriverRateTable,
+  orders: T[],
+): MissingRateOrder[] {
+  const missing: MissingRateOrder[] = [];
+  for (const o of orders) {
+    if (computeOrderCommission(table, o).ok === false) {
+      const row = o as CommissionOrderRow & {
+        id?: string | null;
+        orderId?: string | null;
+        merchantName?: string | null;
+        zoneName?: string | null;
+        merchant?: { merchantName?: string | null } | null;
+        zone?: { name?: string | null } | null;
+      };
+      missing.push({
+        id: row.id ?? undefined,
+        label: row.orderId ?? undefined,
+        merchantId: o.merchantId == null ? null : String(o.merchantId),
+        zoneId: o.zoneId,
+        merchantName:
+          row.merchantName ??
+          (typeof row.merchant?.merchantName === "string"
+            ? row.merchant.merchantName
+            : undefined),
+        zoneName:
+          row.zoneName ??
+          (typeof row.zone?.name === "string" ? row.zone.name : undefined),
+      });
+    }
+  }
+  return missing;
+}
+
+/**
+ * Fail-closed batch validation for ledger-writing paths: EVERY included
+ * order must have a configured rate. If ANY is missing, throws a single
+ * {@link MissingDriverRateError} aggregating ALL of them, so one
+ * unconfigured order fails the WHOLE payout / removal / settlement (no
+ * partial results). Call it inside the `$transaction` when applicable so
+ * the throw rolls everything back.
+ *
+ * An explicitly-configured $0 rate PASSES this check — only the absence of a
+ * rate row/match fails.
+ */
+export function validateDriverRates(
+  table: DriverRateTable,
+  orders: CommissionOrderRow[],
+): void {
+  const missing = findMissingRateOrders(table, orders);
+  if (missing.length > 0) {
+    throw new MissingDriverRateError(table.profileId, missing);
+  }
 }
 
 export interface PayoutTotals {
@@ -270,18 +437,27 @@ export function grossLbp(order: GrossOrderInput): number {
  * (gross − commission). Pure and batch-capable — feed it the remaining
  * orders after a removal/return and the result is exactly what the ledger
  * must store.
+ *
+ * FAILS CLOSED: validates that EVERY order has a configured rate and throws
+ * {@link MissingDriverRateError} (aggregating all missing ones) BEFORE
+ * computing anything. When called inside `$transaction`, that throw rolls
+ * back the entire operation — no partial payout / statement / lifecycle
+ * change is ever persisted.
  */
 export function recalcPayoutTotals(
   table: DriverRateTable,
   orders: CommissionOrderRow[],
 ): PayoutTotals {
+  validateDriverRates(table, orders);
   let totalUsd = 0;
   let totalLbp = 0;
   let commissionUsd = 0;
   for (const o of orders) {
+    const breakdown = computeOrderCommission(table, o);
     totalUsd += grossUsd(o);
     totalLbp += grossLbp(o);
-    commissionUsd += computeOrderCommission(table, o).usd;
+    // validateDriverRates above guarantees `ok: true` for every order.
+    commissionUsd += breakdown.ok ? breakdown.usd : 0;
   }
   return {
     totalUsd,
@@ -321,37 +497,68 @@ export interface PayoutOrderEnrichment {
  * `driverCommissionUsd` (A) plus normalized `collectedUsd`/`collectedLbp`
  * (C) for one driver's payout orders.
  *
+ * Display paths MUST NOT throw on missing rates: `driverCommissionUsd` is
+ * `null` exactly when the driver has no configured rate for that order
+ * (neither seller exception nor zone rate). An explicitly-configured $0
+ * rate yields `driverCommissionUsd: 0`, which UIs must render as a real $0
+ * figure — distinguishable from the `null` "Rate not configured" case.
+ *
  * Call it ONCE per driver (group payouts by driver first) rather than per
  * payout — it reuses the per-driver rate table, eliminating the N+1
  * rate-loading that the old per-payout enrichment performed.
  */
 export function enrichPayoutOrdersWithCommission<
   T extends PayoutOrderEnrichment & Record<string, unknown>,
->(table: DriverRateTable, orders: T[]): T[] {
+>(
+  table: DriverRateTable,
+  orders: T[],
+): Array<
+  T & {
+    collectedUsd: number;
+    collectedLbp: number;
+    driverCommissionUsd: number | null;
+  }
+> {
   return orders.map((order) => {
-    const { usd } = computeOrderCommission(table, order);
+    const breakdown = computeOrderCommission(table, order);
     return {
       ...order,
       collectedUsd: grossUsd(order),
       collectedLbp: grossLbp(order),
-      driverCommissionUsd: usd,
+      driverCommissionUsd: breakdown.ok ? breakdown.usd : null,
     };
   });
 }
 
-/** Legacy result shape (kept for any remaining consumers / scripts). */
+/** Result shape for the async convenience helpers below. */
 export interface DriverCommissionResult {
   usd: number;
   lbp: number;
   isFlatOverride: boolean;
 }
 
+/** Throws the fail-closed error for an order with no configured rate. */
+function missingRateResult(
+  table: DriverRateTable,
+  order: CommissionOrderInput,
+): never {
+  throw new MissingDriverRateError(table.profileId, [
+    {
+      merchantId: order.merchantId == null ? null : String(order.merchantId),
+      zoneId: order.zoneId,
+    },
+  ]);
+}
+
 /**
  * Single-order async convenience: loads the driver's full rate table (3 bulk
  * queries, incl. the cash-seller union the old implementation was missing)
- * and returns the Tier 1 → Tier 2 → Tier 3 result. Do NOT call this per
- * order in a loop — use {@link loadDriverRateTable} + {@link
- * computeOrderCommission} instead.
+ * and returns the Tier 1 → Tier 2 result. Do NOT call this per order in a
+ * loop — use {@link loadDriverRateTable} + {@link computeOrderCommission}
+ * instead.
+ *
+ * FAILS CLOSED: throws {@link MissingDriverRateError} when the driver has no
+ * configured rate for the order — there is no default to fall back to.
  */
 export async function getDriverCommission(
   driverId: string,
@@ -360,20 +567,28 @@ export async function getDriverCommission(
 ): Promise<DriverCommissionResult> {
   const table = await loadDriverRateTableForProfile(driverId);
   const result = computeOrderCommission(table, { merchantId, zoneId });
+  if (!result.ok) return missingRateResult(table, { merchantId, zoneId });
   return { usd: result.usd, lbp: result.lbp, isFlatOverride: result.isFlatOverride };
 }
 
 /**
  * Batch version — computes commissions for multiple orders assigned to the
  * same driver. One rate-table load, then pure per-order lookups (no N+1).
+ *
+ * FAILS CLOSED: throws one aggregated {@link MissingDriverRateError} if ANY
+ * order in the batch has no configured rate (nothing is computed for a
+ * partially-configured batch).
  */
 export async function getDriverCommissionsForOrders(
   driverId: string,
   orders: { merchantId?: string | null; zoneId: string }[],
 ): Promise<DriverCommissionResult[]> {
   const table = await loadDriverRateTableForProfile(driverId);
+  validateDriverRates(table, orders);
   return orders.map((order) => {
     const result = computeOrderCommission(table, order);
+    // Unreachable: validateDriverRates already threw for any missing rate.
+    if (!result.ok) return missingRateResult(table, order);
     return { usd: result.usd, lbp: result.lbp, isFlatOverride: result.isFlatOverride };
   });
 }

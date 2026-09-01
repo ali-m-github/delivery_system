@@ -8,6 +8,7 @@ import {
   requireAuthenticatedSession,
   requireServerPermission,
 } from "@/lib/server-permissions";
+import { hasPermission } from "@/lib/permissions";
 
 /**
  * Raised when one or more requested order IDs do not belong to the target
@@ -54,6 +55,17 @@ export async function GET(req: Request) {
       );
     }
     merchantId = merchant.id;
+  } else if (!hasPermission(auth.user, "MANAGE_FINANCE")) {
+    // Every non-merchant role requires the existing finance permission to
+    // read merchant statements. ADMIN passes through the standard
+    // hasPermission bypass; DRIVER / USER / EMPLOYEE (and any other role
+    // without MANAGE_FINANCE via group or custom permissions) are denied.
+    // The merchantId query param is only a filter for already-authorized
+    // callers — it never grants or narrows authorization by itself.
+    return NextResponse.json(
+      { error: "Forbidden" },
+      { status: 403 },
+    );
   }
 
   try {

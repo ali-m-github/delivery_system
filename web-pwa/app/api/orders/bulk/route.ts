@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { createExchangeOrderFromDelivered } from "@/lib/exchange";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
+import { isPayoutMutable } from "@/lib/commission";
 import { requireAuthenticatedSession } from "@/lib/server-permissions";
 
 // ─── PATCH /api/orders/bulk ───────────────────────────────────────────────────
@@ -57,6 +58,54 @@ export async function PATCH(request: Request) {
         if (!existing) {
           results.push({ id, success: false, error: "Order not found" });
           continue;
+        }
+
+        // ── Payout integrity (fix C) ────────────────────────────────────────
+        // Bulk edits write location/financialStatus/collected directly with
+        // NO payout awareness. A location move off DELIVERED would silently
+        // detach the order from its payout (totals keep counting it); a
+        // collected change would desync stored totals from the ledger.
+        //  • HISTORICAL payout (PENDING_APPROVAL / SETTLED / CLEARED /
+        //    unknown): rejected — its totals are settled/posted ledger money.
+        //    Use the sanctioned reversal workflows (void / admin returns).
+        //  • PENDING payout: reject location changes here too — the
+        //    single-order PATCH /api/orders performs the atomic detach +
+        //    authoritative recompute; this bulk endpoint has no such
+        //    reconciliation, so it must not touch payout orders.
+        if (existing.driverPayoutId) {
+          const payout = await prisma.driverPayout.findUnique({
+            where: { id: existing.driverPayoutId },
+            select: { id: true, status: true },
+          });
+          if (!payout) {
+            results.push({
+              id,
+              success: false,
+              error: "Order references a driver payout that no longer exists",
+            });
+            continue;
+          }
+          if (!isPayoutMutable(payout.status)) {
+            results.push({
+              id,
+              success: false,
+              error: `Order belongs to a driver payout in "${payout.status}" (historical record); use the payout void / returns workflow`,
+            });
+            continue;
+          }
+          if (
+            location !== undefined &&
+            location !== existing.location &&
+            location !== "DELIVERED"
+          ) {
+            results.push({
+              id,
+              success: false,
+              error:
+                "Order is in a pending driver payout; detach via PATCH /api/orders or the payout rollback endpoint, not bulk edit",
+            });
+            continue;
+          }
         }
 
         // ── Build update data from provided fields ──────────────────────

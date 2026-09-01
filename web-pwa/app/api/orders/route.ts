@@ -8,11 +8,18 @@ import { orderIdForFinancialStatus } from "@/lib/order-id";
 import {
   loadDriverRateTable,
   recalcPayoutTotals,
+  isPayoutMutable,
+  MissingDriverRateError,
 } from "@/lib/commission";
+import {
+  ConcurrencyConflictError,
+  withConcurrencyRetries,
+} from "@/lib/concurrency";
 import {
   requireAuthenticatedSession,
   requireServerPermission,
 } from "@/lib/server-permissions";
+import { hasPermission } from "@/lib/permissions";
 
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
 export async function GET(request: NextRequest) {
@@ -73,10 +80,59 @@ export async function GET(request: NextRequest) {
     ];
   }
 
+  // ── Authorization scope (server-side only — never from query/body) ───────
+  // Resolved before the try block and merged into `where`, so the degraded
+  // fallback below automatically reuses the same scope as the returned data.
+  const actor = auth.user; // DB-verified user behind the session
+  let authScope: Record<string, unknown>;
+  try {
+    if (actor.role === "DRIVER") {
+      const driverProfile = await prisma.driverProfile.findUnique({
+        where: { userId: actor.id },
+        select: { id: true },
+      });
+      if (!driverProfile) {
+        return NextResponse.json(
+          { error: "Driver account has no driver profile" },
+          { status: 403 },
+        );
+      }
+      authScope = { driverId: driverProfile.id };
+    } else if (actor.role === "MERCHANT") {
+      const merchant = await prisma.merchant.findUnique({
+        where: { userId: actor.id },
+        select: { id: true },
+      });
+      if (!merchant) {
+        return NextResponse.json(
+          { error: "Merchant account has no merchant record" },
+          { status: 403 },
+        );
+      }
+      authScope = { merchantId: merchant.id };
+    } else if (actor.role === "ADMIN") {
+      authScope = {};
+    } else {
+      // Staff (USER/EMPLOYEE): the global order list is restricted.
+      if (!hasPermission(actor, "ORDERS_VIEW")) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+      authScope = {};
+    }
+  } catch (error: any) {
+    console.error("[GET /api/orders] Scope resolution failed:", error.message);
+    return NextResponse.json(
+      { error: "Internal Server Error", details: error.message },
+      { status: 500 },
+    );
+  }
+  Object.assign(where, authScope);
+
   try {
     // Tab badges need totals from the database, not only the current page of
-    // orders returned below. Keep the archive scope consistent with the view.
-    const summaryWhere: Record<string, unknown> = {};
+    // orders returned below. Keep the archive scope consistent with the view
+    // and the authorization scope of the data returned.
+    const summaryWhere: Record<string, unknown> = { ...authScope };
     if (isArchived === "true" || isArchived === "false") {
       summaryWhere.isArchived = isArchived === "true";
     }
@@ -409,6 +465,17 @@ const MERCHANT_UPDATABLE_FIELDS = new Set<string>([
   "amountLbp",
 ]);
 
+// Fields that carry financial meaning. Staff (non-ADMIN) may only write these
+// with the ORDERS_FINANCIAL permission. DRIVER/MERCHANT keep their own
+// role-scoped whitelists (their COD workflows), and ADMIN is unrestricted.
+const FINANCIAL_FIELDS = new Set<string>([
+  "amountUsd",
+  "amountLbp",
+  "extraShipping",
+  "collectedUsd",
+  "collectedLbp",
+]);
+
 function parseFiniteNumber(value: unknown): number | null {
   let num: number;
   if (typeof value === "number") {
@@ -445,6 +512,14 @@ export async function PATCH(request: Request) {
     const { id, price, driverActionLog } = body;
     // NOTE: `status` and `currentUserActionId` may arrive in the body for
     // legacy/compat reasons; they are intentionally never read or written.
+
+    // Legacy `price` alias → amountUsd, normalized BEFORE whitelist and
+    // permission evaluation so it is authorized exactly like amountUsd
+    // itself: a role that may not write amountUsd can no longer smuggle it
+    // in through `price`.
+    if (price !== undefined && body.amountUsd === undefined) {
+      body.amountUsd = price;
+    }
 
     if (!id || typeof id !== "string")
       return NextResponse.json(
@@ -498,7 +573,18 @@ export async function PATCH(request: Request) {
       }
       allowedFields = MERCHANT_UPDATABLE_FIELDS;
     } else {
-      // ADMIN and staff (USER) share the staff whitelist.
+      // ADMIN and staff (USER/EMPLOYEE) share the staff whitelist, but staff
+      // must hold ORDERS_EDIT — ADMIN passes via the ADMIN bypass inside
+      // hasPermission, so full authority is preserved for admins.
+      if (!hasPermission(actor, "ORDERS_EDIT")) {
+        return NextResponse.json(
+          {
+            error:
+              "Staff users require the ORDERS_EDIT permission to update orders",
+          },
+          { status: 403 },
+        );
+      }
       allowedFields = STAFF_UPDATABLE_FIELDS;
     }
 
@@ -526,6 +612,35 @@ export async function PATCH(request: Request) {
       );
     }
 
+    // ── Historical payout protection (fix A) ───────────────────────────────
+    // A payout leaves the mutable state as soon as it is settled / cleared:
+    //   PENDING_APPROVAL → amountPaid / remaining / debt carryover recorded
+    //   SETTLED / CLEARED → orders flipped to WO, treasury posting made
+    // Its stored totals are historical money. Generic order editing must NOT
+    // detach such an order or change anything that feeds the payout totals —
+    // that would silently diverge ledger, settlement and treasury figures.
+    // The sanctioned reversal paths remain: void (PENDING only), the admin
+    // orders-return workflow, and treasury rejection.
+    //
+    // The pre-read here fails closed on a dangling reference; the VALUE-
+    // based rejection (only fields that actually change vs the stored row,
+    // so an unrelated edit like a note never trips it) runs AFTER the
+    // server-side location→financialStatus synchronization below.
+    let linkedPayout: { id: string; status: string } | null = null;
+    if (existing.driverPayoutId) {
+      linkedPayout = await prisma.driverPayout.findUnique({
+        where: { id: existing.driverPayoutId },
+        select: { id: true, status: true },
+      });
+      if (!linkedPayout) {
+        // Dangling reference is a data-integrity error; fail closed.
+        return NextResponse.json(
+          { error: "Order references a driver payout that no longer exists" },
+          { status: 409 },
+        );
+      }
+    }
+
     // ── Whitelist extraction (unknown / forbidden fields are ignored) ──────
     // Unchecked update input: scalar FKs (driverId, merchantId, ...) directly.
     const data: Prisma.OrderUncheckedUpdateInput = {};
@@ -533,6 +648,27 @@ export async function PATCH(request: Request) {
       const value = body[key];
       if (value !== undefined) {
         (data as Record<string, unknown>)[key] = value;
+      }
+    }
+
+    // ── Financial field gate (staff only — ADMIN bypasses) ─────────────────
+    // Client-supplied monetary fields require ORDERS_FINANCIAL. This runs
+    // after whitelist extraction, so the legacy `price` alias (already
+    // normalized into body.amountUsd above) is covered by the same check.
+    if (allowedFields === STAFF_UPDATABLE_FIELDS && !actorIsAdmin) {
+      const touchedFinancial = [...FINANCIAL_FIELDS].filter(
+        (f) => (data as Record<string, unknown>)[f] !== undefined,
+      );
+      if (
+        touchedFinancial.length > 0 &&
+        !hasPermission(actor, "ORDERS_FINANCIAL")
+      ) {
+        return NextResponse.json(
+          {
+            error: `Financial fields (${touchedFinancial.join(", ")}) require the ORDERS_FINANCIAL permission`,
+          },
+          { status: 403 },
+        );
       }
     }
 
@@ -555,18 +691,6 @@ export async function PATCH(request: Request) {
         }
         (data as Record<string, unknown>)[field] = parsed;
       }
-    }
-
-    // Legacy `price` alias → amountUsd (only when amountUsd was not sent).
-    if (price !== undefined && data.amountUsd === undefined) {
-      const parsed = parseFiniteNumber(price);
-      if (parsed === null || parsed < 0) {
-        return NextResponse.json(
-          { error: "Invalid value for price" },
-          { status: 400 },
-        );
-      }
-      data.amountUsd = parsed;
     }
 
     if (data.packages !== undefined) {
@@ -713,71 +837,85 @@ export async function PATCH(request: Request) {
       newFinancialStatus,
     );
 
-    // ── Payout cleanup: Unlink + recalc when order removed from pending payout ─
-    // If the order was in a pending payout and is being moved back (not DELIVERED),
-    // unlink it from the payout and recalculate totals.
-    if (
-      existing.driverPayoutId &&
-      locationChanged &&
-      newLocation !== "DELIVERED"
-    ) {
-      data.driverPayoutId = null;
-      changes.push("Removed from Payout");
+    // ── Historical payout guard (fix A, value-based) ────────────────────────
+    // Reject only edits that ACTUALLY change a payout-affecting value vs the
+    // stored row (after the server-side sync above). Resending an unchanged
+    // value alongside a cosmetic edit (e.g. a note) must not be blocked.
+    // Anything outside PAYOUT_AFFECTING_FIELDS is cosmetic and never touches
+    // payout money.
+    if (linkedPayout && !isPayoutMutable(linkedPayout.status)) {
+      const affected: string[] = [];
+      if (locationChanged) affected.push("location");
+      if (newFinancialStatus !== existing.financialStatus)
+        affected.push("financialStatus");
+      if (data.driverId !== undefined && data.driverId !== existing.driverId)
+        affected.push("driverId");
+      if (data.amountUsd !== undefined && data.amountUsd !== existing.amountUsd)
+        affected.push("amountUsd");
+      if (data.amountLbp !== undefined && data.amountLbp !== existing.amountLbp)
+        affected.push("amountLbp");
+      if (
+        data.collectedUsd !== undefined &&
+        data.collectedUsd !== existing.collectedUsd
+      )
+        affected.push("collectedUsd");
+      if (
+        data.collectedLbp !== undefined &&
+        data.collectedLbp !== existing.collectedLbp
+      )
+        affected.push("collectedLbp");
+      if (
+        data.extraShipping !== undefined &&
+        data.extraShipping !== existing.extraShipping
+      )
+        affected.push("extraShipping");
+      if (data.zoneId !== undefined && data.zoneId !== existing.zoneId)
+        affected.push("zoneId");
+      if (
+        data.merchantId !== undefined &&
+        data.merchantId !== existing.merchantId
+      )
+        affected.push("merchantId");
+      if (
+        data.isArchived !== undefined &&
+        data.isArchived !== existing.isArchived
+      )
+        affected.push("isArchived");
+      if (
+        data.hasExchange !== undefined &&
+        data.hasExchange !== existing.hasExchange
+      )
+        affected.push("hasExchange");
 
-      // Fetch the payout to verify it's PENDING before recalculating
-      const currentPayout = await prisma.driverPayout.findUnique({
-        where: { id: existing.driverPayoutId },
-        select: { id: true, status: true, driverId: true },
-      });
-
-      if (currentPayout && currentPayout.status === "PENDING") {
-        const remainingOrders = await prisma.order.findMany({
-          where: {
-            driverPayoutId: currentPayout.id,
-            id: { not: existing.id }, // exclude the order being removed
+      if (affected.length > 0) {
+        return NextResponse.json(
+          {
+            error: `Order belongs to a driver payout in "${linkedPayout.status}" (a historical financial record). Changes to ${affected.join(", ")} are not allowed through generic order editing — use the payout void / returns workflow instead.`,
           },
-          select: {
-            id: true,
-            amountUsd: true,
-            amountLbp: true,
-            collectedUsd: true,
-            collectedLbp: true,
-            zoneId: true,
-            merchantId: true,
-          },
-        });
-
-        if (remainingOrders.length === 0) {
-          // No orders left — delete the empty payout
-          await prisma.driverPayout.delete({
-            where: { id: currentPayout.id },
-          });
-          changes.push("Payout deleted (no remaining orders)");
-        } else {
-          // Recalculate totals from remaining orders through the
-          // authoritative commission module (same figures the payout
-          // creation wrote): gross = collected > 0 else amount,
-          // commission = seller exception → zone → $0, net = gross − fee.
-          const rateTable = await loadDriverRateTable(
-            prisma,
-            currentPayout.driverId,
-          );
-          const recalced = recalcPayoutTotals(rateTable, remainingOrders);
-
-          await prisma.driverPayout.update({
-            where: { id: currentPayout.id },
-            data: {
-              totalUsd: recalced.totalUsd,
-              totalLbp: recalced.totalLbp,
-              commissionUsd: recalced.commissionUsd,
-              netUsd: recalced.netUsd,
-              totalCollected: recalced.totalCollected,
-            },
-          });
-          changes.push("Payout totals recalculated");
-        }
+          { status: 409 },
+        );
       }
     }
+
+    // ── Payout-affecting decision for the atomic unit below ────────────────
+    // Detach: the order leaves the payout (moved to a non-DELIVERED location).
+    const willDetach =
+      existing.driverPayoutId !== null &&
+      locationChanged &&
+      newLocation !== "DELIVERED";
+    // Money recompute: still in the payout, but the financial sync above
+    // effectively changed what is owed (moved to DELIVERED, or an
+    // amount/collected/zone/merchant value that differs from the stored row).
+    const willRecompute =
+      existing.driverPayoutId !== null &&
+      !willDetach &&
+      (locationChanged ||
+        (data.amountUsd !== undefined && data.amountUsd !== existing.amountUsd) ||
+        (data.amountLbp !== undefined && data.amountLbp !== existing.amountLbp) ||
+        (data.collectedUsd !== undefined && data.collectedUsd !== existing.collectedUsd) ||
+        (data.collectedLbp !== undefined && data.collectedLbp !== existing.collectedLbp) ||
+        (data.zoneId !== undefined && data.zoneId !== existing.zoneId) ||
+        (data.merchantId !== undefined && data.merchantId !== existing.merchantId));
 
     // --- GRANULAR HISTORY LOGGING ---
 
@@ -823,12 +961,10 @@ export async function PATCH(request: Request) {
       changes.push(`Note Added/Edited: ${data.notes}`);
     }
 
-    const actionNote =
-      typeof driverActionLog === "string" && driverActionLog.trim() !== ""
-        ? driverActionLog
-        : changes.length > 0
-          ? changes.join(" | ")
-          : "Order Updated";
+    // NOTE: the history `action` note is finalized INSIDE the atomic
+    // transaction below, because the payout reconciliation entries
+    // ("Removed from Payout", "Payout totals recalculated", ...) are only
+    // known once that reconciliation has run.
 
     // History attribution: the acting user comes from the session; the
     // driver recorded is the effective (post-update) driver of the order.
@@ -837,23 +973,176 @@ export async function PATCH(request: Request) {
         ? (data.driverId as string | null)
         : existing.driverId;
 
-    const updatedOrder = await prisma.order.update({
-      where: { id },
-      data: {
-        ...data,
-        location: newLocation,
-        financialStatus: newFinancialStatus,
-        orderId: newOrderId,
-        history: {
-          create: {
-            action: actionNote,
+    // ── Atomic order update + payout reconciliation (fix A) ────────────────
+    // Detach + payout recalculation + order update are ONE transaction so a
+    // failure can never leave the order unlinked while the payout still carries
+    // stale totals (or vice versa). The payout is re-read INSIDE the
+    // transaction and a CAS on its status guards against a concurrent settle /
+    // clear landing between our pre-read and the write.
+    const baseChanges = [...changes];
+    const finalActionNote = () =>
+      typeof driverActionLog === "string" && driverActionLog.trim() !== ""
+        ? driverActionLog
+        : changes.length > 0
+          ? changes.join(" | ")
+          : "Order Updated";
+
+    const updatedOrder = await withConcurrencyRetries(() =>
+      prisma.$transaction(async (tx) => {
+        // Each attempt is self-contained: reset the change log to the
+        // pre-transaction entries so a retried attempt cannot duplicate the
+        // payout reconciliation notes.
+        changes.length = 0;
+        changes.push(...baseChanges);
+
+        if (existing.driverPayoutId) {
+          // Re-read the payout inside the transaction: the pre-read above is
+          // only an optimization, this is the authoritative check.
+          const payout = await tx.driverPayout.findUnique({
+            where: { id: existing.driverPayoutId! },
+            select: { id: true, status: true, driverId: true },
+          });
+          if (!payout) {
+            // Dangling reference — fail closed rather than detach blindly.
+            throw new ConcurrencyConflictError(
+              "Order references a driver payout that no longer exists",
+            );
+          }
+          if (!isPayoutMutable(payout.status)) {
+            throw new ConcurrencyConflictError(
+              `Driver payout is no longer mutable (status: ${payout.status}); concurrent settle/clear detected`,
+            );
+          }
+
+          if (willDetach) {
+            // Unlink this order from the payout first (still inside the tx).
+            await tx.order.update({
+              where: { id },
+              data: { driverPayoutId: null },
+            });
+            changes.push("Removed from Payout");
+          }
+
+          if (willDetach || willRecompute) {
+            // Full order rows (recalc reads the financial scalars) plus
+            // human-readable labels for the fail-closed missing-rate error.
+            const labelIncludes = {
+              zone: { select: { name: true } },
+              merchant: { select: { merchantName: true } },
+            };
+            let remainingOrders: {
+              id: string;
+              orderId: string;
+              amountUsd: number;
+              amountLbp: number;
+              collectedUsd: number;
+              collectedLbp: number;
+              zoneId: string;
+              merchantId: string | null;
+            }[];
+            if (willDetach) {
+              // Order is unlinked first: everything left on the payout.
+              remainingOrders = await tx.order.findMany({
+                where: { driverPayoutId: payout.id },
+                include: labelIncludes,
+              });
+            } else {
+              // Still linked: recompute from the post-update row (already
+              // applied by the detach-less update below? No — this tx runs
+              // the payout recalc BEFORE the final order update, so apply the
+              // incoming monetary values over the stored row in memory).
+              const self = await tx.order.findUnique({
+                where: { id },
+                include: labelIncludes,
+              });
+              if (!self) {
+                throw new ConcurrencyConflictError(
+                  "Order vanished mid-transaction; retrying",
+                );
+              }
+              const patchedSelf = {
+                ...self,
+                amountUsd:
+                  data.amountUsd !== undefined ? Number(data.amountUsd) : self.amountUsd,
+                amountLbp:
+                  data.amountLbp !== undefined ? Number(data.amountLbp) : self.amountLbp,
+                collectedUsd:
+                  data.collectedUsd !== undefined ? Number(data.collectedUsd) : self.collectedUsd,
+                collectedLbp:
+                  data.collectedLbp !== undefined ? Number(data.collectedLbp) : self.collectedLbp,
+                zoneId: data.zoneId !== undefined ? String(data.zoneId) : self.zoneId,
+                merchantId:
+                  data.merchantId !== undefined
+                    ? (data.merchantId as string | null)
+                    : self.merchantId,
+              };
+              remainingOrders = [
+                patchedSelf,
+                // ...plus every other order the payout still holds.
+                ...(await tx.order.findMany({
+                  where: {
+                    driverPayoutId: payout.id,
+                    id: { not: id },
+                  },
+                  include: labelIncludes,
+                })),
+              ];
+            }
+
+            if (remainingOrders.length === 0) {
+              // No orders left — delete the empty payout.
+              await tx.driverPayout.delete({ where: { id: payout.id } });
+              changes.push("Payout deleted (no remaining orders)");
+            } else {
+              // Recalculate totals through the authoritative commission
+              // module (same figures the payout creation wrote):
+              // gross = collected > 0 else amount,
+              // commission = seller exception (cash wins) → zone rate,
+              // NO default (throws MissingDriverRateError if any order has
+              // no configured rate — the whole tx rolls back),
+              // net = gross − fee.
+              const rateTable = await loadDriverRateTable(tx, payout.driverId);
+              const recalced = recalcPayoutTotals(rateTable, remainingOrders);
+              // CAS on status so a concurrent settle/clear can't be clobbered.
+              const res = await tx.driverPayout.updateMany({
+                where: { id: payout.id, status: "PENDING" },
+                data: {
+                  totalUsd: recalced.totalUsd,
+                  totalLbp: recalced.totalLbp,
+                  commissionUsd: recalced.commissionUsd,
+                  netUsd: recalced.netUsd,
+                  totalCollected: recalced.totalCollected,
+                },
+              });
+              if (res.count === 0) {
+                throw new ConcurrencyConflictError(
+                  "Driver payout state changed concurrently; retrying",
+                );
+              }
+              changes.push("Payout totals recalculated");
+            }
+          }
+        }
+
+        return tx.order.update({
+          where: { id },
+          data: {
+            ...data,
             location: newLocation,
-            driverId: historyDriverId,
-            userId: actor.id,
+            financialStatus: newFinancialStatus,
+            orderId: newOrderId,
+            history: {
+              create: {
+                action: finalActionNote(),
+                location: newLocation,
+                driverId: historyDriverId,
+                userId: actor.id,
+              },
+            },
           },
-        },
-      },
-    });
+        });
+      })
+    );
 
     // ── Exchange orders ──────────────────────────────────────────────
     // When an exchange order (hasExchange) is delivered, create the
@@ -872,6 +1161,15 @@ export async function PATCH(request: Request) {
 
     return NextResponse.json(updatedOrder, { status: 200 });
   } catch (error: any) {
+    // A missing driver rate is a configuration error, not a 500: the
+    // transaction was rolled back, nothing was changed. Surface the
+    // actionable message (a $0 rate is a valid explicit override).
+    if (error instanceof MissingDriverRateError) {
+      return NextResponse.json(
+        { error: error.message, missingRateOrders: error.missingOrders },
+        { status: 400 },
+      );
+    }
     console.error("[PATCH /api/orders] Error:", error);
     return NextResponse.json(
       { error: "Internal Server Error" },

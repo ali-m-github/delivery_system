@@ -19,9 +19,10 @@ interface EnrichedOrder {
   customerAddress: string;
   price: number;
   shippingRate: number;
-  driverCommission: number;
-  netPayout: number;
-  profit: number;
+  /** null = driver rate NOT configured (a configuration error) — never $0. */
+  driverCommission: number | null;
+  netPayout: number | null;
+  profit: number | null;
 }
 
 // ─── Helper ────────────────────────────────────────────────────────────────────
@@ -61,7 +62,8 @@ export default async function PrintOrdersPage({
 
   // ── Fetch driver rate table if driverId is present (Driver-Mode) ──
   // Uses the authoritative commission module (seller exception ∪ cash-seller
-  // exception → zone → $0 default), identical to every ledger path.
+  // exception → zone rate → MISSING), identical to every ledger path. A
+  // configured $0 is valid; a missing rate is shown as "—" (never $0).
   let driverRateTable: DriverRateTable | null = null;
   if (driverId) {
     driverRateTable = await loadDriverRateTable(prisma, driverId);
@@ -121,34 +123,44 @@ export default async function PrintOrdersPage({
         : (order.merchant?.defaultSellerRate ?? 0);
 
     // Driver commission calculation — authoritative 3-tier precedence:
-    // seller exception (cash wins, $0 valid) → zone rate → $0 default.
-    let driverCommission = 0;
+    // seller exception (cash wins, $0 valid) → zone rate → MISSING. A
+    // missing rate is a configuration error: the figure is unknown (null),
+    // never a silent $0. Orders without an assigned driver simply have no
+    // commission (0).
+    let driverCommission: number | null = 0;
 
     if (isDriverMode && driverRateTable) {
       // Driver-Mode: use the specified driver's rates
-      driverCommission = computeOrderCommission(driverRateTable, {
+      const driverBreakdown = computeOrderCommission(driverRateTable, {
         merchantId: order.merchantId,
         zoneId: order.zoneId,
-      }).usd;
+      });
+      driverCommission = driverBreakdown.ok ? driverBreakdown.usd : null;
     } else if (order.driver) {
       // Default mode: use the order's assigned driver's rates
       const driverTable = tableByDriver.get(order.driver.id);
       if (driverTable) {
-        driverCommission = computeOrderCommission(driverTable, {
+        const driverBreakdown = computeOrderCommission(driverTable, {
           merchantId: order.merchantId,
           zoneId: order.zoneId,
-        }).usd;
+        });
+        driverCommission = driverBreakdown.ok ? driverBreakdown.usd : null;
       }
     }
 
     const price = order.amountUsd ?? 0;
 
     // In driver mode, netPayout is amount minus driver commission
-    // In normal mode, netPayout is amount minus shipping rate
+    // In normal mode, netPayout is amount minus shipping rate.
+    // When the commission is MISSING the dependent figures are unknown
+    // (null) — the driver's rate configuration is incomplete, not $0.
     const netPayout = isDriverMode
-      ? price - driverCommission
+      ? driverCommission === null
+        ? null
+        : price - driverCommission
       : price - shippingRate;
-    const profit = shippingRate - driverCommission;
+    const profit =
+      driverCommission === null ? null : shippingRate - driverCommission;
 
     return {
       id: order.id,
@@ -182,15 +194,20 @@ export default async function PrintOrdersPage({
     orders.some((o) => o.merchant?.isCashSeller);
 
   // ── Totals ───────────────────────────────────────────────────────────────
+  // Totals sum only the KNOWN figures; missing commissions are excluded and
+  // flagged below (they are unknown, not $0).
   const totals = enrichedOrders.reduce(
     (acc, o) => ({
       price: acc.price + o.price,
       shippingRate: acc.shippingRate + o.shippingRate,
-      driverCommission: acc.driverCommission + o.driverCommission,
-      netPayout: acc.netPayout + o.netPayout,
-      profit: acc.profit + o.profit,
+      driverCommission: acc.driverCommission + (o.driverCommission ?? 0),
+      netPayout: acc.netPayout + (o.netPayout ?? 0),
+      profit: acc.profit + (o.profit ?? 0),
     }),
     { price: 0, shippingRate: 0, driverCommission: 0, netPayout: 0, profit: 0 },
+  );
+  const missingCommissionOrders = enrichedOrders.filter(
+    (o) => o.driverCommission === null,
   );
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -230,6 +247,17 @@ export default async function PrintOrdersPage({
           })}
         </p>
       </div>
+
+      {missingCommissionOrders.length > 0 && (
+        <div className="mb-4 border-2 border-red-600 bg-red-50 p-3 text-xs font-semibold text-red-700">
+          WARNING: Driver commission rate NOT CONFIGURED for{" "}
+          {missingCommissionOrders.length} order(s) ({missingCommissionOrders
+            .map((o) => o.orderId)
+            .join(", ")}). Figures shown as "—" are unknown — configure the
+          driver's seller/zone rate first (a $0 rate is a valid explicit
+          override).
+        </div>
+      )}
 
       <table className="w-full border-collapse border-2 border-gray-800 text-xs">
         <thead>
@@ -307,17 +335,22 @@ export default async function PrintOrdersPage({
               {!isSimple && (
                 <>
                   <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
-                    $
                     {isDriverMode
-                      ? o.driverCommission.toFixed(2)
-                      : o.shippingRate.toFixed(2)}
+                      ? o.driverCommission === null
+                        ? "—"
+                        : `$${o.driverCommission.toFixed(2)}`
+                      : `$${o.shippingRate.toFixed(2)}`}
                   </td>
                   <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
-                    ${o.netPayout.toFixed(2)}
+                    {o.netPayout === null
+                      ? "—"
+                      : `$${o.netPayout.toFixed(2)}`}
                   </td>
                   {showProfit && (
                     <td className="border border-gray-800 p-1.5 text-right text-black font-mono">
-                      ${o.profit.toFixed(2)}
+                      {o.profit === null
+                        ? "—"
+                        : `$${o.profit.toFixed(2)}`}
                     </td>
                   )}
                 </>
@@ -340,17 +373,22 @@ export default async function PrintOrdersPage({
             {!isSimple && (
               <>
                 <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
-                  $
                   {isDriverMode
-                    ? totals.driverCommission.toFixed(2)
-                    : totals.shippingRate.toFixed(2)}
+                    ? missingCommissionOrders.length > 0
+                      ? "—"
+                      : `$${totals.driverCommission.toFixed(2)}`
+                    : `$${totals.shippingRate.toFixed(2)}`}
                 </td>
                 <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
-                  ${totals.netPayout.toFixed(2)}
+                  {isDriverMode && missingCommissionOrders.length > 0
+                    ? "—"
+                    : `$${totals.netPayout.toFixed(2)}`}
                 </td>
                 {showProfit && (
                   <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
-                    ${totals.profit.toFixed(2)}
+                    {missingCommissionOrders.length > 0
+                      ? "—"
+                      : `$${totals.profit.toFixed(2)}`}
                   </td>
                 )}
               </>
@@ -383,7 +421,9 @@ export default async function PrintOrdersPage({
                 Final Batch Net:
               </td>
               <td className="border-2 border-gray-800 p-1.5 text-right text-black font-mono">
-                ${(totals.netPayout + payoutContext.previousDebtUsd).toFixed(2)}
+                {isDriverMode && missingCommissionOrders.length > 0
+                  ? "—"
+                  : `$${(totals.netPayout + payoutContext.previousDebtUsd).toFixed(2)}`}
               </td>
               {showProfit && (
                 <td className="border-2 border-gray-800 p-1.5"></td>
