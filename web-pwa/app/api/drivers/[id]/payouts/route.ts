@@ -227,18 +227,6 @@ export async function POST(
     // order by repeating its id in the array.
     const requestedIds: string[] = Array.from(new Set(orderIds as string[]));
 
-    // Load the driver's commission rate table once (3 bulk queries), outside
-    // the transaction. Precedence: seller exception (cash-seller wins) → zone
-    // rate → MISSING (a configuration error — there is no $0 default; see
-    // lib/commission.ts). recalcPayoutTotals below throws
-    // MissingDriverRateError inside the transaction when any order has no
-    // configured rate, which rolls back the ENTIRE batch (nothing is created).
-    const rateTable = await loadDriverRateTable(
-      prisma,
-      driverId,
-      profile.userId,
-    );
-
     // Carried debt, the sequential index, the payout reference and the
     // eligibility/claim check all happen INSIDE one serializable transaction:
     // reading/claiming outside let concurrent creations reuse the same index,
@@ -287,6 +275,18 @@ export async function POST(
           //    commission: seller exception (cash wins) → zone rate, NO
           //    default; net = gross − fee). Throws MissingDriverRateError if
           //    ANY order has no configured rate — the whole tx rolls back.
+          //
+          // The full commission rate table (3 bulk queries) is loaded INSIDE
+          // the serializable transaction so the rates recalcPayoutTotals
+          // uses are consistent with the order rows it reads — a concurrent
+          // rate change cannot slip between the two reads (a write-skew
+          // anomaly SSI aborts with P2034, retried via
+          // withConcurrencyRetries).
+          const rateTable = await loadDriverRateTable(
+            tx,
+            driverId,
+            profile.userId,
+          );
           const totals = recalcPayoutTotals(rateTable, orders);
           const safeTotalUsd = parseFloat(String(totals.totalUsd)) || 0;
           const safeTotalLbp = parseFloat(String(totals.totalLbp)) || 0;

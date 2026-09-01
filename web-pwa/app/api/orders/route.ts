@@ -120,9 +120,11 @@ export async function GET(request: NextRequest) {
       authScope = {};
     }
   } catch (error: any) {
+    // Log the raw error server-side; never echo it to the client (raw DB
+    // errors can leak schema/table details).
     console.error("[GET /api/orders] Scope resolution failed:", error.message);
     return NextResponse.json(
-      { error: "Internal Server Error", details: error.message },
+      { error: "Internal Server Error" },
       { status: 500 },
     );
   }
@@ -295,12 +297,13 @@ export async function GET(request: NextRequest) {
         { status: 200 },
       );
     } catch (fallbackError: any) {
+      // Log the raw error server-side; never echo it to the client.
       console.error(
         "[GET /api/orders] Fallback query failed:",
         fallbackError.message,
       );
       return NextResponse.json(
-        { error: "Internal Server Error", details: fallbackError.message },
+        { error: "Internal Server Error" },
         { status: 500 },
       );
     }

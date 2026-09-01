@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { hasPermission } from "@/lib/permissions";
 import { requireAuthenticatedSession } from "@/lib/server-permissions";
 
 /**
@@ -10,15 +11,19 @@ import { requireAuthenticatedSession } from "@/lib/server-permissions";
  *  - driver: the driver profile involved in the action, when the row recorded
  *            a driverId (name + human-readable driver code)
  *
- * NOTE: access control / per-role visibility for history rows is intentionally
- * not applied here yet — it will be refined separately.
+ *
+ * Access control follows the same order visibility model as GET /api/orders:
+ *  - DRIVER   → may view history of their own orders only
+ *  - MERCHANT → may view history of their own orders only
+ *  - ADMIN    → may view any order
+ *  - staff    → requires the ORDERS_VIEW permission
  */
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  // Order history exposes actor identities — any authenticated user may view,
-  // but unauthenticated access is not allowed.
+  // Order history exposes actor identities — visibility is scoped per role
+  // (see the doc comment above), but unauthenticated access is not allowed.
   const auth = await requireAuthenticatedSession(request);
   if (auth instanceof Response) return auth;
   try {
@@ -27,10 +32,38 @@ export async function GET(
 
     const order = await prisma.order.findUnique({
       where: { id },
-      select: { id: true, orderId: true },
+      select: { id: true, orderId: true, driverId: true, merchantId: true },
     });
     if (!order) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    }
+
+    // ── Order visibility (same model as GET /api/orders) ──────────────────
+    const actor = auth.user;
+    if (actor.role === "DRIVER") {
+      const driverProfile = await prisma.driverProfile.findUnique({
+        where: { userId: actor.id },
+        select: { id: true },
+      });
+      if (!driverProfile || order.driverId !== driverProfile.id) {
+        return NextResponse.json(
+          { error: "Forbidden" },
+          { status: 403 },
+        );
+      }
+    } else if (actor.role === "MERCHANT") {
+      const merchant = await prisma.merchant.findUnique({
+        where: { userId: actor.id },
+        select: { id: true },
+      });
+      if (!merchant || order.merchantId !== merchant.id) {
+        return NextResponse.json(
+          { error: "Forbidden" },
+          { status: 403 },
+        );
+      }
+    } else if (actor.role !== "ADMIN" && !hasPermission(actor, "ORDERS_VIEW")) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const history = await prisma.orderHistory.findMany({

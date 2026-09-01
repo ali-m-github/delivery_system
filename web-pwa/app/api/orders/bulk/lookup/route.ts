@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { hasPermission } from "@/lib/permissions";
 import { requireAuthenticatedSession } from "@/lib/server-permissions";
 
 // ─── POST /api/orders/bulk/lookup ─────────────────────────────────────────────
@@ -26,11 +27,51 @@ export async function POST(request: NextRequest) {
       id.trim().replace(/^#/, ""),
     );
 
+    // ── Authorization scope (same model as GET /api/orders) ────────────────
+    // The lookup returns order records, so it must honor the same
+    // role/ownership/permission visibility: drivers only see their own
+    // orders, merchants only their own, staff need ORDERS_VIEW.
+    const actor = auth.user;
+    let authScope: Record<string, unknown>;
+    if (actor.role === "DRIVER") {
+      const driverProfile = await prisma.driverProfile.findUnique({
+        where: { userId: actor.id },
+        select: { id: true },
+      });
+      if (!driverProfile) {
+        return NextResponse.json(
+          { error: "Driver account has no driver profile" },
+          { status: 403 },
+        );
+      }
+      authScope = { driverId: driverProfile.id };
+    } else if (actor.role === "MERCHANT") {
+      const merchant = await prisma.merchant.findUnique({
+        where: { userId: actor.id },
+        select: { id: true },
+      });
+      if (!merchant) {
+        return NextResponse.json(
+          { error: "Merchant account has no merchant record" },
+          { status: 403 },
+        );
+      }
+      authScope = { merchantId: merchant.id };
+    } else if (actor.role === "ADMIN") {
+      authScope = {};
+    } else {
+      if (!hasPermission(actor, "ORDERS_VIEW")) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+      authScope = {};
+    }
+
     // Find orders where orderId matches any of the provided IDs
     // We search by the human-readable orderId field (not the DB UUID)
     const foundOrders = await prisma.order.findMany({
       where: {
         orderId: { in: normalizedIds },
+        ...authScope,
       },
       select: {
         id: true,

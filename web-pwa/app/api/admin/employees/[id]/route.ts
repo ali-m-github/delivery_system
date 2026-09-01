@@ -356,20 +356,66 @@ export async function DELETE(
       );
     }
 
-    // Never leave the system without an ADMIN.
-    if (target.role === "ADMIN") {
-      const adminCount = await prisma.user.count({ where: { role: "ADMIN" } });
-      if (adminCount <= 1) {
+    // Never leave the system without an ADMIN. This must not be
+    // check-then-act — two simultaneous deletions of two different admins
+    // must not both observe "another ADMIN remains" and leave zero admins.
+    // The count + delete therefore run inside a SERIALIZABLE transaction
+    // (same pattern as the ADMIN demotion above): the COUNT reads every
+    // ADMIN's role, so concurrent last-admin deletions are a write-skew
+    // anomaly that Postgres SSI aborts with a serialization failure
+    // (P2034). withConcurrencyRetries re-runs the unit of work, which then
+    // sees the updated count and either proceeds or refuses.
+    try {
+      await withConcurrencyRetries(() =>
+        prisma.$transaction(async (tx) => {
+          // Re-read the target inside the transaction: it may have been
+          // deleted or re-roled between the pre-read above and now. The
+          // inner observation is the authoritative one.
+          const current = await tx.user.findUnique({
+            where: { id },
+            select: { id: true, role: true },
+          });
+          if (!current) throw new EmployeeNotFoundError();
+          // The role changed concurrently (e.g. promoted to ADMIN after our
+          // pre-read authorized a non-ADMIN actor). Invalidate the stale
+          // observation so the retry / next request re-evaluates the
+          // role-based authorization from a fresh read.
+          if (current.role !== target.role) {
+            throw new ConcurrencyConflictError();
+          }
+          if (current.role === "ADMIN") {
+            const adminCount = await tx.user.count({
+              where: { role: "ADMIN" },
+            });
+            if (adminCount <= 1) throw new LastAdminError();
+          }
+          await tx.user.delete({ where: { id } });
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        }
+      ));
+    } catch (deleteError) {
+      if (deleteError instanceof LastAdminError) {
         return NextResponse.json(
           { error: "Cannot delete the last ADMIN user." },
           { status: 400 },
         );
       }
-    }
-
-    try {
-      await prisma.user.delete({ where: { id } });
-    } catch (deleteError: unknown) {
+      if (deleteError instanceof EmployeeNotFoundError) {
+        return NextResponse.json(
+          { error: "Employee not found" },
+          { status: 404 },
+        );
+      }
+      if (deleteError instanceof ConcurrencyConflictError) {
+        return NextResponse.json(
+          {
+            error: "Employee was concurrently modified; retry the deletion.",
+          },
+          { status: 409 },
+        );
+      }
       // RESTRICT foreign keys (Order.creatorId, OrderHistory.userId,
       // DriverProfile.userId) make hard-deleting users with history
       // impossible; surface a clean 409 instead of a 500.

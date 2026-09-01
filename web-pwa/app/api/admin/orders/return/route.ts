@@ -17,9 +17,20 @@ import {
 
 // ─── PATCH /api/admin/orders/return ──────────────────────────────────────────
 // Permission-gated endpoint that returns a DELIVERED order (financialStatus WO
-// or WD) to the warehouse (RETURN/Re) — or to any other target status supplied
-// by the caller. This is the counterpart to the driver-payout/clearing flow:
-// it lets staff roll a delivered order back into the returns pipeline.
+// or WD) to another location. This is the counterpart to the driver-payout/
+// clearing flow: it lets staff roll a delivered order back into the returns
+// pipeline.
+//
+// Allowed transitions (server-side whitelist; the target financialStatus is
+// ALWAYS derived from the location and never taken from the client — a
+// client-supplied financialStatus that disagrees with the mapping is rejected
+// with 400):
+//   RETURN    -> Re   (returns pipeline, driver stays assigned)
+//   WAREHOUSE -> UD   (bare warehouse, driver unassigned)
+//   ASSIGNED  -> UD   (re-queue as assigned, driver stays assigned)
+//
+// Missing IDs: if any order ID cannot be resolved, the WHOLE batch is
+// rejected with 400 — nothing is partially returned.
 //
 // Required permission: ACTION_ORDER_RETURN (ADMIN bypasses via hasPermission).
 //
@@ -38,8 +49,8 @@ import {
 // Request body:
 //   {
 //     orderIds: string[],        // required
-//     location?: string,         // target location, default "RETURN"
-//     financialStatus?: string,  // target financialStatus, default "Re"
+//     location?: string,         // "RETURN" | "WAREHOUSE" | "ASSIGNED", default "RETURN"
+//     financialStatus?: string,  // optional; must match the location's mapped status
 //   }
 
 export async function PATCH(request: Request) {
@@ -62,10 +73,35 @@ export async function PATCH(request: Request) {
       );
     }
 
-    // Target status — defaults to a warehouse return (RETURN / Re). The caller
-    // may override with "any other status" (e.g. WAREHOUSE/UD, ASSIGNED/UD).
+    // ── Transition validation (server-side whitelist) ───────────────────────
+    // The target location must be one of the whitelisted return destinations;
+    // the target financialStatus is ALWAYS derived from the location. A
+    // client-supplied financialStatus that disagrees with the mapping is
+    // rejected (400) — the client can never set the financial status directly.
+    const ALLOWED_RETURN_TRANSITIONS: Record<string, string> = {
+      RETURN: "Re",
+      WAREHOUSE: "UD",
+      ASSIGNED: "UD",
+    };
     const targetLocation = location || "RETURN";
-    const targetFinancialStatus = financialStatus || "Re";
+    const expectedStatus = ALLOWED_RETURN_TRANSITIONS[targetLocation];
+    if (!expectedStatus) {
+      return NextResponse.json(
+        {
+          error: `Invalid target location "${targetLocation}". Allowed: ${Object.keys(ALLOWED_RETURN_TRANSITIONS).join(", ")}`,
+        },
+        { status: 400 },
+      );
+    }
+    if (financialStatus !== undefined && financialStatus !== expectedStatus) {
+      return NextResponse.json(
+        {
+          error: `Invalid financialStatus "${financialStatus}" for location "${targetLocation}"; expected "${expectedStatus}"`,
+        },
+        { status: 400 },
+      );
+    }
+    const targetFinancialStatus = expectedStatus;
     const leavingDelivered = targetLocation !== "DELIVERED";
 
     // ── Fetch the existing orders to validate they are delivered WO/WD ──
@@ -84,6 +120,17 @@ export async function PATCH(request: Request) {
 
     const foundIds = new Set(existingOrders.map((o) => o.id));
     const missingIds = orderIds.filter((id) => !foundIds.has(id));
+
+    // Missing IDs fail the WHOLE batch: a partial return would silently leave
+    // some of the selected orders untouched.
+    if (missingIds.length > 0) {
+      return NextResponse.json(
+        {
+          error: `${missingIds.length} order ID(s) not found: ${missingIds.join(", ")}`,
+        },
+        { status: 400 },
+      );
+    }
 
     // Source validation: only DELIVERED orders in WO or WD are eligible here.
     const ineligible = existingOrders.filter(

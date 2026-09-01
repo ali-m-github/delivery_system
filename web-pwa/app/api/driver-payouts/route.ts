@@ -83,22 +83,6 @@ export async function POST(request: Request) {
     }
     const requestedIds: string[] = Array.from(new Set(orderIds));
 
-    // Load the driver's full commission rate table once (3 bulk queries),
-    // outside the transaction. See lib/commission.ts for the documented
-    // precedence: seller exception (cash-seller wins) → zone rate → MISSING
-    // (a configuration error — there is no $0 default). recalcPayoutTotals
-    // below throws MissingDriverRateError inside the transaction when any
-    // order has no configured rate, which rolls back the ENTIRE batch.
-    const driverProfile = await prisma.driverProfile.findUnique({
-      where: { id: driverId },
-      select: { userId: true },
-    });
-    const rateTable = await loadDriverRateTable(
-      prisma,
-      driverId,
-      driverProfile?.userId,
-    );
-
     // The per-driver @@unique([driverId, sequentialIndex]) constraint makes a
     // max+1 race impossible: if two concurrent clear-batches both read the
     // same max, the loser's INSERT gets P2002 and this whole attempt is
@@ -145,6 +129,21 @@ export async function POST(request: Request) {
       // Commission (concern A): seller exception (cash wins) → zone rate, NO
       // default. Throws MissingDriverRateError if ANY order has no configured
       // rate — the whole tx rolls back and nothing is created.
+      //
+      // The full commission rate table (3 bulk queries) is loaded INSIDE the
+      // serializable transaction so the rates recalcPayoutTotals uses are
+      // consistent with the order rows it reads — a concurrent rate change
+      // cannot slip between the two reads (a write-skew anomaly SSI aborts
+      // with P2034, retried via withConcurrencyRetries).
+      const driverProfile = await tx.driverProfile.findUnique({
+        where: { id: driverId },
+        select: { userId: true },
+      });
+      const rateTable = await loadDriverRateTable(
+        tx,
+        driverId,
+        driverProfile?.userId,
+      );
       const totals = recalcPayoutTotals(rateTable, orders);
       const { totalUsd, totalLbp, commissionUsd, netUsd } = totals;
 

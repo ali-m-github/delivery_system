@@ -3,7 +3,22 @@ import prisma from "@/lib/prisma";
 import { createExchangeOrderFromDelivered } from "@/lib/exchange";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
 import { isPayoutMutable } from "@/lib/commission";
+import { hasPermission } from "@/lib/permissions";
 import { requireAuthenticatedSession } from "@/lib/server-permissions";
+
+// ─── Per-role edit boundaries (must stay in sync with PATCH /api/orders) ────
+// The bulk endpoint edits the same rows as the single-order endpoint, so it
+// enforces the same role/ownership/permission model:
+//  • DRIVER   → own orders only, location restricted to the driver flow
+//  • MERCHANT → own orders only (none of the bulk fields are merchant-editable)
+//  • staff    → ORDERS_EDIT; monetary fields additionally need ORDERS_FINANCIAL
+const DRIVER_ALLOWED_LOCATIONS = new Set<string>([
+  "DELIVERED",
+  "RETURN",
+  "WITH_DRIVER",
+  "ASSIGNED",
+]);
+const BULK_FINANCIAL_FIELDS = ["collectedUsd", "collectedLbp"] as const;
 
 // ─── PATCH /api/orders/bulk ───────────────────────────────────────────────────
 export async function PATCH(request: Request) {
@@ -24,13 +39,24 @@ export async function PATCH(request: Request) {
     // A valid session is mandatory (see guard above); unauthenticated requests
     // can no longer fall back to acting as an admin.
     const actionUserId = auth.user.id;
+    const actor = auth.user;
+    const actorIsAdmin = actor.role === "ADMIN";
     let actionDriverId: string | null | undefined = undefined;
+    let actorMerchantId: string | null = null;
 
-    const driverProfile = await prisma.driverProfile.findUnique({
-      where: { userId: actionUserId },
-      select: { id: true },
-    });
-    if (driverProfile) actionDriverId = driverProfile.id;
+    if (actor.role === "DRIVER") {
+      const driverProfile = await prisma.driverProfile.findUnique({
+        where: { userId: actionUserId },
+        select: { id: true },
+      });
+      actionDriverId = driverProfile?.id ?? null;
+    } else if (actor.role === "MERCHANT") {
+      const merchant = await prisma.merchant.findUnique({
+        where: { userId: actionUserId },
+        select: { id: true },
+      });
+      actorMerchantId = merchant?.id ?? null;
+    }
 
     // ── Process each item independently ───────────────────────────────────
     const results: Array<{
@@ -43,7 +69,9 @@ export async function PATCH(request: Request) {
     for (const item of items) {
       const id = item.id as string;
       const location = item.location as string | undefined;
-      const financialStatus = item.financialStatus as string | undefined;
+      // NOTE: `item.financialStatus` may arrive in payloads for legacy/compat
+      // reasons; it is intentionally never read or written — the server
+      // derives financialStatus from the resulting location (see below).
       const collectedUsd = item.collectedUsd as number | undefined;
       const collectedLbp = item.collectedLbp as number | undefined;
       const driverActionLog = item.driverActionLog as string | undefined;
@@ -57,6 +85,102 @@ export async function PATCH(request: Request) {
         const existing = await prisma.order.findUnique({ where: { id } });
         if (!existing) {
           results.push({ id, success: false, error: "Order not found" });
+          continue;
+        }
+
+        // ── Role/ownership scoping (mirrors single-order PATCH) ─────────────
+        if (actor.role === "DRIVER") {
+          const isOwnOrder =
+            actionDriverId !== null && existing.driverId === actionDriverId;
+          if (!isOwnOrder) {
+            results.push({
+              id,
+              success: false,
+              error: "Drivers can only update their own orders",
+            });
+            continue;
+          }
+          if (
+            location !== undefined &&
+            !DRIVER_ALLOWED_LOCATIONS.has(location)
+          ) {
+            results.push({
+              id,
+              success: false,
+              error:
+                "Drivers can only move their orders to DELIVERED, RETURN, WITH_DRIVER or ASSIGNED",
+            });
+            continue;
+          }
+        } else if (actor.role === "MERCHANT") {
+          if (!actorMerchantId || existing.merchantId !== actorMerchantId) {
+            results.push({
+              id,
+              success: false,
+              error: "Merchants can only update their own orders",
+            });
+            continue;
+          }
+          // None of the bulk fields (location / collected*) are in the
+          // merchant field whitelist, so a merchant bulk edit can never be
+          // legitimate — fail the item explicitly instead of a silent no-op.
+          results.push({
+            id,
+            success: false,
+            error:
+              "Merchants cannot update order location or collected amounts",
+          });
+          continue;
+        } else {
+          // ADMIN and staff share the staff path; ADMIN passes via the ADMIN
+          // bypass inside hasPermission, so full authority is preserved.
+          if (!hasPermission(actor, "ORDERS_EDIT")) {
+            results.push({
+              id,
+              success: false,
+              error:
+                "Staff users require the ORDERS_EDIT permission to update orders",
+            });
+            continue;
+          }
+          // Financial field gate (staff only — ADMIN bypasses).
+          if (!actorIsAdmin) {
+            const touchedFinancial = BULK_FINANCIAL_FIELDS.filter(
+              (f) => (f === "collectedUsd" ? collectedUsd : collectedLbp) !== undefined,
+            );
+            if (
+              touchedFinancial.length > 0 &&
+              !hasPermission(actor, "ORDERS_FINANCIAL")
+            ) {
+              results.push({
+                id,
+                success: false,
+                error: `Financial fields (${touchedFinancial.join(", ")}) require the ORDERS_FINANCIAL permission`,
+              });
+              continue;
+            }
+          }
+        }
+
+        // ── Financial state protection (mirrors single-order PATCH) ────────
+        // WO = cleared in the payout workflow; only admins may touch it here.
+        if (existing.financialStatus === "WO" && !actorIsAdmin) {
+          results.push({
+            id,
+            success: false,
+            error:
+              'Only administrators can modify orders with status "WO" (cleared payout). Contact an admin to roll back this order.',
+          });
+          continue;
+        }
+        // Orders tied to a driver payout are owned by the payout workflow.
+        if (existing.driverPayoutId !== null && !actorIsAdmin) {
+          results.push({
+            id,
+            success: false,
+            error:
+              "Orders in a pending driver payout can only be modified by administrators. Use the payout or returns section first.",
+          });
           continue;
         }
 
@@ -109,11 +233,11 @@ export async function PATCH(request: Request) {
         }
 
         // ── Build update data from provided fields ──────────────────────
+        // NOTE: financialStatus is never taken from the payload — it is
+        // derived server-side from the resulting location below.
         const updateData: Record<string, unknown> = {};
 
         if (location !== undefined) updateData.location = location;
-        if (financialStatus !== undefined)
-          updateData.financialStatus = financialStatus;
         if (collectedUsd !== undefined)
           updateData.collectedUsd =
             typeof collectedUsd === "string"
@@ -125,7 +249,39 @@ export async function PATCH(request: Request) {
               ? parseFloat(collectedLbp)
               : collectedLbp;
 
+        // ── Value validation (mirrors single-order PATCH) ─────────────────
+        let invalidValue: string | null = null;
+        if (
+          location !== undefined &&
+          (typeof location !== "string" || location.trim() === "")
+        ) {
+          invalidValue = "location";
+        }
+        for (const field of BULK_FINANCIAL_FIELDS) {
+          const value = updateData[field];
+          if (value !== undefined) {
+            const num = typeof value === "number" ? value : Number(value);
+            if (!Number.isFinite(num) || num < 0) {
+              invalidValue = field;
+              break;
+            }
+            updateData[field] = num;
+          }
+        }
+        if (invalidValue) {
+          results.push({
+            id,
+            success: false,
+            error: `Invalid value for ${invalidValue}`,
+          });
+          continue;
+        }
+        if (typeof location === "string") updateData.location = location.trim();
+
         // ── Server-side financial status synchronization ────────────────
+        // financialStatus is derived from the resulting location (the
+        // client value, if any, is ignored) — same rules as the
+        // single-order endpoint.
         const changes: string[] = [];
 
         if (updateData.location && updateData.location !== existing.location) {
@@ -157,6 +313,9 @@ export async function PATCH(request: Request) {
             updateData.financialStatus = existing.driverId ? "RWD" : "Re";
           } else if (updateData.location === "WAREHOUSE") {
             changes.push("Returned to Warehouse");
+            // Back in the warehouse => not delivered, back in the normal flow
+            // (mirrors the single-order endpoint).
+            updateData.financialStatus = "UD";
           } else {
             changes.push(`Location changed to ${updateData.location}`);
           }
