@@ -1,137 +1,40 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 
 // ──────────────────────────────────────────────
 // Types
+//
+// Legacy /track/<orderId> response. The API deliberately degrades to a
+// minimal, non-sensitive payload: NO trackToken (a redirect would reveal
+// the secret token to anyone who knows a predictable orderId), NO phone /
+// address / merchant / driver, NO raw history entries (raw actions contain
+// amounts and internal notes). The timeline is already mapped and
+// financially filtered server-side with the same rules as the tokenized
+// endpoint.
 // ──────────────────────────────────────────────
 
-interface HistoryEntry {
-  action: string;
-  location: string | null;
-  createdAt: string;
+interface TimelineEntry {
+  status: string;
+  detail: string | null;
+  at: string;
 }
 
 interface OrderData {
-  id: string;
   orderId: string;
-  trackToken: string | null;
-  location: string;
-  updatedAt: string;
-  createdAt: string;
   customerName: string;
-  zone: { name: string } | null;
-  driver: { firstName: string; lastName: string } | null;
-  history: HistoryEntry[];
-}
-
-// ──────────────────────────────────────────────
-// Customer-friendly message mapping
-// ──────────────────────────────────────────────
-
-function toCustomerMessage(entry: HistoryEntry): {
   status: string;
-  detail: string | null;
-} {
-  const action = entry.action;
-  const loc = entry.location?.toUpperCase() ?? "";
-
-  // Location/Status changes
-  if (loc === "WAREHOUSE" || action.includes("Order Created")) {
-    return { status: "Order received", detail: "At our warehouse" };
-  }
-  if (loc === "ASSIGNED") {
-    return { status: "Preparing for dispatch", detail: null };
-  }
-  if (loc === "WITH_DRIVER") {
-    return { status: "On the way", detail: null };
-  }
-  if (loc === "DELIVERED") {
-    return { status: "Delivered", detail: null };
-  }
-  if (loc === "RETURN" || loc === "Re") {
-    return { status: "Return requested", detail: null };
-  }
-  if (loc === "RTS") {
-    return { status: "Returned to sender", detail: null };
-  }
-
-  // Action-based mapping
-  if (action.includes("Assigned") || action.includes("assigned")) {
-    return { status: "Order assigned to driver", detail: null };
-  }
-  if (action.includes("picked") || action.includes("Picked")) {
-    return { status: "Picked up", detail: null };
-  }
-  if (action.includes("dispatch") || action.includes("Dispatch")) {
-    return { status: "Dispatched", detail: null };
-  }
-
-  // Price/collected/financial changes — skip for customer view
-  if (
-    action.includes("Price") ||
-    action.includes("Collected") ||
-    action.includes("LL") ||
-    action.includes("USD")
-  ) {
-    return { status: "", detail: null }; // hide internal financial notes
-  }
-
-  // Note changes
-  if (action.includes("Note")) {
-    return { status: "Note added", detail: null };
-  }
-
-  // Location changed generic
-  if (action.includes("Location changed")) {
-    if (loc === "WAREHOUSE")
-      return { status: "Order received", detail: "At our warehouse" };
-    if (loc === "ASSIGNED")
-      return { status: "Preparing for dispatch", detail: null };
-    if (loc === "WITH_DRIVER") return { status: "On the way", detail: null };
-    if (loc === "DELIVERED") return { status: "Delivered", detail: null };
-    if (loc === "RETURN" || loc === "Re")
-      return { status: "Return requested", detail: null };
-    if (loc === "RTS") return { status: "Returned to sender", detail: null };
-    return { status: "Status updated", detail: null };
-  }
-
-  // Fallback: clean up raw action text
-  const cleaned = action
-    .replace(/Location changed to /, "")
-    .replace(/Assigned to Driver/, "")
-    .replace(/Collected: \$\d+ \| LL\d+/, "")
-    .replace(/PriceUSD:.*→.*/, "")
-    .replace(/PriceLL:.*→.*/, "")
-    .replace(/->/g, "→");
-  return { status: cleaned, detail: null };
+  timeline: TimelineEntry[];
+  createdAt: string;
+  updatedAt: string;
 }
-
 // ──────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────
 
 // The API now returns an already-masked customer name (PII hardening).
 // Display it as-is; nothing here may re-introduce unmasked PII.
-
-function isException(location: string): boolean {
-  const loc = location.toUpperCase();
-  return (
-    loc === "RETURN" ||
-    loc === "POSTPONED" ||
-    loc === "RETURNED" ||
-    loc === "RTS"
-  );
-}
-
-function exceptionLabel(location: string): string {
-  const loc = location.toUpperCase();
-  if (loc === "RETURN" || loc === "Re") return "Return Requested";
-  if (loc === "RTS") return "Returned to Sender";
-  if (loc === "POSTPONED") return "Postponed";
-  return location;
-}
 
 function formatDayHeader(iso: string): string {
   const d = new Date(iso);
@@ -201,7 +104,6 @@ function ExceptionBanner({ label }: { label: string }) {
 
 export default function TrackOrderPage() {
   const params = useParams<{ token: string }>();
-  const router = useRouter();
   const [data, setData] = useState<OrderData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -219,12 +121,6 @@ export default function TrackOrderPage() {
           return;
         }
         const json: OrderData = await res.json();
-        // Redirect legacy /track/<orderId> links to the tokenized
-        // /track/<token>/<orderId> format.
-        if (json.trackToken) {
-          router.replace(`/track/${json.trackToken}/${json.orderId}`);
-          return;
-        }
         setData(json);
       } catch {
         setError("Network error. Please try again.");
@@ -235,22 +131,18 @@ export default function TrackOrderPage() {
     fetchOrder();
   }, [params.token]);
 
-  // Build enriched timeline entries (filter out financial-only entries)
-  const timelineEntries = useMemo(() => {
-    if (!data) return [];
-    return data.history
-      .map((entry) => ({
-        ...entry,
-        ...toCustomerMessage(entry),
-      }))
-      .filter((e) => e.status);
-  }, [data]);
+  // Timeline arrives pre-mapped and financially filtered from the server
+  // (same rules as the tokenized endpoint).
+  const timelineEntries = useMemo(
+    () => (data ? data.timeline : []),
+    [data],
+  );
 
   // Group entries by date
   const grouped = useMemo(() => {
-    const groups: { date: string; entries: typeof timelineEntries }[] = [];
+    const groups: { date: string; entries: TimelineEntry[] }[] = [];
     for (const entry of timelineEntries) {
-      const dateKey = getDateString(entry.createdAt);
+      const dateKey = getDateString(entry.at);
       const existing = groups.find((g) => g.date === dateKey);
       if (existing) {
         existing.entries.push(entry);
@@ -261,23 +153,11 @@ export default function TrackOrderPage() {
     return groups;
   }, [timelineEntries]);
 
-  // Determine current status label (computed unconditionally to respect Rules of Hooks)
-  const currentStatus = useMemo(() => {
-    if (!data) return "";
-    const loc = data.location.toUpperCase();
-    if (loc === "DELIVERED") return "Delivered";
-    if (loc === "WITH_DRIVER") return "On the way";
-    if (loc === "ASSIGNED") return "Preparing for dispatch";
-    if (loc === "RETURN" || loc === "Re") return "Return requested";
-    if (loc === "RTS") return "Returned to sender";
-    return "At warehouse";
-  }, [data]);
-
   if (loading) return <LoadingSpinner />;
   if (error) return <ErrorState message={error} />;
   if (!data) return <ErrorState message="Order not found." />;
 
-  const exception = isException(data.location);
+  const exception = data.status === "Returned" || data.status === "Postponed";
 
   return (
     <div className="max-w-md mx-auto min-h-screen p-4 bg-[#0B0F17]">
@@ -290,7 +170,7 @@ export default function TrackOrderPage() {
       </div>
 
       {/* ── Exception Banner ── */}
-      {exception && <ExceptionBanner label={exceptionLabel(data.location)} />}
+      {exception && <ExceptionBanner label={data.status} />}
 
       {/* ── Order Card ── */}
       <div className="bg-[#111620] border border-gray-800 rounded-xl p-5 mb-6">
@@ -303,12 +183,12 @@ export default function TrackOrderPage() {
             className={`text-lg font-semibold mt-1 ${
               exception
                 ? "text-red-400"
-                : data.location.toUpperCase() === "DELIVERED"
+                : data.status === "Delivered"
                   ? "text-green-400"
                   : "text-white"
             }`}
           >
-            {currentStatus}
+            {data.status}
           </p>
         </div>
 
@@ -376,7 +256,7 @@ export default function TrackOrderPage() {
               <div key={group.date}>
                 {/* Date header */}
                 <p className="text-xs font-semibold text-gray-400 mb-2">
-                  {formatDayHeader(group.entries[0].createdAt)}
+                  {formatDayHeader(group.entries[0].at)}
                 </p>
 
                 {/* Entries for this date */}
@@ -386,7 +266,7 @@ export default function TrackOrderPage() {
                       {/* Time column */}
                       <div className="w-16 flex-shrink-0 pt-0.5">
                         <span className="text-xs text-gray-500">
-                          {formatTime(entry.createdAt)}
+                          {formatTime(entry.at)}
                         </span>
                       </div>
 

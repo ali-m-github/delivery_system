@@ -1,42 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import {
+  currentStatusLabel,
+  publicName,
+  toCustomerMessage,
+} from "@/lib/tracking";
 import { rateLimitResponse } from "@/lib/rate-limit";
 
 // ──────────────────────────────────────────────
 // Legacy public tracking endpoint (pre-token links)
 // GET /api/track/<orderId>
 //
-// Hardened:
+// Hardened (2026-09) — this endpoint must never undermine the secrecy of
+// trackToken:
 //  - Token shape allow-list (rejects junk/traversal input before it ever
 //    reaches the database).
 //  - Per-client rate limit (public endpoint, must stay cheap).
-//  - Minimal field whitelist — NO customer PII (name/phone/address) and NO
-//    financial data. The page consuming this endpoint only needs orderId,
-//    location, timestamps and the status history.
-//  - Legacy links are preserved: this endpoint keeps working for every
-//    existing orderId and redirects the UI to the tokenized link.
+//  - trackToken is NEVER returned. A redirect strategy would be insecure:
+//    serving the token to anyone who knows/guesses a predictable orderId
+//    hands them the secret that protects the tokenized endpoint. The old
+//    links keep working by degrading to a minimal, non-sensitive status
+//    response instead.
+//  - Minimal field whitelist — NO customer PII beyond a masked name, NO
+//    phone/address/merchant, NO financial data, NO raw history entries
+//    (raw actions contain amounts and internal notes).
+//  - The timeline is produced by the exact same toCustomerMessage()
+//    financial-filtering rules as the tokenized endpoint
+//    (/api/track/<token>/<orderId>), so both public views agree.
 // ──────────────────────────────────────────────
 
 // OrderIds are short alphanumeric (e.g. "10007447", "2-0001", "C-10007447").
 // Anything else (slashes, spaces, long blobs) is rejected up front.
 const ORDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$/;
-
-// Name for public display: masked first name + initials of the rest.
-// (The legacy tracking page re-applies its own client-side mask, which is
-// idempotent on already-masked values.)
-function publicName(name: string | null): string {
-  if (!name) return "";
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "";
-  const first = parts[0];
-  const maskedFirst =
-    first.length <= 1 ? first : `${first[0]}${"*".repeat(first.length - 1)}`;
-  const tail = parts
-    .slice(1)
-    .map((p) => (p.length <= 1 ? `${p}.` : `${p[0]}.`))
-    .join(" ");
-  return tail ? `${maskedFirst} ${tail}` : maskedFirst;
-}
 
 export async function GET(
   request: NextRequest,
@@ -59,7 +54,6 @@ export async function GET(
       where: { orderId: token },
       select: {
         orderId: true,
-        trackToken: true,
         customerName: true,
         location: true,
         updatedAt: true,
@@ -79,9 +73,29 @@ export async function GET(
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 
+    // Same customer-facing, financially-filtered timeline as the tokenized
+    // endpoint. Raw history actions never leave the server.
+    const timeline = order.history
+      .map((h) => ({ message: toCustomerMessage(h), at: h.createdAt }))
+      .filter(
+        (e): e is {
+          message: { status: string; detail: string | null };
+          at: Date;
+        } => e.message !== null,
+      )
+      .map(({ message, at }) => ({
+        status: message.status,
+        detail: message.detail,
+        at,
+      }));
+
     return NextResponse.json({
-      ...order,
+      orderId: order.orderId,
       customerName: publicName(order.customerName),
+      status: currentStatusLabel(order.location),
+      timeline,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
     });
   } catch (error) {
     console.error("[GET /api/track/<token>] Error:", error);

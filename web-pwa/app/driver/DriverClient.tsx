@@ -95,7 +95,7 @@ type PayoutOrder = {
   createdAt: string;
   zone: { name: string };
   merchant?: { merchantName: string } | null;
-  driverCommissionUsd?: number;
+  driverCommissionUsd?: number | null;
 };
 
 type DriverPayoutItem = {
@@ -317,7 +317,7 @@ export default function DriverClient({
           <td class="text-right">$${(o.amountUsd ?? 0).toFixed(2)}</td>
           <td class="text-right">${(o.amountLbp ?? 0).toLocaleString()}</td>
           <td class="text-right">$${(o.collectedUsd ?? 0).toFixed(2)}</td>
-          <td class="text-right">$${(o.driverCommissionUsd ?? 0).toFixed(2)}</td>
+          <td class="text-right">${o.driverCommissionUsd == null ? "—" : `$${o.driverCommissionUsd.toFixed(2)}`}</td>
         </tr>`,
       )
       .join("");
@@ -391,7 +391,8 @@ export default function DriverClient({
       "Amount LBP": (o.amountLbp ?? 0).toLocaleString(),
       "Collected USD": (o.collectedUsd ?? 0).toFixed(2),
       "Collected LBP": (o.collectedLbp ?? 0).toLocaleString(),
-      "Driver Commission USD": (o.driverCommissionUsd ?? 0).toFixed(2),
+      "Driver Commission USD":
+        o.driverCommissionUsd == null ? "Rate not configured" : o.driverCommissionUsd.toFixed(2),
       "Fin Status": o.financialStatus,
       Location: o.location,
       Seller: o.merchant?.merchantName || "—",
@@ -431,7 +432,8 @@ export default function DriverClient({
   // ── Payout Receipt (Settlement Calculator) ────────────────────────────
   // Authoritative module: gross = collected > 0 else amount; commission =
   // seller exception (server already merged cash-seller rates into
-  // driver.driverSellerRates, cash wins, $0 valid) → zone → $0 default.
+  // driver.driverSellerRates, cash wins, a configured $0 is valid) → zone →
+  // MISSING (no $0 default; an explicitly configured $0 is a valid override).
   const driverRateTable = useMemo(
     () =>
       buildRateTableFromRates(driver.id, {
@@ -452,15 +454,33 @@ export default function DriverClient({
       0,
     );
 
-    const totalCommissionUsd = deliveredOrders.reduce((sum, o) => {
-      return (
-        sum +
-        computeOrderCommission(driverRateTable, {
-          merchantId: o.merchantId,
-          zoneId: String(o.zoneId),
-        }).usd
-      );
-    }, 0);
+    const lines = new Map<string, { rateUsd: number; count: number; label: string }>();
+    let totalCommissionUsd = 0;
+    let missingRateOrderCount = 0;
+    for (const o of deliveredOrders) {
+      const b = computeOrderCommission(driverRateTable, {
+        merchantId: o.merchantId,
+        zoneId: String(o.zoneId),
+      });
+      if (!b.ok) {
+        missingRateOrderCount += 1;
+        continue;
+      }
+      totalCommissionUsd += b.usd;
+      const label =
+        b.tier === "cashSeller"
+          ? "Cash-seller rate"
+          : b.tier === "seller"
+            ? "Seller rate"
+            : "Zone rate";
+      const key = `${label}|${b.usd.toFixed(2)}`;
+      const line = lines.get(key) ?? { rateUsd: b.usd, count: 0, label };
+      line.count += 1;
+      lines.set(key, line);
+    }
+    const commissionLines = Array.from(lines.values()).sort(
+      (a, b) => b.rateUsd - a.rateUsd,
+    );
 
     const netToOfficeUsd = totalUsdCollected - totalCommissionUsd;
     const netToOfficeLbp = totalLbpCollected;
@@ -471,6 +491,8 @@ export default function DriverClient({
       totalCommissionUsd,
       netToOfficeUsd,
       netToOfficeLbp,
+      commissionLines,
+      missingRateOrderCount,
     };
   }, [deliveredOrders, driverRateTable]);
 
@@ -1628,10 +1650,22 @@ export default function DriverClient({
                           {payoutReceipt.totalLbpCollected.toLocaleString()} LL
                         </span>
                       </div>
+                      {payoutReceipt.missingRateOrderCount > 0 && (
+                        <div className="mt-2 border border-red-500/40 bg-red-500/10 rounded-md px-3 py-2 text-xs text-red-300">
+                          <span className="font-bold">Rate not configured</span> for{" "}
+                          {payoutReceipt.missingRateOrderCount}{" "}
+                          {payoutReceipt.missingRateOrderCount === 1 ? "order" : "orders"} — the
+                          payout cannot be sent until a seller or zone rate is set (a $0 rate is a
+                          valid explicit override).
+                        </div>
+                      )}
                     </div>
                     <button
                       onClick={handleOpenPayoutModal}
-                      disabled={submitting === "__payout__"}
+                      disabled={
+                        submitting === "__payout__" ||
+                        payoutReceipt.missingRateOrderCount > 0
+                      }
                       className="px-6 py-3 rounded-xl text-sm font-bold text-white bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 transition-all shadow-lg shadow-green-500/20"
                     >
                       {submitting === "__payout__"
@@ -2168,11 +2202,9 @@ export default function DriverClient({
                                                   ).toLocaleString()}
                                                 </td>
                                                 <td className="px-4 py-2 text-cyan-400 text-right font-mono">
-                                                  $
-                                                  {(
-                                                    order.driverCommissionUsd ??
-                                                    0
-                                                  ).toFixed(2)}
+                                                  {order.driverCommissionUsd == null
+                                                    ? "—"
+                                                    : `$${order.driverCommissionUsd.toFixed(2)}`}
                                                 </td>
                                               </tr>
                                             );
@@ -2356,10 +2388,11 @@ export default function DriverClient({
       {payoutModalOpen && (
         <ConfirmPayoutModal
           orders={deliveredOrders}
-          driverSellerRates={driver.driverSellerRates}
-          driverZoneRates={driver.zoneRates}
           totalUsd={payoutReceipt.totalUsdCollected}
           totalLbp={payoutReceipt.totalLbpCollected}
+          commissionLines={payoutReceipt.commissionLines}
+          totalCommissionUsd={payoutReceipt.totalCommissionUsd}
+          missingRateOrderCount={payoutReceipt.missingRateOrderCount}
           onConfirm={handleConfirmPayout}
           onCancel={() => setPayoutModalOpen(false)}
           submitting={submitting === "__payout__"}

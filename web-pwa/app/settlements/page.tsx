@@ -20,7 +20,7 @@ interface PayoutOrder {
   createdAt: string;
   zone: { name: string };
   merchant?: { merchantName: string } | null;
-  driverCommissionUsd?: number;
+  driverCommissionUsd?: number | null;
   payoutId?: string;
   payoutReference?: string | null;
 }
@@ -264,7 +264,7 @@ export default function DriverConsignmentsPage() {
           <td class="text-right">$${(o.amountUsd ?? 0).toFixed(2)}</td>
           <td class="text-right">${(o.amountLbp ?? 0).toLocaleString()}</td>
           <td class="text-right">$${(o.collectedUsd ?? 0).toFixed(2)}</td>
-          <td class="text-right">$${(o.driverCommissionUsd ?? 0).toFixed(2)}</td>
+          <td class="text-right">${o.driverCommissionUsd == null ? "—" : `$${o.driverCommissionUsd.toFixed(2)}`}</td>
         </tr>`,
       )
       .join("");
@@ -693,10 +693,9 @@ export default function DriverConsignmentsPage() {
                                                 ).toLocaleString()}
                                               </td>
                                               <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
-                                                $
-                                                {(
-                                                  order.driverCommissionUsd ?? 0
-                                                ).toFixed(2)}
+                                                {order.driverCommissionUsd == null
+                                                  ? "—"
+                                                  : `$${order.driverCommissionUsd.toFixed(2)}`}
                                               </td>
                                               <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
                                                 {order.payoutReference ||
@@ -938,7 +937,9 @@ export default function DriverConsignmentsPage() {
                             {(order.collectedLbp ?? 0).toLocaleString()}
                           </td>
                           <td className="px-4 py-2 text-purple-400 text-xs text-right font-mono">
-                            ${(order.driverCommissionUsd ?? 0).toFixed(2)}
+                            {order.driverCommissionUsd == null
+                              ? "—"
+                              : `$${order.driverCommissionUsd.toFixed(2)}`}
                           </td>
                           <td className="px-4 py-2 text-amber-400/70 text-xs font-mono">
                             {order.payoutReference || order.payoutId || "—"}
@@ -987,9 +988,10 @@ export default function DriverConsignmentsPage() {
                     "Amount LBP": (o.amountLbp ?? 0).toLocaleString(),
                     "Collected USD": (o.collectedUsd ?? 0).toFixed(2),
                     "Collected LBP": (o.collectedLbp ?? 0).toLocaleString(),
-                    "Driver Commission USD": (
-                      o.driverCommissionUsd ?? 0
-                    ).toFixed(2),
+                    "Driver Commission USD":
+                      o.driverCommissionUsd == null
+                        ? "Rate not configured"
+                        : o.driverCommissionUsd.toFixed(2),
                     "Fin Status": o.financialStatus,
                     Location: o.location,
                     Seller: o.merchant?.merchantName || "—",

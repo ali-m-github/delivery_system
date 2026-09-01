@@ -37,7 +37,7 @@ interface DriverPayout {
     collectedLbp?: number;
     createdAt?: string;
     zone: { name: string };
-    driverCommissionUsd?: number;
+    driverCommissionUsd?: number | null;
   }>;
 }
 
@@ -1034,7 +1034,9 @@ export default function DriversDirectoryPage() {
                                               "Collected LBP":
                                                 o.collectedLbp ?? o.amountLbp,
                                               "Driver Commission USD":
-                                                o.driverCommissionUsd ?? 0,
+                                                o.driverCommissionUsd == null
+                                                  ? "Rate not configured"
+                                                  : o.driverCommissionUsd,
                                             }));
                                           exportToExcel(
                                             `Batch_${payout.sequentialIndex}_Orders`,

@@ -106,3 +106,129 @@ export function extractDriverNotes(notes: string | null | undefined): string[] {
   }
   return out;
 }
+
+// ──────────────────────────────────────────────
+// Public tracking response helpers (shared)
+//
+// The tokenized endpoint (/api/track/<token>/<orderId>) is the secure
+// source of public order detail. The legacy endpoint (/api/track/<orderId>)
+// must apply the exact same PII masking and financial filtering — these
+// helpers are the single implementation used by both endpoints.
+// ──────────────────────────────────────────────
+
+/** Phone number for public display: keep only the last 4 digits. */
+export function publicPhone(phone: string | null): string {
+  if (!phone) return "";
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 4) return "";
+  return `•••• ${digits.slice(-4)}`;
+}
+
+/**
+ * Name for public display: masked first name + initials of the rest
+ * (e.g. "John Doe Smith" → "J*** D. S.").
+ */
+export function publicName(name: string | null): string {
+  if (!name) return "";
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "";
+  const first = parts[0];
+  const maskedFirst =
+    first.length <= 1 ? first : `${first[0]}${"*".repeat(first.length - 1)}`;
+  const tail = parts
+    .slice(1)
+    .map((p) => (p.length <= 1 ? `${p}.` : `${p[0]}.`))
+    .join(" ");
+  return tail ? `${maskedFirst} ${tail}` : maskedFirst;
+}
+
+/**
+ * True when a history action contains money/treasury information.
+ * Mirrors the legacy customer view's skip rule (Price / Collected /
+ * LL / USD), with a couple of extra safety nets.
+ */
+export function isFinancial(text: string): boolean {
+  return (
+    text.includes("Price") ||
+    text.includes("Collected") ||
+    text.includes("LL") ||
+    text.includes("USD") ||
+    /\$\s?\d/.test(text) ||
+    /price/i.test(text) ||
+    /collected/i.test(text) ||
+    /\busd\b/i.test(text)
+  );
+}
+
+/**
+ * Customer-friendly mapping of a raw history entry. Returns null for
+ * entries that must be hidden from the public timeline (financials).
+ */
+export function toCustomerMessage(entry: {
+  action: string;
+  location: string | null;
+}): { status: string; detail: string | null } | null {
+  const action = entry.action;
+  const loc = entry.location?.toUpperCase() ?? "";
+
+  // Location / status changes
+  if (loc === "WAREHOUSE" || action.includes("Order Created"))
+    return { status: "Order received", detail: "At our warehouse" };
+  if (loc === "ASSIGNED")
+    return { status: "With delivery courier", detail: null };
+  if (loc === "WITH_DRIVER")
+    return { status: "With delivery courier", detail: "Out for delivery" };
+  if (loc === "DELIVERED") return { status: "Delivered", detail: null };
+  if (loc === "RETURN" || loc === "RETURNED")
+    return { status: "Return requested", detail: null };
+  if (loc === "RTS") return { status: "Returned to sender", detail: null };
+
+  // Action-based mapping
+  if (action.includes("Assigned") || action.includes("assigned"))
+    return { status: "With delivery courier", detail: null };
+  if (action.includes("picked") || action.includes("Picked"))
+    return { status: "Picked up", detail: null };
+  if (action.includes("dispatch") || action.includes("Dispatch"))
+    return { status: "Dispatched", detail: null };
+
+  // Financial / treasury entries — never shown publicly
+  if (isFinancial(action)) return null;
+
+  // Note changes
+  if (action.includes("Note")) return { status: "Note added", detail: null };
+
+  // Generic location change
+  if (action.includes("Location changed")) {
+    if (loc === "WAREHOUSE")
+      return { status: "Order received", detail: "At our warehouse" };
+    if (loc === "ASSIGNED" || loc === "WITH_DRIVER")
+      return { status: "With delivery courier", detail: null };
+    if (loc === "DELIVERED") return { status: "Delivered", detail: null };
+    if (loc === "RETURN" || loc === "RETURNED")
+      return { status: "Return requested", detail: null };
+    if (loc === "RTS") return { status: "Returned to sender", detail: null };
+    return { status: "Status updated", detail: null };
+  }
+
+  // Fallback: clean up raw action text; hide anything still financial
+  const cleaned = action
+    .replace(/Location changed to /, "")
+    .replace(/Assigned to Driver/, "")
+    .replace(/->/g, "→")
+    .trim();
+  if (!cleaned || isFinancial(cleaned)) return null;
+  return { status: cleaned, detail: null };
+}
+
+/** Customer-friendly label for an order's current location. */
+export function currentStatusLabel(location: string): string {
+  const loc = location.toUpperCase();
+  if (loc === "DELIVERED") return "Delivered";
+  if (loc === "RETURN" || loc === "RETURNED" || loc === "RTS")
+    return "Returned";
+  if (loc === "ASSIGNED" || loc === "WITH_DRIVER")
+    return "With delivery courier";
+  if (loc === "POSTPONED") return "Postponed";
+  if (loc === "CP") return "Preparing for dispatch";
+  return "At warehouse";
+}

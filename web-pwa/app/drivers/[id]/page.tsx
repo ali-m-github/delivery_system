@@ -304,13 +304,9 @@ export default function DriverProfilePage() {
   // ─── Commission Rate Table (authoritative module) ──────────────────────
   // Built once per driver from the already-loaded rate rows, with the same
   // precedence as every server-side ledger path: seller exception (cash-
-  // seller wins, $0 is a valid override) → zone rate → $0 system default.
-  const driverZoneRates: {
-    zoneId: string;
-    zone: { id: string; name: string } | null;
-    rate: number;
-  }[] = driver?.zoneRates || [];
-
+  // seller wins, $0 is a valid override) → zone rate → MISSING (a missing
+  // rate is a configuration error — there is no $0 default; ledger paths
+  // fail closed, previews show "Rate not configured").
   const rateTable: DriverRateTable = useMemo(
     () =>
       buildRateTableFromRates(String(driver?.id ?? ""), {
@@ -329,23 +325,45 @@ export default function DriverProfilePage() {
     [driver, sellerRates],
   );
 
-  const totalCommission = useMemo(() => {
-    console.log(
-      "[Payout Pipeline] Calculating totalCommission for",
-      deliveredOrders.length,
-      "delivered orders",
-    );
-    return deliveredOrders.reduce((sum: number, o: any) => {
-      const { usd, tier } = computeOrderCommission(rateTable, {
+  // Authoritative per-order commission for the payout preview (the same
+  // module every ledger path uses): seller exception (cash wins) → zone
+  // rate → MISSING. A configured $0 is a valid line; a missing rate is
+  // counted and BLOCKS the payout — it is never silently treated as $0.
+  const payoutBreakdown = useMemo(() => {
+    const lines = new Map<
+      string,
+      { rateUsd: number; count: number; label: string }
+    >();
+    let commission = 0;
+    let missingCount = 0;
+    for (const o of deliveredOrders) {
+      const b = computeOrderCommission(rateTable, {
         merchantId: o.merchantId ?? o.merchant?.id,
         zoneId: String(o.zoneId),
       });
-      console.log(
-        `[Payout Pipeline] Order ${o.orderId} → Merch: ${o.merchantId ?? o.merchant?.id ?? "—"}, Using ${tier.toUpperCase()} rate: $${usd}`,
-      );
-      return sum + usd;
-    }, 0);
+      if (!b.ok) {
+        missingCount++;
+        continue;
+      }
+      commission += b.usd;
+      const label =
+        b.tier === "cashSeller"
+          ? "Cash-seller rate"
+          : b.tier === "seller"
+            ? "Seller rate"
+            : "Zone rate";
+      const key = `${label}|${b.usd.toFixed(2)}`;
+      const line = lines.get(key) ?? { rateUsd: b.usd, count: 0, label };
+      line.count += 1;
+      lines.set(key, line);
+    }
+    const commissionLines = Array.from(lines.values()).sort(
+      (a, b) => b.rateUsd - a.rateUsd,
+    );
+    return { commission, missingCount, commissionLines };
   }, [deliveredOrders, rateTable]);
+
+  const totalCommission = payoutBreakdown.commission;
 
   const netPayoutUsd = totalDeliveredUsd - totalCommission;
 
@@ -376,18 +394,26 @@ export default function DriverProfilePage() {
       (sum: number, o) => sum + grossLbp(o),
       0,
     );
-    const commission = selectedWdOrders.reduce((sum: number, o: any) => {
-      const { usd, tier } = computeOrderCommission(rateTable, {
+    // Commission via the authoritative module — a missing rate is never
+    // counted as $0; it blocks the clear-to-office submission.
+    let commission = 0;
+    let missingCount = 0;
+    for (const o of selectedWdOrders) {
+      const b = computeOrderCommission(rateTable, {
         merchantId: o.merchantId ?? o.merchant?.id,
         zoneId: String(o.zoneId ?? ""),
       });
-      console.log(
-        `[Settlement Pipeline] Order ${o.orderId} → Merch: ${o.merchantId ?? o.merchant?.id ?? "—"}, Zone: ${o.zoneId ?? "—"}, Rate: $${usd} (${tier.toUpperCase()})`,
-      );
-      return sum + usd;
-    }, 0);
+      if (b.ok) commission += b.usd;
+      else missingCount++;
+    }
     const net = totalCollectedUsd - commission;
-    return { totalCollectedUsd, totalCollectedLbp, commission, net };
+    return {
+      totalCollectedUsd,
+      totalCollectedLbp,
+      commission,
+      net,
+      missingCount,
+    };
   }, [selectedWdOrders, rateTable]);
 
   // ─── Payout-preview modal inputs ───────────────────────────────────────
@@ -400,15 +426,6 @@ export default function DriverProfilePage() {
   const deliveredGrossLbp = deliveredOrders.reduce(
     (sum: number, o) => sum + grossLbp(o),
     0,
-  );
-  // Merged seller-exception list (cash wins) for the modal breakdown —
-  // the raw sellerRates list alone would omit cash-seller exceptions.
-  const mergedSellerRates = useMemo(
-    () =>
-      Array.from(rateTable.sellerExceptionMap.entries()).map(
-        ([merchantId, rateUsd]) => ({ merchantId, rateUsd }),
-      ),
-    [rateTable],
   );
 
   // ─── Payout Submission ──────────────────────────────────────────────────
@@ -428,6 +445,9 @@ export default function DriverProfilePage() {
       if (res.ok) {
         setShowPayoutModal(false);
         await refreshData();
+      } else {
+        const err = await res.json().catch(() => null);
+        alert(err?.error ?? "Failed to create payout");
       }
     } finally {
       setSubmitting(false);
@@ -454,6 +474,9 @@ export default function DriverProfilePage() {
       });
       if (res.ok) {
         window.location.reload();
+      } else {
+        const err = await res.json().catch(() => null);
+        alert(err?.error ?? "Failed to clear with office");
       }
     } finally {
       setClearing(false);
@@ -2336,7 +2359,9 @@ export default function DriverProfilePage() {
                               ${actualCollectedUsd.toFixed(2)}
                             </td>
                             <td className="px-4 py-2.5 text-right text-purple-400 font-mono">
-                              ${(order.driverCommissionUsd ?? 0).toFixed(2)}
+                              {order.driverCommissionUsd == null
+                                ? "—"
+                                : `$${order.driverCommissionUsd.toFixed(2)}`}
                             </td>
                             <td className="px-4 py-2.5 text-right">
                               <div className="flex gap-1.5 justify-end">
@@ -2386,6 +2411,9 @@ export default function DriverProfilePage() {
                                         });
                                       }
                                       await refreshData();
+                                    } else {
+                                      const err = await res.json().catch(() => null);
+                                      alert(err?.error ?? "Failed to remove order from payout");
                                     }
                                   }}
                                   className="px-2 py-1 rounded text-[10px] font-semibold bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20 transition-colors"
@@ -2598,12 +2626,13 @@ export default function DriverProfilePage() {
         {showPayoutModal && (
           <ConfirmPayoutModal
             orders={deliveredOrders}
-            driverSellerRates={mergedSellerRates}
-            driverZoneRates={driverZoneRates}
             totalUsd={deliveredGrossUsd}
             totalLbp={deliveredGrossLbp}
             carriedDebtUsd={driver?.carriedDebtUsd ?? 0}
             carriedDebtLbp={driver?.carriedDebtLbp ?? 0}
+            commissionLines={payoutBreakdown.commissionLines}
+            totalCommissionUsd={payoutBreakdown.commission}
+            missingRateOrderCount={payoutBreakdown.missingCount}
             onConfirm={handleGeneratePayout}
             onCancel={() => setShowPayoutModal(false)}
             submitting={submitting}
