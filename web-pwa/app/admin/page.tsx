@@ -102,7 +102,7 @@ function AdminContent() {
       {/* Background Grid */}
       <div className="fixed inset-0 bg-[linear-gradient(rgba(6,182,212,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(6,182,212,0.04)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_0%,#000_70%,transparent_110%)] pointer-events-none z-0" />
 
-      <div className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 py-8">
+      <div className="relative z-10 max-w-[1600px] mx-auto px-4 sm:px-6 py-8">
         {/* ── Header ── */}
         <div className="mb-8">
           <h1 className="text-2xl sm:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-500">
@@ -1263,7 +1263,7 @@ function DriversTab() {
                   <th className="py-3 px-4 font-medium">Zone Rates</th>
                   <th className="py-3 px-4 font-medium">Seller Rates</th>
                   <th className="py-3 px-4 font-medium">Zones</th>
-                  <th className="py-3 px-4 font-medium">Actions</th>
+                  <th className="py-3 px-4 font-medium sticky right-0 z-20 bg-[#10131e] border-l border-white/10 shadow-[-10px_0_10px_-8px_rgba(0,0,0,0.5)]">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
@@ -1414,7 +1414,7 @@ function DriversTab() {
                       </div>
                     </td>
                     {/* Actions column */}
-                    <td className="py-3 px-4">
+                    <td className="py-3 px-4 sticky right-0 z-10 bg-[#10131e] border-l border-white/10 shadow-[-10px_0_10px_-8px_rgba(0,0,0,0.5)]">
                       <div className="flex items-center gap-2">
                         <button
                           type="button"

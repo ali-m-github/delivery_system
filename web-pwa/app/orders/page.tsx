@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo, useRef, Suspense } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
-import * as XLSX from "xlsx";
 import SharedOrderTable, {
   formatDDMMYYYY,
   SortableTh,
@@ -485,6 +484,7 @@ function OrdersPageInner() {
     try {
       if (ext === "xlsx" || ext === "xls") {
         const buffer = await file.arrayBuffer();
+        const XLSX = await import("xlsx");
         const workbook = XLSX.read(buffer, { type: "array" });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         const allRows = XLSX.utils.sheet_to_json<string[]>(sheet, {

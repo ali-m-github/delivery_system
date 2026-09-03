@@ -22,12 +22,13 @@ export type ExchangeSourceOrder = {
 
 /**
  * Idempotently creates an "-Exchange" proof order when an exchange order is
- * delivered. The exchange order duplicates the main order's details (including
- * the main price) but NEVER holds collected columns (collectedUsd/Lbp = 0) and
+ * delivered. The exchange order duplicates the main order's details but NEVER
+ * holds a price (amountUsd/Lbp = 0 — the COD value belongs to the main order,
+ * which is already settled) nor collected columns (collectedUsd/Lbp = 0), and
  * is created in location RETURN with financial status EWD (Exchange With
- * Driver). Because it is never DELIVERED it has no impact on any financial
- * transaction — it exists purely as proof that an item is being returned to
- * the merchant.
+ * Driver). Because it is never DELIVERED and carries no price, it has no
+ * impact on any financial transaction — it exists purely as proof that an item
+ * is being returned to the merchant (resolving it in a cash payout deducts $0).
  *
  * Returns the created exchange order, or null when the source order is not an
  * exchange or an "-Exchange" order already exists (idempotency guard).
@@ -57,8 +58,10 @@ export async function createExchangeOrderFromDelivered(
       merchantId: main.merchantId,
       driverId: main.driverId,
       hasExchange: true,
-      amountUsd: main.amountUsd,
-      amountLbp: main.amountLbp,
+      // Exchange proof orders carry NO price: the COD amount belongs to the main
+      // order (already settled), so resolving the exchange in a payout deducts $0.
+      amountUsd: 0,
+      amountLbp: 0,
       packages: main.packages,
       extraShipping: main.extraShipping,
       notes: main.notes,

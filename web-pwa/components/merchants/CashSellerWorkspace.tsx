@@ -18,7 +18,9 @@ interface UnpaidOrder {
 interface PendingReturn {
   id: string;
   orderId: string;
-  amountUsd: number;
+  // null for "-Exchange" proof orders: the item simply went back to the
+  // merchant, so it carries no price and deducts $0.
+  amountUsd: number | null;
   driverId?: string | null;
   financialStatus?: string;
   sellerRate?: number; // effective rate resolved by the API
@@ -247,8 +249,13 @@ export default function CashSellerWorkspace({
 
   const returnDeductions = Array.from(selectedReturnIds).reduce((sum, id) => {
     const ret = pendingReturns.find((r) => r.id === id);
-    const rate = ret?.sellerRate ?? defaultSellerRate;
-    return sum + (ret ? computeAdvance(ret.amountUsd, rate) : 0);
+    if (!ret) return sum;
+    // "-Exchange" proof orders (item returned to the merchant) deduct exactly
+    // $0 — the seller fee was already charged on the main order, so neither a
+    // COD amount nor a fee is deducted here.
+    if (ret.orderId.endsWith("-Exchange") || ret.amountUsd == null) return sum;
+    const rate = ret.sellerRate ?? defaultSellerRate;
+    return sum + computeAdvance(ret.amountUsd, rate);
   }, 0);
 
   const adjustmentsTotal = adjustments.reduce(
@@ -641,9 +648,21 @@ export default function CashSellerWorkspace({
               <h3 className="text-white font-semibold text-sm">
                 Unresolved Returns to Deduct
               </h3>
-              <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded">
-                {pendingReturns.length} returns/exchanges
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded">
+                  {pendingReturns.length} returns/exchanges
+                </span>
+                <button
+                  onClick={() => applyDateFilter(filterFromDate, filterToDate)}
+                  disabled={isLoading || isSubmitting}
+                  className="w-6 h-6 flex items-center justify-center text-xs text-gray-400 bg-white/5 border border-white/10 rounded hover:bg-white/10 hover:text-cyan-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Refresh returns (keeps the current date filter — no need to reload the page)"
+                >
+                  <span className={isLoading ? "inline-block animate-spin" : ""}>
+                    ⟳
+                  </span>
+                </button>
+              </div>
             </div>
             <p className="text-gray-600 text-[10px] mt-1 leading-tight">
               Checking these will subtract their original advance from today's
@@ -686,10 +705,16 @@ export default function CashSellerWorkspace({
                   </tr>
                 ) : (
                   pendingReturns.map((ret) => {
-                    const deduction = computeAdvance(
-                      ret.amountUsd,
-                      defaultSellerRate,
-                    );
+                    // "-Exchange" proof orders (item returned to the merchant)
+                    // deduct exactly $0 — the seller fee was already charged on
+                    // the main order, so neither a COD amount nor a fee is
+                    // deducted here.
+                    const amount = ret.amountUsd;
+                    const isExchangeProof =
+                      ret.orderId.endsWith("-Exchange") || amount == null;
+                    const deduction = isExchangeProof
+                      ? 0
+                      : computeAdvance(amount, defaultSellerRate);
                     return (
                       <tr
                         key={ret.id}
@@ -714,7 +739,7 @@ export default function CashSellerWorkspace({
                           </span>
                         </td>
                         <td className="px-2 py-2 text-right font-mono text-gray-400">
-                          ${ret.amountUsd.toFixed(2)}
+                          {amount == null ? "—" : `$${amount.toFixed(2)}`}
                         </td>
                         <td className="px-4 py-2 text-right font-mono text-orange-400">
                           −${deduction.toFixed(2)}

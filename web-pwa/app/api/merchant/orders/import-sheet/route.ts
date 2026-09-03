@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import Papa from "papaparse";
 import { ensureFallbackZone } from "@/lib/zoneMatcher";
 import { generateTrackTokens } from "@/lib/tracking";
 import { requireServerRole } from "@/lib/server-permissions";
@@ -115,6 +114,8 @@ export async function POST(request: Request) {
     }
 
     const csvText = await csvResponse.text();
+    // Lazy-loaded to keep the route graph light
+    const { default: Papa } = await import("papaparse");
     const parseResult = Papa.parse<string[]>(csvText, { skipEmptyLines: true });
     const parsedRows: string[][] = parseResult.data;
 

@@ -53,9 +53,9 @@ export async function GET(
         cashPayoutExcluded: false,
         isArchived: false,
         // Exclude exchange-generated proof orders (orderId ends with "-Exchange").
-        // These duplicate the main order's price but were already paid out as part
-        // of the original order, so they must never appear as eligible for a new
-        // cash seller advance.
+        // These carry no price of their own (the COD value belongs to the main
+        // order, already paid out as part of the original advance), so they must
+        // never appear as eligible for a new cash seller advance.
         NOT: { orderId: { endsWith: "-Exchange" } },
         ...(Object.keys(dateFilter).length ? { createdAt: dateFilter } : {}),
       },
@@ -97,8 +97,14 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
+    // "-Exchange" proof orders (orderId ends with "-Exchange") are just the
+    // item coming back to the merchant — they carry no price of their own, so
+    // they must be listed with a NULL price and a $0 deduction. This also
+    // covers legacy rows created before the fix (which still hold the main
+    // order's amountUsd).
     const pendingReturnsWithRate = pendingReturns.map((order) => ({
       ...order,
+      amountUsd: order.orderId.endsWith("-Exchange") ? null : order.amountUsd,
       sellerRate: defaultFee,
     }));
 
@@ -232,6 +238,9 @@ export async function POST(
       let profit = 0;
 
       for (const o of advanceOrders) {
+        // "-Exchange" proof orders carry no price and must never be advanced
+        // (defensive guard — the UI excludes them from eligibility).
+        if (o.orderId.endsWith("-Exchange")) continue;
         const driverException = await resolveDriverSellerException(
           o.driverId,
           merchantId,
@@ -264,6 +273,10 @@ export async function POST(
       let deductedReturns = 0;
 
       for (const o of returnOrders) {
+        // "-Exchange" proof orders are just the item coming back to the
+        // merchant — they carry no price (null), so they deduct $0. This also
+        // covers legacy rows that still hold the main order's amountUsd.
+        if (o.orderId.endsWith("-Exchange")) continue;
         deductedReturns += (o.amountUsd ?? 0) - fee;
       }
 

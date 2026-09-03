@@ -12,7 +12,6 @@ import SettingsModal from "@/components/SettingsModal";
 import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import BarcodeScannerModal from "@/components/BarcodeScannerModal";
-import * as XLSX from "xlsx";
 
 type Order = {
   id: string;
@@ -146,8 +145,9 @@ function beirutDateTime(iso: string): string {
   });
 }
 
-const exportToExcel = (filename: string, rows: any[]) => {
+const exportToExcel = async (filename: string, rows: any[]) => {
   if (!rows || !rows.length) return;
+  const XLSX = await import("xlsx");
   const worksheet = XLSX.utils.json_to_sheet(rows);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");

@@ -94,6 +94,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS "MerchantPayout_sequentialIndex_key"
 -- ----------------------------------------------------------------------------
 CREATE SEQUENCE IF NOT EXISTS treasury_transaction_reference_seq;
 
+-- Ensure the application role can use the sequence even when the script is
+-- run as a superuser (the sequence is owned by whoever ran it; the app
+-- connects as a different role). GRANT is idempotent.
+GRANT USAGE, UPDATE ON SEQUENCE treasury_transaction_reference_seq TO delivery_user;
+
 -- Seed the sequence to one past the largest existing numeric reference.
 -- GREATEST keeps a re-run from ever resetting the sequence downward (a
 -- sequence only advances; new references created since a prior run must win).

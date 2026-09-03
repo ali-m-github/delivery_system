@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, Fragment } from "react";
 import { useRouter } from "next/navigation";
-import * as XLSX from "xlsx";
 import CreateDriverModal from "@/components/drivers/CreateDriverModal";
 import PermissionGuard from "@/components/PermissionGuard";
 
@@ -440,8 +439,9 @@ export default function DriversDirectoryPage() {
   }, []);
 
   // ── Native Excel Export ──────────────────────────────────────────────────────
-  const exportToExcel = (filename: string, rows: any[]) => {
+  const exportToExcel = async (filename: string, rows: any[]) => {
     if (!rows || !rows.length) return;
+    const XLSX = await import("xlsx");
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");

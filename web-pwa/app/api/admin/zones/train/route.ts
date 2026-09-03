@@ -3,8 +3,6 @@ import prisma from "@/lib/prisma";
 import { normalizeAddress } from "@/lib/addressNormalizer";
 import { requireServerPermission } from "@/lib/server-permissions";
 
-// We use the xlsx library already in the project for parsing Excel/CSV
-import * as XLSX from "xlsx";
 
 const VERIFICATION_THRESHOLD = 5;
 
@@ -66,6 +64,9 @@ export async function POST(request: Request) {
     }
 
     // ── Read file buffer and parse with xlsx ────────────────────────────
+    // Lazy-loaded: keeps the multi-MB xlsx package out of this route's
+    // initial module graph (dev-compile + startup cost).
+    const XLSX = await import("xlsx");
     const buffer = Buffer.from(await file.arrayBuffer());
     const workbook = XLSX.read(buffer, { type: "buffer" });
     const sheetName = workbook.SheetNames[0];

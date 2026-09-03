@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import sharp from "sharp";
-import Tesseract from "tesseract.js";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { requireServerPermission } from "@/lib/server-permissions";
@@ -90,6 +88,11 @@ export async function POST(request: Request) {
     await mkdir(uploadDir, { recursive: true });
 
     const results: WaybillResult[] = [];
+
+    // Lazy-load the heavy OCR/image deps: only requested at OCR time, and
+    // kept out of this route's initial module graph (faster dev compiles).
+    const sharp = (await import("sharp")).default;
+    const Tesseract = (await import("tesseract.js")).default;
 
     for (const file of files) {
       const fileResult: WaybillResult = {

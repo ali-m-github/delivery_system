@@ -327,7 +327,7 @@ export default function PermissionGroupsTab() {
                   <th className="py-3 px-4 font-medium">Name</th>
                   <th className="py-3 px-4 font-medium">Permissions</th>
                   <th className="py-3 px-4 font-medium">Users</th>
-                  <th className="py-3 px-4 font-medium">Actions</th>
+                  <th className="py-3 px-4 font-medium sticky right-0 z-20 bg-[#10131e] border-l border-white/10 shadow-[-10px_0_10px_-8px_rgba(0,0,0,0.5)]">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
@@ -359,7 +359,7 @@ export default function PermissionGroupsTab() {
                       <td className="py-3 px-4 text-gray-400 whitespace-nowrap">
                         {group._count?.users ?? 0}
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 sticky right-0 z-10 bg-[#10131e] border-l border-white/10 shadow-[-10px_0_10px_-8px_rgba(0,0,0,0.5)]">
                         <div className="flex items-center gap-2">
                           <button
                             type="button"

@@ -708,15 +708,15 @@ export default function EmployeesTab() {
           <p className="text-sm text-gray-500">No employees created yet.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm text-left">
+            <table className="w-full min-w-[768px] text-sm text-left">
               <thead>
                 <tr className="border-b border-white/10 text-xs text-gray-500 uppercase tracking-wider">
-                  <th className="py-3 px-4 font-medium">Name</th>
-                  <th className="py-3 px-4 font-medium">Email</th>
-                  <th className="py-3 px-4 font-medium">Role</th>
-                  <th className="py-3 px-4 font-medium">Group</th>
-                  <th className="py-3 px-4 font-medium">Effective Permissions</th>
-                  <th className="py-3 px-4 font-medium">Actions</th>
+                  <th className="py-3 px-3 font-medium">Name</th>
+                  <th className="py-3 px-3 font-medium">Email</th>
+                  <th className="py-3 px-3 font-medium">Role</th>
+                  <th className="py-3 px-3 font-medium">Group</th>
+                  <th className="py-3 px-3 font-medium whitespace-nowrap">Effective Permissions</th>
+                  <th className="py-3 px-3 font-medium border-l border-white/10">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
@@ -738,16 +738,21 @@ export default function EmployeesTab() {
                       key={user.id}
                       className="hover:bg-white/[0.03] transition-colors duration-150"
                     >
-                      <td className="py-3 px-4 text-gray-200 whitespace-nowrap">
+                      <td className="py-3 px-3 text-gray-200 whitespace-nowrap">
                         {user.username}
                       </td>
-                      <td className="py-3 px-4 text-gray-400">
-                        {user.email}
+                      <td className="py-3 px-3 text-gray-400">
+                        <span
+                          className="block max-w-[200px] truncate"
+                          title={user.email}
+                        >
+                          {user.email}
+                        </span>
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-3">
                         <RoleBadge role={user.role} />
                       </td>
-                      <td className="py-3 px-4 text-gray-400 whitespace-nowrap">
+                      <td className="py-3 px-3 text-gray-400 whitespace-nowrap">
                         {user.permissionGroup ? (
                           <span className="inline-flex items-center gap-1.5">
                             <span className="text-cyan-300 text-xs">
@@ -761,12 +766,12 @@ export default function EmployeesTab() {
                           <span className="text-xs text-gray-600">None</span>
                         )}
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-3">
                         <button
                           type="button"
                           onClick={() => setEffectiveView(user)}
                           title="View the full effective permission set"
-                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold
+                          className="inline-flex items-center gap-2 whitespace-nowrap px-3 py-1.5 rounded-lg text-xs font-semibold
                                      bg-white/5 border border-white/10 text-gray-300
                                      hover:bg-white/10 hover:text-white transition-all duration-200"
                         >
@@ -774,11 +779,6 @@ export default function EmployeesTab() {
                             {effectiveCount} permission
                             {effectiveCount === 1 ? "" : "s"}
                           </span>
-                          {user.role !== "ADMIN" && (
-                            <span className="text-[10px] text-purple-400">
-                              {customPerms.length} custom
-                            </span>
-                          )}
                           {hasSensitive && (
                             <span
                               title="Includes sensitive permissions"
@@ -788,7 +788,7 @@ export default function EmployeesTab() {
                           <span className="text-gray-500">›</span>
                         </button>
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-3 border-l border-white/10">
                         <div className="flex items-center gap-2">
                           <button
                             type="button"

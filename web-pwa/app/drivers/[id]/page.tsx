@@ -13,7 +13,6 @@ import SellerRateForm from "@/components/drivers/SellerRateForm";
 import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import PermissionGuard from "@/components/PermissionGuard";
-import * as XLSX from "xlsx";
 
 type Tab = "assigned" | "delivered" | "returns" | "payouts" | "rates";
 
@@ -608,7 +607,8 @@ export default function DriverProfilePage() {
   };
 
   // ─── Export Helpers ─────────────────────────────────────────────────────────
-  const exportOrdersToExcel = (orders: any[], filename: string) => {
+  const exportOrdersToExcel = async (orders: any[], filename: string) => {
+    const XLSX = await import("xlsx");
     const rows = orders.map((o) => ({
       "Order ID": o.orderId,
       Customer: o.customerName,
