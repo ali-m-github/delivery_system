@@ -1422,6 +1422,21 @@ function OrdersPageInner() {
     );
   };
 
+  // Helper: comma-separated multi-search token match against Order ID or phone number.
+  // Order ID: exact or suffix match (as before).
+  // Phone: numeric tokens (4+ digits) match the full number or just trailing digits
+  // (e.g. "78981891" or "981891"), ignoring spaces/+ signs in the stored phone.
+  const tokenMatchesOrderIdOrPhone = (token: string, order: Order): boolean => {
+    const displayId = String(order.orderId || order.id || "");
+    const displayIdLower = displayId.toLowerCase();
+    if (displayIdLower.endsWith(token) || displayIdLower === token) return true;
+    if (/^\d{4,}$/.test(token)) {
+      const phoneDigits = (order.customerPhone || "").replace(/\D/g, "");
+      if (phoneDigits.endsWith(token)) return true;
+    }
+    return false;
+  };
+
   // ── Filtered & sorted orders ──
   const allFiltered = useMemo(() => {
     let list = [...activeOrArchivedOrders];
@@ -1435,16 +1450,10 @@ function OrdersPageInner() {
       list = list.filter((order) => {
         if (terms.length === 0) return true;
 
-        // Multi-order comma-separated search: safe type coercion
-        // NOTE: order.orderId first — order.id is a UUID (always truthy) and would short-circuit
+        // Multi-order comma-separated search: match Order ID (exact/suffix) or phone
+        // number (full or trailing digits). Return true if ANY token matches.
         if (searchTerm.includes(",")) {
-          const displayId = String(order.orderId || order.id || "");
-          // Return true if ANY token matches, false otherwise — do NOT fall through
-          return terms.some(
-            (token) =>
-              displayId.toLowerCase().endsWith(token) ||
-              displayId.toLowerCase() === token,
-          );
+          return terms.some((token) => tokenMatchesOrderIdOrPhone(token, order));
         }
 
         // AND logic: Order must match ALL terms (great for parameter filtering)
@@ -1516,18 +1525,15 @@ function OrdersPageInner() {
       setMissingTokens([]);
       return;
     }
-    // Multi-order comma-separated search: safe type coercion for missing tokens
-    // NOTE: order.orderId first — order.id is a UUID (always truthy) and would short-circuit
+    // Multi-order comma-separated search: a token is "found" if it matches any
+    // order ID (exact/suffix) or phone number (full or trailing digits).
     if (tokens.length > 0 && searchTerm.includes(",")) {
-      const notFound = tokens.filter((token) => {
-        return !activeOrArchivedOrders.some((order) => {
-          const displayId = String(order.orderId || order.id || "");
-          return (
-            displayId.toLowerCase().endsWith(token) ||
-            displayId.toLowerCase() === token
-          );
-        });
-      });
+      const notFound = tokens.filter(
+        (token) =>
+          !activeOrArchivedOrders.some((order) =>
+            tokenMatchesOrderIdOrPhone(token, order),
+          ),
+      );
       setMissingTokens(notFound);
     } else {
       const missing: string[] = [];
@@ -2644,7 +2650,7 @@ function OrdersPageInner() {
                 </svg>
                 <input
                   type="text"
-                  placeholder="Search orders by last digits (e.g., 8627, 5117) or text (e.g., Hamra)..."
+                  placeholder="Search orders by order id / phone, comma-separated (e.g., 8627,78981891,981891) or text (e.g., Hamra)..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="w-full pl-10 pr-4 py-2.5 text-sm rounded-xl
