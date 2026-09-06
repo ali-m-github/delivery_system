@@ -1582,7 +1582,7 @@ export default function DriverClient({
                               &#9776;
                             </button>
                             <span className="font-mono text-green-400 text-sm font-semibold">
-                              #{order.orderId}
+                              {order.orderId}
                             </span>
                           </div>
 
@@ -1779,7 +1779,7 @@ export default function DriverClient({
                             {/* Tracking ID */}
                             <div className="flex items-center justify-between mb-3">
                               <span className="font-mono text-amber-400 text-sm font-semibold">
-                                #{order.orderId}
+                                {order.orderId}
                               </span>
                               <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-yellow-500/20 text-yellow-400">
                                 WAREHOUSE

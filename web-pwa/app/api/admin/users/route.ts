@@ -60,6 +60,9 @@ export async function POST(request: Request) {
     let permissionGroupId: string | null = null;
     let customPermissions: string[] = [];
     let logoUrl: string | null = null;
+    // Optional: link the new MERCHANT account to an already-existing seller
+    // ledger (created on the /merchants page) instead of spawning a new one.
+    let merchantId: string | null = null;
 
     if (isMultipart) {
       const formData = await request.formData();
@@ -68,6 +71,7 @@ export async function POST(request: Request) {
       password = formString(formData, "password") ?? "";
       role = formString(formData, "role") ?? "";
       permissionGroupId = formString(formData, "permissionGroupId");
+      merchantId = formString(formData, "merchantId");
       const custom = formString(formData, "customPermissions");
       customPermissions = custom ? JSON.parse(custom) : [];
       const logo = formData.get("logo");
@@ -79,6 +83,7 @@ export async function POST(request: Request) {
       password = body.password || "";
       role = body.role || "";
       permissionGroupId = body.permissionGroupId || null;
+      merchantId = body.merchantId || null;
       customPermissions = Array.isArray(body.customPermissions)
         ? body.customPermissions
         : [];
@@ -216,13 +221,45 @@ export async function POST(request: Request) {
       },
     });
 
-    // Persist the logo on the merchant record linked to this user
-    if (role === "MERCHANT" && logoUrl) {
-      await prisma.merchant.upsert({
-        where: { userId: user.id },
-        create: { userId: user.id, merchantName: username, logoUrl },
-        update: { logoUrl },
-      });
+    // Link the MERCHANT account to a seller ledger.
+    // - When a `merchantId` is provided (the seller was created on the
+    //   /merchants page), link to that EXISTING ledger instead of spawning a
+    //   duplicate — this is the fix for the two-merchant-per-seller flaw.
+    //   The target must exist and not already have an account.
+    // - Otherwise keep the legacy behavior: adopt the ledger already linked to
+    //   this user (e.g. a logo uploaded on an edit), or create a fresh one
+    //   when the user has no ledger yet.
+    if (role === "MERCHANT") {
+      if (merchantId) {
+        const target = await prisma.merchant.findUnique({
+          where: { id: merchantId },
+          select: { id: true, merchantName: true, userId: true },
+        });
+        if (!target) {
+          return NextResponse.json(
+            { error: "The selected merchant does not exist" },
+            { status: 400 },
+          );
+        }
+        if (target.userId && target.userId !== user.id) {
+          return NextResponse.json(
+            {
+              error: `"${target.merchantName}" already has an account linked. Choose a different merchant or remove the existing account first.`,
+            },
+            { status: 409 },
+          );
+        }
+        await prisma.merchant.update({
+          where: { id: merchantId },
+          data: { userId: user.id, ...(logoUrl ? { logoUrl } : {}) },
+        });
+      } else {
+        await prisma.merchant.upsert({
+          where: { userId: user.id },
+          create: { userId: user.id, merchantName: username, logoUrl },
+          update: { ...(logoUrl ? { logoUrl } : {}) },
+        });
+      }
     }
 
     return NextResponse.json(user, { status: 201 });

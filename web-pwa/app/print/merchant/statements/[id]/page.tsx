@@ -7,10 +7,36 @@ import { PrintControls } from "./PrintControls";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// All invoice dates/times are displayed in Beirut local time (Asia/Beirut),
+// independent of the server's timezone.
+const BEIRUT_TZ = "Asia/Beirut";
+
+function beirutDateParts(d: Date): { day: number; month: number; year: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BEIRUT_TZ,
+    day: "numeric",
+    month: "numeric",
+    year: "numeric",
+  }).formatToParts(d);
+  return {
+    day: Number(parts.find((p) => p.type === "day")?.value ?? 0),
+    month: Number(parts.find((p) => p.type === "month")?.value ?? 0),
+    year: Number(parts.find((p) => p.type === "year")?.value ?? 0),
+  };
+}
+
 function formatDateTime(iso: string): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()} ${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+  const { day, month, year } = beirutDateParts(d);
+  const date = `${day}/${month}/${year}`;
+  const time = new Intl.DateTimeFormat("en-GB", {
+    timeZone: BEIRUT_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(d);
+  return `${date} ${time}`;
 }
 
 function currency(amount: number): string {
@@ -161,7 +187,7 @@ export default async function PrintMerchantStatementInvoicePage({
         {/* ── Header ── */}
         <div className="header">
           <div className="header-left">
-            <div className="company-name">Delivery Co.</div>
+            <div className="company-name">Jet Delivery</div>
             <div className="company-tagline">Seller Statement — Invoice</div>
           </div>
           <div className="header-right">
@@ -228,7 +254,7 @@ export default async function PrintMerchantStatementInvoicePage({
                     letterSpacing: "0.5px",
                   }}
                 >
-                  #{line.orderId}
+                  {line.orderId}
                 </td>
                 <td style={{ fontSize: 11 }}>{line.customerName}</td>
                 <td style={{ fontSize: 11 }}>{line.customerAddress}</td>
@@ -306,6 +332,7 @@ export default async function PrintMerchantStatementInvoicePage({
         <div className="footer">
           Generated on{" "}
           {new Date().toLocaleDateString("en-US", {
+            timeZone: BEIRUT_TZ,
             year: "numeric",
             month: "short",
             day: "numeric",

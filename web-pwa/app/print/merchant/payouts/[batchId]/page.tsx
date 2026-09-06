@@ -30,16 +30,42 @@ interface InvoiceAdjustment {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// All invoice dates/times are displayed in Beirut local time (Asia/Beirut),
+// independent of the server's timezone.
+const BEIRUT_TZ = "Asia/Beirut";
+
+function beirutDateParts(d: Date): { day: number; month: number; year: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BEIRUT_TZ,
+    day: "numeric",
+    month: "numeric",
+    year: "numeric",
+  }).formatToParts(d);
+  return {
+    day: Number(parts.find((p) => p.type === "day")?.value ?? 0),
+    month: Number(parts.find((p) => p.type === "month")?.value ?? 0),
+    year: Number(parts.find((p) => p.type === "year")?.value ?? 0),
+  };
+}
+
 function formatDate(iso: string): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
+  const { day, month, year } = beirutDateParts(new Date(iso));
+  return `${day}/${month}/${year}`;
 }
 
 function formatDateTime(iso: string): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()} ${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+  const { day, month, year } = beirutDateParts(d);
+  const date = `${day}/${month}/${year}`;
+  const time = new Intl.DateTimeFormat("en-GB", {
+    timeZone: BEIRUT_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(d);
+  return `${date} ${time}`;
 }
 
 function currency(amount: number): string {
@@ -111,6 +137,7 @@ export default async function PrintMerchantPayoutInvoicePage({
           merchantId: true,
           phone: true,
           address: true,
+          logoUrl: true,
           defaultSellerRate: true,
           defaultProfitRate: true,
         },
@@ -200,8 +227,9 @@ export default async function PrintMerchantPayoutInvoicePage({
           .header-right { text-align: right; }
           .company-name { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
           .company-tagline { font-size: 11px; color: #666; margin-top: 2px; }
-          .merchant-info { margin-bottom: 20px; padding: 12px 16px; background: #f5f5f5; border-radius: 6px; font-size: 13px; line-height: 1.6; }
+          .merchant-info { margin-bottom: 20px; padding: 12px 16px; background: #f5f5f5; border-radius: 6px; font-size: 13px; line-height: 1.6; display: flex; align-items: center; gap: 16px; }
           .merchant-info strong { font-weight: 700; }
+          .merchant-logo { width: 64px; height: 64px; object-fit: contain; flex-shrink: 0; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
           table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 11px; }
           th { background: #222; color: #fff; padding: 8px 6px; text-align: left; font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
           th.right { text-align: right; }
@@ -226,7 +254,7 @@ export default async function PrintMerchantPayoutInvoicePage({
         {/* ── Header ── */}
         <div className="header">
           <div className="header-left">
-            <div className="company-name">Delivery Co.</div>
+            <div className="company-name">Jet Delivery</div>
             <div className="company-tagline">
               Payout Statement — Seller Invoice
             </div>
@@ -245,21 +273,31 @@ export default async function PrintMerchantPayoutInvoicePage({
 
         {/* ── Merchant Info ── */}
         <div className="merchant-info">
-          <strong>Bill To:</strong> {batch.merchant.merchantName}
-          <br />
-          {batch.merchant.phone && (
-            <>
-              <strong>Phone:</strong> {batch.merchant.phone}
-              <br />
-            </>
+          {batch.merchant.logoUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={batch.merchant.logoUrl}
+              alt={`${batch.merchant.merchantName} logo`}
+              className="merchant-logo"
+            />
           )}
-          {batch.merchant.address && (
-            <>
-              <strong>Address:</strong> {batch.merchant.address}
-              <br />
-            </>
-          )}
-          <strong>Merchant ID:</strong> #{batch.merchant.merchantId}
+          <div>
+            <strong>Bill To:</strong> {batch.merchant.merchantName}
+            <br />
+            {batch.merchant.phone && (
+              <>
+                <strong>Phone:</strong> {batch.merchant.phone}
+                <br />
+              </>
+            )}
+            {batch.merchant.address && (
+              <>
+                <strong>Address:</strong> {batch.merchant.address}
+                <br />
+              </>
+            )}
+            <strong>Merchant ID:</strong> #{batch.merchant.merchantId}
+          </div>
         </div>
 
         {/* ── Orders Table ── */}
@@ -293,7 +331,7 @@ export default async function PrintMerchantPayoutInvoicePage({
                     letterSpacing: "0.5px",
                   }}
                 >
-                  #{line.orderId}
+                  {line.orderId}
                 </td>
                 <td style={{ fontSize: 11 }}>{line.customerName}</td>
                 <td style={{ fontSize: 11 }}>{line.customerAddress}</td>
@@ -414,6 +452,7 @@ export default async function PrintMerchantPayoutInvoicePage({
         <div className="footer">
           Generated on{" "}
           {new Date().toLocaleDateString("en-US", {
+            timeZone: BEIRUT_TZ,
             year: "numeric",
             month: "short",
             day: "numeric",

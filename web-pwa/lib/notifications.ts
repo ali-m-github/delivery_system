@@ -52,11 +52,11 @@ function getStatusMessage(
 
   switch (status) {
     case "WITH_DRIVER":
-      return `Hi! Your order #${orderId} is out for delivery and will arrive soon. Track it here: ${trackingUrl}`;
+      return `Hi! Your order ${orderId} is out for delivery and will arrive soon. Track it here: ${trackingUrl}`;
     case "DELIVERED":
-      return `Great news! Your order #${orderId} has been successfully delivered. Thank you!`;
+      return `Great news! Your order ${orderId} has been successfully delivered. Thank you!`;
     case "POSTPONED":
-      return `Update: Your delivery for order #${orderId} has been rescheduled. Check your tracking link for details.`;
+      return `Update: Your delivery for order ${orderId} has been rescheduled. Check your tracking link for details.`;
     default:
       return null;
   }
@@ -81,7 +81,7 @@ export async function notifyCustomerStatusChange(
   // Colored console output for the admin to see in the terminal.
   // \x1b[36m = cyan, \x1b[33m = yellow, \x1b[0m = reset
   console.log("\x1b[36m=== NOTIFICATION ENGINE \x1b[0m");
-  console.log(`\x1b[33mOrder:\x1b[0m  #${orderId}`);
+  console.log(`\x1b[33mOrder:\x1b[0m  ${orderId}`);
   console.log(`\x1b[33mStatus:\x1b[0m ${newStatus}`);
   console.log(`\x1b[33mPhone:\x1b[0m  ${maskPhone(customerPhone)}`);
   console.log(`\x1b[33mMessage:\x1b[0m ${message}`);

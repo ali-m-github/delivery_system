@@ -197,7 +197,7 @@ export default async function DashboardPage() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <p className="text-white font-semibold text-sm truncate">
-                        Order #{order.orderId}
+                        Order {order.orderId}
                       </p>
                       <p className="text-gray-400 text-xs">
                         {order.merchant?.merchantName || "Unknown Merchant"}

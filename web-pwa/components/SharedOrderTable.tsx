@@ -266,7 +266,7 @@ export default function SharedOrderTable({
             >
               &#9776;
             </button>
-            <span className="font-mono text-gray-300">#{order.orderId}</span>
+            <span className="font-mono text-gray-300">{order.orderId}</span>
           </div>
         </td>
 

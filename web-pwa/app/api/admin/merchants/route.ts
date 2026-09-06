@@ -18,7 +18,12 @@ export async function GET(request: Request) {
     if (auth instanceof Response) return auth;
 
     const merchants = await prisma.merchant.findMany({
-      include: { zoneRates: true },
+      include: {
+        zoneRates: true,
+        // Expose the linked account (if any) so the /merchants page can show
+        // which sellers already have login access and offer "Create account".
+        user: { select: { id: true, username: true, email: true, role: true } },
+      },
       orderBy: { createdAt: "desc" },
     });
     return NextResponse.json(merchants);

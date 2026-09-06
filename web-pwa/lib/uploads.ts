@@ -1,10 +1,13 @@
-// ─── Uploaded file validation ────────────────────────────────────────────────
+// ─── Uploaded file validation & serving ──────────────────────────────────────
 // Shared guards for file uploads: run these BEFORE any expensive processing
 // (OCR, image pipelines) so malformed/spoofed files fail fast and cheap.
 //
 // The key protection is magic-byte sniffing: the browser-supplied
 // `Content-Type` is attacker-controlled and can be a lie (e.g. a binary
 // payload sent as "image/jpeg"). We only trust the file's own header bytes.
+
+import path from "node:path";
+import { stat, readFile } from "node:fs/promises";
 
 export interface ValidatedImage {
   /** MIME type derived from the file's actual magic bytes. */
@@ -80,4 +83,65 @@ export function safeFileName(name: string, maxLen = 60): string {
   const base = name.split(/[\\/]/).pop() ?? "";
   const stem = base.replace(/\.[^.]*$/, "").replace(/[^a-zA-Z0-9._-]/g, "_");
   return (stem || "file").slice(-maxLen);
+}
+
+// ─── Serving uploaded files ──────────────────────────────────────────────────
+//
+// Root of the on-disk upload tree. Every stored asset (merchant logos, driver
+// photos, waybills) lives under `public/uploads/<kind>/`.
+
+const UPLOAD_ROOT = path.join(process.cwd(), "public", "uploads");
+
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+  ico: "image/x-icon",
+};
+
+/**
+ * Serve an uploaded file by its path relative to `public/uploads`
+ * (e.g. `merchants/1788…-logo.png`).
+ *
+ * Why this exists: Next.js 16's production server (`next start`) only serves
+ * `public/` files that existed when the process started — anything uploaded
+ * at runtime 404s until a restart. `app/uploads/[...file]/route.ts` calls
+ * this on every request (route handlers are not cached by default), so
+ * freshly uploaded files are always available.
+ *
+ * The web URL is attacker-controllable, so the input is resolved against
+ * UPLOAD_ROOT and rejected if it escapes it (path-traversal guard).
+ *
+ * @returns a 200 Response streaming the file, or null when missing/invalid.
+ */
+export async function serveUploadedFile(
+  relPath: string,
+): Promise<Response | null> {
+  const cleaned = path.normalize(relPath).replace(/^[/\\]+/, "");
+  const abs = path.resolve(UPLOAD_ROOT, cleaned);
+  if (abs !== UPLOAD_ROOT && !abs.startsWith(UPLOAD_ROOT + path.sep)) {
+    return null;
+  }
+
+  try {
+    const fileStat = await stat(abs);
+    if (!fileStat.isFile()) return null;
+    const buf = await readFile(abs);
+    const ext = path.extname(abs).slice(1).toLowerCase();
+    return new Response(new Uint8Array(buf), {
+      status: 200,
+      headers: {
+        "Content-Type": MIME_BY_EXT[ext] ?? "application/octet-stream",
+        "Content-Length": String(fileStat.size),
+        // Assets can be re-uploaded; never let a client cache a stale copy.
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch {
+    return null;
+  }
 }

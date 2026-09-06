@@ -1145,7 +1145,7 @@ export default function DriverProfilePage() {
                                 &#9776;
                               </button>
                               <span className="font-mono text-cyan-400 text-sm">
-                                #{order.orderId}
+                                {order.orderId}
                               </span>
                             </div>
                           </td>
@@ -1487,7 +1487,7 @@ export default function DriverProfilePage() {
                                   &#9776;
                                 </button>
                                 <span className="font-mono text-cyan-400 text-sm">
-                                  #{order.orderId}
+                                  {order.orderId}
                                 </span>
                               </div>
                             </td>
@@ -1720,7 +1720,7 @@ export default function DriverProfilePage() {
                                 &#9776;
                               </button>
                               <span className="font-mono text-cyan-400 text-sm">
-                                #{order.orderId}
+                                {order.orderId}
                               </span>
                             </div>
                           </td>

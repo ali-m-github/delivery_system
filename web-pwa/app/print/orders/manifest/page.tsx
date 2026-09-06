@@ -201,7 +201,7 @@ export default async function PrintRtsManifestPage({
                     letterSpacing: "0.5px",
                   }}
                 >
-                  #{r.orderId}
+                  {r.orderId}
                 </td>
                 <td style={{ fontSize: 11 }}>
                   {r.seller}

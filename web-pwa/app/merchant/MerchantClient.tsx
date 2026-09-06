@@ -770,6 +770,7 @@ export default function MerchantClient({
                   alt={`${merchant.merchantName} logo`}
                   width={64}
                   height={64}
+                  unoptimized
                   className="w-16 h-16 rounded-full object-cover border border-white/10 bg-[#121824]"
                 />
               )}
@@ -1340,7 +1341,7 @@ export default function MerchantClient({
                                   &#9776;
                                 </button>
                                 <span className="font-mono text-cyan-400">
-                                  #{order.orderId}
+                                  {order.orderId}
                                 </span>
                               </div>
                             </td>

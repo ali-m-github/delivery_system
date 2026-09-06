@@ -3189,7 +3189,7 @@ function OrdersPageInner() {
                                       >
                                         &#9776;
                                       </button>
-                                      <span>#{order.orderId}</span>
+                                      <span>{order.orderId}</span>
                                     </div>
                                   </td>
                                   <td className="px-2 py-1.5 text-xs text-gray-400 whitespace-nowrap">
@@ -4320,7 +4320,7 @@ function OrdersPageInner() {
                               />
                             </td>
                             <td className="px-3 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
-                              #{order.orderId}
+                              {order.orderId}
                             </td>
                             <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
                               {order.merchant?.merchantName ||
@@ -4692,7 +4692,7 @@ function OrdersPageInner() {
             >
               <h2 className="text-lg font-bold text-white mb-1">Order Notes</h2>
               <p className="text-xs text-gray-400 mb-5">
-                #{notesModal.orderId} &mdash; {notesModal.customerName}
+                {notesModal.orderId} &mdash; {notesModal.customerName}
               </p>
 
               {/* Checkboxes */}
@@ -4799,7 +4799,7 @@ function OrdersPageInner() {
                 Change Seller
               </h2>
               <p className="text-xs text-gray-400 mb-5">
-                #{sellerModal.orderId} &mdash; {sellerModal.customerName}
+                {sellerModal.orderId} &mdash; {sellerModal.customerName}
               </p>
 
               <label className="block text-xs font-medium text-gray-500 mb-1.5">
@@ -4857,7 +4857,7 @@ function OrdersPageInner() {
             >
               <h2 className="text-lg font-bold text-white mb-1">Edit Order</h2>
               <p className="text-xs text-gray-400 mb-5">
-                #{editModal.orderId} &mdash; {editModal.customerName}
+                {editModal.orderId} &mdash; {editModal.customerName}
               </p>
 
               <div className="space-y-4">
@@ -5088,7 +5088,7 @@ function OrdersPageInner() {
                 {driverModal.driverId ? "Change Driver" : "Assign Driver"}
               </h2>
               <p className="text-xs text-gray-400 mb-5">
-                #{driverModal.orderId} &mdash; {driverModal.customerName}
+                {driverModal.orderId} &mdash; {driverModal.customerName}
               </p>
 
               <label className="block text-xs font-medium text-gray-500 mb-1.5">
@@ -5163,7 +5163,7 @@ function OrdersPageInner() {
                 Revert Status
               </h2>
               <p className="text-xs text-gray-400 mb-5">
-                #{revertModal.orderId} &mdash; {revertModal.customerName}
+                {revertModal.orderId} &mdash; {revertModal.customerName}
               </p>
 
               <p className="text-sm text-gray-300 mb-4">
@@ -5222,7 +5222,7 @@ function OrdersPageInner() {
                 Custom Delivery Collection
               </h2>
               <p className="text-xs text-gray-400 mb-5">
-                #{customPayOrder.orderId} &mdash; {customPayOrder.customerName}
+                {customPayOrder.orderId} &mdash; {customPayOrder.customerName}
               </p>
 
               <div className="space-y-4 mb-6">
@@ -5513,7 +5513,7 @@ function OrdersPageInner() {
                 Seller Correction
               </h2>
               <p className="text-xs text-gray-400 mb-5">
-                #{correctionOrder.orderId} &mdash;{" "}
+                {correctionOrder.orderId} &mdash;{" "}
                 {correctionOrder.customerName}
               </p>
 

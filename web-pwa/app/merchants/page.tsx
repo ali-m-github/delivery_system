@@ -395,7 +395,24 @@ export default function SellersPage() {
                         {seller.merchantId}
                       </td>
                       <td className="p-4 font-bold text-white">
-                        {seller.merchantName}
+                        <div className="flex items-center gap-2">
+                          <span>{seller.merchantName}</span>
+                          {seller.user ? (
+                            <span
+                              title={`Login: ${seller.user.username} (${seller.user.email})`}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-green-500/10 text-green-400 border border-green-500/20"
+                           >
+                              has account
+                            </span>
+                          ) : (
+                            <span
+                              title="No login account linked yet"
+                              className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                            >
+                              no account
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="p-4 text-gray-300">
                         {seller.contactName || "—"}
@@ -425,6 +442,15 @@ export default function SellersPage() {
                         >
                           Zone Overrides
                         </button>
+                        {!seller.user && (
+                          <Link
+                            href={`/admin?tab=employees&merchantId=${seller.id}`}
+                            title="Create a login account linked to this seller"
+                            className="bg-green-600/20 text-green-400 hover:bg-green-600/40 border border-green-500/30 px-3 py-1.5 rounded transition-colors text-xs font-bold mr-2"
+                          >
+                            Create account
+                          </Link>
+                        )}
                         <button
                           onClick={() =>
                             handleDeleteSeller(seller.id, seller.merchantName)

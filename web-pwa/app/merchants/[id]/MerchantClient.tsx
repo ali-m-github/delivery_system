@@ -30,7 +30,15 @@ function getPageNumbers(current: number, total: number): (number | "…")[] {
   return pages;
 }
 
-type TabKey = "ALL" | "WAREHOUSE" | "ASSIGNED" | "WD" | "WO" | "RETURN" | "PS";
+type TabKey =
+  | "ALL"
+  | "CP"
+  | "WAREHOUSE"
+  | "ASSIGNED"
+  | "WD"
+  | "WO"
+  | "RETURN"
+  | "PS";
 
 interface MerchantClientProps {
   merchant: any;
@@ -45,6 +53,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
   const urlTab = searchParams.get("tab");
   const validTabs: TabKey[] = [
     "ALL",
+    "CP",
     "WAREHOUSE",
     "ASSIGNED",
     "WD",
@@ -276,6 +285,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
   const tabFilters: Record<TabKey, any[]> = useMemo(
     () => ({
       ALL: nonExchangeOrders,
+      CP: nonExchangeOrders.filter((o: any) => o.location === "CP"),
       WAREHOUSE: nonExchangeOrders.filter(
         (o: any) => o.location === "WAREHOUSE",
       ),
@@ -445,6 +455,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "ALL", label: "All Orders" },
+    { key: "CP", label: "CP (Pickup)" },
     { key: "WAREHOUSE", label: "Warehouse" },
     { key: "ASSIGNED", label: "Dr (Assigned)" },
     { key: "WD", label: "WD (With Driver)" },
@@ -465,6 +476,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
                 alt={`${merchant.merchantName} logo`}
                 width={64}
                 height={64}
+                unoptimized
                 className="w-16 h-16 rounded-full object-cover border border-white/10 bg-[#121824]"
               />
             )}
@@ -643,6 +655,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
                       alt="Current logo"
                       width={40}
                       height={40}
+                      unoptimized
                       className="w-10 h-10 rounded-full object-cover border border-white/10 bg-[#0B0F17]"
                     />
                   )}

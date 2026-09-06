@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   SYSTEM_PERMISSIONS,
   isDangerousPermission,
@@ -37,6 +38,13 @@ interface PermissionGroupOption {
   permissions: string[];
 }
 
+interface MerchantOption {
+  id: string;
+  merchantId: number;
+  merchantName: string;
+  user: { username: string; email: string } | null;
+}
+
 type ConfirmAction =
   | {
       kind: "delete";
@@ -60,6 +68,11 @@ export default function EmployeesTab() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("EMPLOYEE");
   const [logoFile, setLogoFile] = useState<File | null>(null);
+  // Link a new MERCHANT account to an existing seller ledger (created on the
+  // /merchants page) instead of spawning a duplicate.
+  const [merchantId, setMerchantId] = useState("");
+  const [merchants, setMerchants] = useState<MerchantOption[]>([]);
+  const [merchantsLoading, setMerchantsLoading] = useState(false);
   const [permissionGroups, setPermissionGroups] = useState<
     PermissionGroupOption[]
   >([]);
@@ -113,11 +126,52 @@ export default function EmployeesTab() {
     }
   };
 
+  const fetchMerchants = async () => {
+    setMerchantsLoading(true);
+    try {
+      const res = await fetch("/api/admin/merchants");
+      if (res.ok) {
+        const data = await res.json();
+        setMerchants(
+          (data as {
+            id: string;
+            merchantId: number;
+            merchantName: string;
+            user: { username: string; email: string } | null;
+          }[]).map((m) => ({
+            id: m.id,
+            merchantId: m.merchantId,
+            merchantName: m.merchantName,
+            user: m.user
+              ? { username: m.user.username, email: m.user.email }
+              : null,
+          })),
+        );
+      }
+    } catch {
+      // non-fatal: the merchant-link dropdown just stays empty
+    } finally {
+      setMerchantsLoading(false);
+    }
+  };
+
+  const searchParams = useSearchParams();
+
   useEffect(() => {
     // Fetch on mount (matches the existing admin-tab pattern in this codebase).
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchUsers();
     fetchPermissionGroups();
+    fetchMerchants();
+    // Deep link from /merchants ("Create account"): prefill the merchant link
+    // and open the MERCHANT role so the operator only types credentials.
+    const prefillMerchant = searchParams.get("merchantId");
+    if (prefillMerchant) {
+      setMerchantId(prefillMerchant);
+      setRole("MERCHANT");
+    }
+    // Run once on mount; the prefill is a navigation affordance, not live state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Derived form state ───────────────────────────────────────────────────────
@@ -171,6 +225,7 @@ export default function EmployeesTab() {
     setPassword("");
     setLogoFile(null);
     setRole("EMPLOYEE");
+    setMerchantId("");
     setPermissionGroupId("");
     setCustomPermissions([]);
     setEditingUser(null);
@@ -255,6 +310,11 @@ export default function EmployeesTab() {
         // Create mode: email and password are required
         payload.email = email;
         payload.password = password;
+        // Link to an existing seller ledger (selected above) when creating a
+        // MERCHANT account, so we don't spawn a duplicate merchant.
+        if (role === "MERCHANT" && merchantId) {
+          payload.merchantId = merchantId;
+        }
       } else if (password && password.trim()) {
         // Edit mode: password optional (blank keeps the current password)
         payload.password = password.trim();
@@ -274,6 +334,9 @@ export default function EmployeesTab() {
         if (!editingEmployeeId) {
           formData.append("email", email);
           formData.append("password", password);
+          if (role === "MERCHANT" && merchantId) {
+            formData.append("merchantId", merchantId);
+          }
         } else if (password && password.trim()) {
           formData.append("password", password.trim());
         }
@@ -354,6 +417,7 @@ export default function EmployeesTab() {
     setCustomPermissions(user.customPermissions || []);
     setPassword("");
     setLogoFile(null);
+    setMerchantId("");
     setError("");
     setSuccess("");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -505,6 +569,51 @@ export default function EmployeesTab() {
                   {logoFile.name} selected
                 </p>
               )}
+            </div>
+          )}
+
+          {/* Link to an existing seller (created on the /merchants page).
+              Only shown in create mode — editing accounts never changes which
+              ledger they own. */}
+          {role === "MERCHANT" && !editingEmployeeId && (
+            <div>
+              <label
+                htmlFor="merchantLink"
+                className="block text-xs font-medium text-gray-400 mb-1.5"
+              >
+                Link to an existing seller
+              </label>
+              <select
+                id="merchantLink"
+                value={merchantId}
+                onChange={(e) => setMerchantId(e.target.value)}
+                disabled={merchantsLoading}
+                className="w-full sm:w-64 px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-gray-100
+                           focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500/50
+                           transition-all duration-200 text-sm appearance-none cursor-pointer disabled:opacity-50"
+              >
+                <option value="" className="bg-gray-900">
+                  {merchantsLoading
+                    ? "Loading sellers…"
+                    : "No existing seller — create a new ledger"}
+                </option>
+                {merchants.map((m) => (
+                  <option
+                    key={m.id}
+                    value={m.id}
+                    disabled={Boolean(m.user)}
+                    className="bg-gray-900"
+                  >
+                    #{m.merchantId} {m.merchantName}
+                    {m.user ? " (already has an account)" : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[10px] text-gray-500 italic">
+                Pick a seller created on the /merchants page to link the new
+                login to it (prevents duplicate seller ledgers). Leave blank to
+                start a fresh ledger.
+              </p>
             </div>
           )}
 
