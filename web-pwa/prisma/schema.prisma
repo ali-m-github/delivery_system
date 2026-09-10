@@ -256,6 +256,7 @@ model Order {
   customerPhone   String
   customerAddress String
   hasExchange     Boolean        @default(false)
+  openParcelAllowed Boolean      @default(false)
   notes           String?
   packages        Int            @default(1)
   extraShipping   Float          @default(0)

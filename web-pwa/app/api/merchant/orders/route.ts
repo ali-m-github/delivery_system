@@ -108,6 +108,8 @@ export async function POST(request: Request) {
             // them into the main warehouse.
             location: "CP",
             hasExchange: body.hasExchange === true || body.hasExchange === "true",
+            openParcelAllowed:
+              body.openParcelAllowed === true || body.openParcelAllowed === "true",
             amountUsd: amountUsd,
             amountLbp: amountLbp,
             extraShipping: extraShipping,

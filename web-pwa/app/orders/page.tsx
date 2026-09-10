@@ -114,6 +114,7 @@ interface Order {
   zoneId: string;
   zone: { id: string; name: string } | null;
   hasExchange: boolean;
+  openParcelAllowed?: boolean;
   location: string;
   financialStatus: string;
   amountUsd: number;
@@ -463,6 +464,7 @@ function OrdersPageInner() {
     zoneId: "",
     price: "",
     hasExchange: false,
+    openParcelAllowed: false,
     extraShipping: "",
     amountLbp: "",
     packages: "1",
@@ -663,6 +665,7 @@ function OrdersPageInner() {
             price: usd !== null && !isNaN(usd) ? String(usd) : "0",
             amountLbp: lbp !== null && !isNaN(lbp) ? String(lbp) : "0",
             hasExchange: false,
+            openParcelAllowed: false,
             extraShipping: "0",
             packages: "1",
             notes: "Imported via Bulk Excel/CSV tool",
@@ -790,6 +793,7 @@ function OrdersPageInner() {
     amountUsd: "",
     amountLbp: "",
     hasExchange: false,
+    openParcelAllowed: false,
     extraShipping: "",
   });
 
@@ -1148,6 +1152,7 @@ function OrdersPageInner() {
           zoneId: "",
           price: "",
           hasExchange: false,
+          openParcelAllowed: false,
           extraShipping: "",
           amountLbp: "",
           packages: "1",
@@ -2214,6 +2219,7 @@ function OrdersPageInner() {
       amountUsd: order.amountUsd.toString(),
       amountLbp: order.amountLbp.toString(),
       hasExchange: order.hasExchange,
+      openParcelAllowed: !!order.openParcelAllowed,
       extraShipping: (order as any).extraShipping?.toString() || "0",
     });
   };
@@ -2226,6 +2232,7 @@ function OrdersPageInner() {
       customerAddress: editFormData.customerAddress,
       zoneId: editFormData.zoneId,
       hasExchange: editFormData.hasExchange,
+      openParcelAllowed: editFormData.openParcelAllowed,
     };
     // Monetary fields require ORDERS_FINANCIAL (ADMIN bypasses); staff
     // without the permission submit the non-financial fields only.
@@ -3811,6 +3818,25 @@ function OrdersPageInner() {
                       />
                     </label>
                   </div>
+                  {/* Open Parcel */}
+                  <div className="flex flex-col gap-1 min-w-[58px] items-center">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Open P
+                    </label>
+                    <label className="flex items-center cursor-pointer" title="Open Parcel Allowed">
+                      <input
+                        type="checkbox"
+                        checked={formData.openParcelAllowed}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            openParcelAllowed: e.target.checked,
+                          })
+                        }
+                        className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                      />
+                    </label>
+                  </div>
                   {/* Notes */}
                   <div className="flex flex-col gap-1 min-w-[120px]">
                     <label className="text-[10px] text-gray-500 font-mono uppercase">
@@ -5048,6 +5074,47 @@ function OrdersPageInner() {
                     Has Exchange
                   </span>
                 </label>
+
+                {/* Open Parcel Allowed */}
+                <label className="flex items-center gap-3 cursor-pointer group">
+                  <div
+                    className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-200 ${
+                      editFormData.openParcelAllowed
+                        ? "bg-cyan-500 border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                        : "border-gray-600 group-hover:border-gray-500"
+                    }`}
+                  >
+                    {editFormData.openParcelAllowed && (
+                      <svg
+                        className="w-3 h-3 text-white"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={3}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M5 13l4 4L19 7"
+                        />
+                      </svg>
+                    )}
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={editFormData.openParcelAllowed}
+                    onChange={(e) =>
+                      setEditFormData((p) => ({
+                        ...p,
+                        openParcelAllowed: e.target.checked,
+                      }))
+                    }
+                    className="sr-only"
+                  />
+                  <span className="text-sm text-gray-300 group-hover:text-white transition-colors">
+                    Open Parcel Allowed
+                  </span>
+                </label>
               </div>
 
               {/* Actions */}
@@ -5778,6 +5845,49 @@ function OrdersPageInner() {
                       />
                       <span className="text-sm text-gray-300 group-hover:text-white transition-colors">
                         Exch
+                      </span>
+                    </label>
+
+                    {/* Open Parcel (Checkbox) */}
+                    <label className="flex items-center gap-3 cursor-pointer group">
+                      <div
+                        className={`w-5 h-5 rounded-md border-2 flex items-center justify-center
+                                    transition-all duration-200
+                                    ${
+                                      formData.openParcelAllowed
+                                        ? "bg-cyan-500 border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                                        : "border-gray-600 group-hover:border-gray-500"
+                                    }`}
+                      >
+                        {formData.openParcelAllowed && (
+                          <svg
+                            className="w-3 h-3 text-white"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={3}
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M5 13l4 4L19 7"
+                            />
+                          </svg>
+                        )}
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={formData.openParcelAllowed}
+                        onChange={(e) =>
+                          setFormData((prev) => ({
+                            ...prev,
+                            openParcelAllowed: e.target.checked,
+                          }))
+                        }
+                        className="sr-only"
+                      />
+                      <span className="text-sm text-gray-300 group-hover:text-white transition-colors">
+                        Open Parcel
                       </span>
                     </label>
                   </div>

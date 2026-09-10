@@ -160,6 +160,7 @@ export default function MerchantClient({
     notes: "",
     packages: "1",
     hasExchange: false,
+    openParcelAllowed: false,
   });
   const [submitting, setSubmitting] = useState(false);
   const [formMessage, setFormMessage] = useState<{
@@ -318,6 +319,7 @@ export default function MerchantClient({
           notes: formData.notes,
           packages: formData.packages,
           hasExchange: formData.hasExchange,
+          openParcelAllowed: formData.openParcelAllowed,
         }),
       });
 
@@ -337,6 +339,7 @@ export default function MerchantClient({
         notes: "",
         packages: "1",
         hasExchange: false,
+        openParcelAllowed: false,
       });
       setFormMessage({ type: "success", text: "Order created successfully!" });
     } catch (error: any) {
@@ -1228,6 +1231,26 @@ export default function MerchantClient({
                       </label>
                     </div>
 
+                    {/* Open Parcel */}
+                    <div className="flex flex-col gap-1 min-w-[60px] items-center">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Open P
+                      </label>
+                      <label className="flex items-center cursor-pointer" title="Open Parcel Allowed">
+                        <input
+                          type="checkbox"
+                          checked={formData.openParcelAllowed}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              openParcelAllowed: e.target.checked,
+                            })
+                          }
+                          className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                        />
+                      </label>
+                    </div>
+
                     {/* Notes */}
                     <div className="flex flex-col gap-1 min-w-[120px]">
                       <label className="text-[10px] text-gray-500 font-mono uppercase">
@@ -1820,6 +1843,26 @@ export default function MerchantClient({
                             setFormData({
                               ...formData,
                               hasExchange: e.target.checked,
+                            })
+                          }
+                          className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                        />
+                      </label>
+                    </div>
+
+                    {/* Open Parcel */}
+                    <div className="flex flex-col gap-1 min-w-[60px] items-center">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Open P
+                      </label>
+                      <label className="flex items-center cursor-pointer" title="Open Parcel Allowed">
+                        <input
+                          type="checkbox"
+                          checked={formData.openParcelAllowed}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              openParcelAllowed: e.target.checked,
                             })
                           }
                           className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"

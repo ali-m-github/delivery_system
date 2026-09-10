@@ -162,6 +162,7 @@ export async function GET(request: NextRequest) {
           customerAddress: true,
           zoneId: true,
           hasExchange: true,
+          openParcelAllowed: true,
           location: true,
           financialStatus: true,
           amountUsd: true,
@@ -260,6 +261,7 @@ export async function GET(request: NextRequest) {
           customerAddress: true,
           zoneId: true,
           hasExchange: true,
+          openParcelAllowed: true,
           location: true,
           financialStatus: true,
           amountUsd: true,
@@ -363,6 +365,8 @@ export async function POST(request: Request) {
         packages: packages,
         zoneId: finalZoneId,
         hasExchange: body.hasExchange === true || body.hasExchange === "true",
+        openParcelAllowed:
+          body.openParcelAllowed === true || body.openParcelAllowed === "true",
         amountUsd: amountUsd,
         extraShipping: extraShipping,
         creatorId,
@@ -438,6 +442,7 @@ const STAFF_UPDATABLE_FIELDS = new Set<string>([
   "merchantId",
   "zoneId",
   "hasExchange",
+  "openParcelAllowed",
   "isArchived",
   "deliveredAt",
   "dispatchedAt",
@@ -889,6 +894,11 @@ export async function PATCH(request: Request) {
         data.hasExchange !== existing.hasExchange
       )
         affected.push("hasExchange");
+      if (
+        data.openParcelAllowed !== undefined &&
+        data.openParcelAllowed !== existing.openParcelAllowed
+      )
+        affected.push("openParcelAllowed");
 
       if (affected.length > 0) {
         return NextResponse.json(
