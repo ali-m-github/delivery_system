@@ -24,7 +24,14 @@ export async function GET(request: Request) {
       5000,
       Math.max(1, parseInt(searchParams.get("take") || "1000", 10)),
     );
-    const status = searchParams.get("status") || "ALL";
+    // Accept one or more status values (repeated `status` params). A single
+    // value keeps the historical behavior; a list merges into an `in` filter so
+    // read-only archive views can combine terminal states (e.g. SETTLED + CLEARED).
+    const statusValues = searchParams.getAll("status").filter(Boolean);
+    const status =
+      statusValues.length > 0
+        ? (statusValues.length === 1 ? statusValues[0] : statusValues)
+        : "ALL";
     const startDate = searchParams.get("startDate") || "";
     const endDate = searchParams.get("endDate") || "";
     const sortBy = searchParams.get("sortBy") || "createdAt"; // createdAt | totalUsd
@@ -36,7 +43,9 @@ export async function GET(request: Request) {
 
     // Status filter
     if (status !== "ALL") {
-      andConditions.push({ status });
+      andConditions.push(
+        Array.isArray(status) ? { status: { in: status } } : { status },
+      );
     }
 
     // Date range filter (merge gte/lte on createdAt)

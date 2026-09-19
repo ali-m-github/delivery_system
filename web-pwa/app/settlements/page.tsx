@@ -530,7 +530,7 @@ export default function DriverConsignmentsPage() {
                                   onClick={() => openSettlementModal(payout)}
                                   className="px-3 py-1.5 text-[11px] font-bold bg-emerald-600 text-white border border-emerald-500/50 rounded hover:bg-emerald-500 transition-colors shadow-lg shadow-emerald-500/20"
                                 >
-                                  ✓ Settle
+                                  ✓ Receive Cash & Clear
                                 </button>
                                 <button
                                   onClick={() => setModalPayout(payout)}
@@ -961,7 +961,7 @@ export default function DriverConsignmentsPage() {
                   }}
                   className="px-4 py-2 text-sm font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors shadow-[0_0_15px_rgba(16,185,129,0.3)]"
                 >
-                  ✓ Settle This Payout
+                  ✓ Receive Cash & Clear This Payout
                 </button>
               )}
               <button
@@ -1024,7 +1024,7 @@ export default function DriverConsignmentsPage() {
             <div className="flex justify-between items-center p-6 border-b border-white/10">
               <div>
                 <h2 className="text-lg font-bold text-white">
-                  Settle Payout {settlementModal.payoutReference}
+                  Receive Cash & Clear — Payout {settlementModal.payoutReference}
                 </h2>
                 <p className="text-gray-500 text-sm mt-1">
                   {settlementModal.driver.firstName}{" "}

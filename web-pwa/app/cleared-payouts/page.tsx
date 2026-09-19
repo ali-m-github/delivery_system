@@ -115,10 +115,15 @@ export default function ClearedPayoutsPage() {
   const [approvingId, setApprovingId] = useState<string | null>(null);
 
   // ── Fetch both sections with shared filters ──
+  // buildParams accepts a single status or a list. A list is issued as repeated
+  // `status` params which /api/drivers/payouts merges into an `in` condition,
+  // so the read-only archive can combine the terminal states SETTLED + CLEARED.
   const fetchData = useCallback(() => {
-    const buildParams = (status: string) => {
+    const buildParams = (status: string | string[]) => {
       const params = new URLSearchParams();
-      params.set("status", status);
+      (Array.isArray(status) ? status : [status]).forEach((s) =>
+        params.append("status", s),
+      );
       if (search) params.set("search", search);
       if (startDate) params.set("startDate", startDate);
       if (endDate) params.set("endDate", endDate);
@@ -131,7 +136,10 @@ export default function ClearedPayoutsPage() {
 
     Promise.all([
       fetch(`/api/drivers/payouts?${buildParams("PENDING_APPROVAL")}`),
-      fetch(`/api/drivers/payouts?${buildParams("SETTLED")}`),
+      // The archive is read-only, so it combines both terminal states:
+      // SETTLED (settle → approve) and CLEARED (cleared directly with the
+      // office, orders already WO). Both are historical, non-approvable.
+      fetch(`/api/drivers/payouts?${buildParams(["SETTLED", "CLEARED"])}`),
     ])
       .then(async ([pendingRes, clearedRes]) => {
         const [pendingData, clearedData] = await Promise.all([

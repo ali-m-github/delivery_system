@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   buildRateTableFromRates,
@@ -44,9 +44,7 @@ export default function DriverProfilePage() {
   const [showPayoutModal, setShowPayoutModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [selectedPayout, setSelectedPayout] = useState<any>(null);
-  const [approving, setApproving] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
-  const [clearing, setClearing] = useState(false);
   const [historyModalOrder, setHistoryModalOrder] = useState<{
     id: string;
     history: any[];
@@ -58,6 +56,16 @@ export default function DriverProfilePage() {
   const [settlementBoxId, setSettlementBoxId] = useState("");
   const [settlementAmountPaid, setSettlementAmountPaid] = useState(0);
   const [settling, setSettling] = useState(false);
+
+  // Statements the driver paid from his own money (deducted from the cash he
+  // hands over) — identical behavior to the /settlements modal.
+  const [availableStatements, setAvailableStatements] = useState<any[]>([]);
+  const [selectedStatementIds, setSelectedStatementIds] = useState<string[]>(
+    [],
+  );
+  const [statementBoxes, setStatementBoxes] = useState<Record<string, string>>(
+    {},
+  );
 
   // ─── Sort State per Tab ─────────────────────────────────────────────────
   const [sortConfig, setSortConfig] = useState<Record<Tab, SortConfig | null>>({
@@ -173,6 +181,14 @@ export default function DriverProfilePage() {
   });
   const [rateSaving, setRateSaving] = useState(false);
 
+  // ─── Paid-by-driver statements (identical to /settlements modal) ───────
+  const fetchAvailableStatements = useCallback(() => {
+    fetch("/api/statements?paymentStatus=AVAILABLE")
+      .then((res) => res.json())
+      .then((data) => setAvailableStatements(Array.isArray(data) ? data : []))
+      .catch(() => setAvailableStatements([]));
+  }, []);
+
   // ─── Data Fetching ──────────────────────────────────────────────────────
   useEffect(() => {
     fetch(`/api/admin/drivers/${driverId}`)
@@ -214,7 +230,10 @@ export default function DriverProfilePage() {
       .then((res) => res.json())
       .then((data) => setTreasuryBoxes(Array.isArray(data) ? data : []))
       .catch(() => {});
-  }, [driverId, activeTab]);
+
+    // Fetch paid-by-driver statements for the settlement modal
+    fetchAvailableStatements();
+  }, [driverId, activeTab, fetchAvailableStatements]);
 
   // ─── Derived Data ───────────────────────────────────────────────────────
   const deliveries: any[] = driver?.deliveries || [];
@@ -380,7 +399,7 @@ export default function DriverProfilePage() {
     [deliveredOrders, selectedOrders],
   );
 
-  // Bulletproof disabled logic for "Clear With Office" button
+  // Bulletproof disabled logic for the delivered-tab bulk actions
   const hasValidClearSelection = selectedWdOrders?.length > 0;
 
   const settlement = useMemo(() => {
@@ -450,35 +469,6 @@ export default function DriverProfilePage() {
       }
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  // ─── Clear With Office ─────────────────────────────────────────────────
-  const handleClearWithOffice = async () => {
-    if (selectedWdOrders.length === 0) return;
-    setClearing(true);
-    try {
-      const orderIds = selectedWdOrders.map((o: any) => o.id);
-      const res = await fetch("/api/driver-payouts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          driverId,
-          orderIds,
-          totalCollectedUsd: settlement.totalCollectedUsd,
-          totalCollectedLbp: settlement.totalCollectedLbp,
-          commissionUsd: settlement.commission,
-          netUsd: settlement.net,
-        }),
-      });
-      if (res.ok) {
-        window.location.reload();
-      } else {
-        const err = await res.json().catch(() => null);
-        alert(err?.error ?? "Failed to clear with office");
-      }
-    } finally {
-      setClearing(false);
     }
   };
 
@@ -719,29 +709,33 @@ export default function DriverProfilePage() {
     }
   };
 
-  // ─── Approve Payout ────────────────────────────────────────────────────
-  const handleApprovePayout = async () => {
-    if (!selectedPayout) return;
-    setApproving(true);
-    try {
-      const res = await fetch(
-        `/api/drivers/${driverId}/payouts/${selectedPayout.id}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "CLEARED" }),
-        },
-      );
-      if (res.ok) {
-        setSelectedPayout(null);
-        await refreshData();
-      }
-    } finally {
-      setApproving(false);
+  const setStatementBox = (id: string, boxId: string) => {
+    setStatementBoxes((prev) => ({ ...prev, [id]: boxId }));
+  };
+
+  const toggleStatement = (id: string) => {
+    const isSelected = selectedStatementIds.includes(id);
+    const next = isSelected
+      ? selectedStatementIds.filter((s) => s !== id)
+      : [...selectedStatementIds, id];
+    setSelectedStatementIds(next);
+    // Deduct the net amount of selected statements from the amount paid.
+    const deducted = availableStatements
+      .filter((s) => next.includes(s.id))
+      .reduce((sum, s) => sum + (s.netUsd ?? 0), 0);
+    setSettlementAmountPaid(
+      Math.max(0, (settlementModal?.netUsd ?? 0) - deducted),
+    );
+    // Default the statement's cashbox to the same box as the main payout.
+    if (!isSelected && settlementBoxId) {
+      setStatementBoxes((prev) => ({ ...prev, [id]: settlementBoxId }));
     }
   };
 
   // ─── Settlement Submit Handler ─────────────────────────────────────────
+  // Same endpoint and payload as the "✓ Settle" button on /settlements:
+  // records cash received + paid-by-driver statements, moves the payout to
+  // PENDING_APPROVAL. Orders stay WD until approved on /cleared-payouts.
   const handleSettlementSubmit = async () => {
     if (!settlementModal || !settlementBoxId) return;
     setSettling(true);
@@ -754,13 +748,21 @@ export default function DriverProfilePage() {
           treasuryBoxId: settlementBoxId,
           amountPaidUsd: settlementAmountPaid,
           amountPaidLbp: 0,
+          statements: selectedStatementIds.map((id) => ({
+            id,
+            treasuryBoxId: statementBoxes[id] || "",
+          })),
         }),
       });
       const result = await res.json();
       if (result.success) {
+        alert(result.message || "Settlement processed successfully.");
         setSettlementModal(null);
         setSettlementBoxId("");
+        setSelectedStatementIds([]);
+        setStatementBoxes({});
         await refreshData();
+        fetchAvailableStatements();
       } else {
         alert(result.error || "Failed to process settlement.");
       }
@@ -1295,14 +1297,6 @@ export default function DriverProfilePage() {
                     🖨️ Print
                   </button>
                 </div>
-                <button
-                  onClick={handleClearWithOffice}
-                  disabled={!hasValidClearSelection || clearing}
-                  className={`px-5 py-2 rounded-lg font-bold text-white bg-emerald-600 transition-colors text-sm shadow-lg shadow-emerald-500/20 ${!hasValidClearSelection || clearing ? "opacity-50 cursor-not-allowed" : "hover:bg-emerald-500"}`}
-                >
-                  {clearing ? "Clearing…" : "✓ Clear With Office"}
-                </button>
-
                 {/* ── Return selected delivered orders (permission-gated) ── */}
                 {/* Both return actions are grouped together so they read as a
                     cohesive pair: Return to Assigned right next to Return to
@@ -1946,6 +1940,8 @@ export default function DriverProfilePage() {
                                 onClick={() => {
                                   setSettlementModal(payout);
                                   setSettlementBoxId("");
+                                  setSelectedStatementIds([]);
+                                  setStatementBoxes({});
                                   setSettlementAmountPaid(payout.netUsd || 0);
                                 }}
                                 className="px-3 py-1.5 rounded text-xs font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/40 transition-colors"
@@ -2433,21 +2429,25 @@ export default function DriverProfilePage() {
                 </table>
               </div>
 
-              {/* Approve Action */}
-              <div className="flex gap-3">
+              {/* Read-only footer: settlement + approval happen elsewhere */}
+              <div className="flex gap-3 items-center">
+                <div className="flex-1 bg-amber-500/5 border border-amber-500/20 rounded-lg p-3">
+                  <p className="text-amber-400 text-xs">
+                    This payout is <strong>PENDING</strong>. Record the cash
+                    received with{" "}
+                    <strong className="text-amber-300">
+                      {'"Receive Cash & Clear"'}
+                    </strong>{" "}
+                    in the Payouts tab, then approve it on the{" "}
+                    <strong className="text-amber-300">Cleared Payouts</strong>{" "}
+                    page. Orders stay <strong>WD</strong> until approved.
+                  </p>
+                </div>
                 <button
                   onClick={() => setSelectedPayout(null)}
-                  disabled={approving}
-                  className="flex-1 px-4 py-2.5 rounded-lg border border-white/10 text-gray-400 hover:bg-white/[0.05] transition-colors text-sm font-semibold disabled:opacity-50"
+                  className="px-4 py-2.5 rounded-lg border border-white/10 text-gray-400 hover:bg-white/[0.05] transition-colors text-sm font-semibold"
                 >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleApprovePayout}
-                  disabled={approving}
-                  className="flex-1 px-4 py-2.5 rounded-lg font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed transition-colors text-sm shadow-lg shadow-emerald-500/20"
-                >
-                  {approving ? "Processing…" : "✓ Approve & Settle Payout"}
+                  Close
                 </button>
               </div>
             </div>
@@ -2548,6 +2548,88 @@ export default function DriverProfilePage() {
                 )}
               </div>
 
+              {/* Statements Paid by Driver (deducted from payout) — identical
+                  to the /settlements modal */}
+              <div>
+                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5 font-bold">
+                  Statements Paid by Driver
+                </label>
+                {availableStatements.length === 0 ? (
+                  <p className="text-xs text-gray-600">
+                    No available statements to deduct.
+                  </p>
+                ) : (
+                  <div className="bg-[#0B0F17] border border-white/10 rounded-lg max-h-64 overflow-y-auto divide-y divide-white/5">
+                    {availableStatements.map((stmt) => {
+                      const checked = selectedStatementIds.includes(stmt.id);
+                      return (
+                        <div
+                          key={stmt.id}
+                          className="px-3 py-2 cursor-pointer hover:bg-white/[0.03] transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleStatement(stmt.id)}
+                                className="w-4 h-4 rounded border-gray-600 bg-[#0B0F17] text-emerald-500 focus:ring-emerald-500/50 cursor-pointer"
+                              />
+                              <span className="text-sm text-gray-300 truncate">
+                                {stmt.merchant?.merchantName} · Statement #
+                                {stmt.sequentialIndex}
+                              </span>
+                            </div>
+                            <span className="text-sm font-mono text-emerald-400 shrink-0">
+                              -${(stmt.netUsd ?? 0).toFixed(2)}
+                            </span>
+                          </div>
+                          {checked && (
+                            <div className="mt-2 pl-6">
+                              <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1 font-bold">
+                                Pay to Cashbox
+                              </label>
+                              <select
+                                value={statementBoxes[stmt.id] || ""}
+                                onChange={(e) =>
+                                  setStatementBox(stmt.id, e.target.value)
+                                }
+                                className="w-full bg-[#0B0F17] border border-white/10 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500/50 transition-colors appearance-none cursor-pointer"
+                              >
+                                <option value="">— Select a Cashbox —</option>
+                                {treasuryBoxes.map((box: any) => (
+                                  <option key={box.id} value={box.id}>
+                                    {box.name}
+                                  </option>
+                                ))}
+                              </select>
+                              {!statementBoxes[stmt.id] && (
+                                <p className="text-[10px] text-red-400 mt-0.5">
+                                  Required — choose where this statement is
+                                  paid.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {selectedStatementIds.length > 0 && (
+                  <p className="text-xs text-emerald-400 mt-1">
+                    {selectedStatementIds.length} statement(s) selected —
+                    deducted from the payout amount. Each posts to its cashbox
+                    when the payout is approved.
+                  </p>
+                )}
+                {selectedStatementIds.some((id) => !statementBoxes[id]) && (
+                  <p className="text-xs text-red-400 mt-1">
+                    Select a cashbox for every selected statement.
+                  </p>
+                )}
+              </div>
+
               {/* Amount Paid Input */}
               <div className="mb-4">
                 <label className="block text-gray-400 text-xs uppercase tracking-wider mb-1.5">
@@ -2565,17 +2647,28 @@ export default function DriverProfilePage() {
                 />
               </div>
 
-              {/* Remaining Debt Display */}
+              {/* Remaining Debt Display (net of paid-by-driver statements) */}
               {(() => {
+                // Statements paid by the driver are also credited against the
+                // payout, so the true short/over is after subtracting them.
+                const deducted = selectedStatementIds.reduce((sum, id) => {
+                  const stmt = availableStatements.find((s) => s.id === id);
+                  return sum + (stmt?.netUsd ?? 0);
+                }, 0);
                 const remaining =
-                  (settlementModal.netUsd || 0) - settlementAmountPaid;
+                  (settlementModal.netUsd || 0) -
+                  settlementAmountPaid -
+                  deducted;
                 const hasDeficit = remaining > 0.01;
+                const hasOverpay = remaining < -0.01;
                 return (
                   <div
                     className={`rounded-lg p-4 text-center mb-6 ${
                       hasDeficit
                         ? "bg-red-900/30 border border-red-500/40"
-                        : "bg-green-900/30 border border-green-500/40"
+                        : hasOverpay
+                          ? "bg-amber-900/30 border border-amber-500/40"
+                          : "bg-green-900/30 border border-green-500/40"
                     }`}
                   >
                     <p className="text-gray-400 text-xs uppercase tracking-wider mb-1">
@@ -2583,7 +2676,11 @@ export default function DriverProfilePage() {
                     </p>
                     <p
                       className={`text-2xl font-bold font-mono ${
-                        hasDeficit ? "text-red-400" : "text-green-400"
+                        hasDeficit
+                          ? "text-red-400"
+                          : hasOverpay
+                            ? "text-amber-400"
+                            : "text-green-400"
                       }`}
                     >
                       ${remaining.toFixed(2)}
@@ -2594,9 +2691,28 @@ export default function DriverProfilePage() {
                         payout.
                       </p>
                     )}
+                    {hasOverpay && (
+                      <p className="text-xs text-amber-300 mt-1">
+                        Overpayment — ${Math.abs(remaining).toFixed(2)} excess.
+                      </p>
+                    )}
                   </div>
                 );
               })()}
+
+              {/* Warning note (same as /settlements modal) */}
+              <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3">
+                <p className="text-amber-400 text-xs">
+                  ⚠ This moves the payout to{" "}
+                  <strong className="text-amber-300">PENDING APPROVAL</strong>.
+                  On approval it becomes SETTLED, all orders are set to{" "}
+                  <strong className="text-amber-300">WO (With Office)</strong>,
+                  the <strong className="text-amber-300">full payout</strong> is
+                  posted to the selected cashbox, each paid statement is posted
+                  to its own cashbox, and the statements are marked{" "}
+                  <strong className="text-amber-300">PAID</strong>.
+                </p>
+              </div>
 
               {/* Actions */}
               <div className="flex gap-3">
@@ -2604,6 +2720,8 @@ export default function DriverProfilePage() {
                   onClick={() => {
                     setSettlementModal(null);
                     setSettlementBoxId("");
+                    setSelectedStatementIds([]);
+                    setStatementBoxes({});
                   }}
                   disabled={settling}
                   className="flex-1 px-4 py-2.5 rounded-lg border border-white/10 text-gray-400 hover:bg-white/[0.05] transition-colors text-sm font-semibold disabled:opacity-50"
@@ -2612,10 +2730,14 @@ export default function DriverProfilePage() {
                 </button>
                 <button
                   onClick={handleSettlementSubmit}
-                  disabled={!settlementBoxId || settling}
+                  disabled={
+                    !settlementBoxId ||
+                    selectedStatementIds.some((id) => !statementBoxes[id]) ||
+                    settling
+                  }
                   className="flex-1 px-4 py-2.5 rounded-lg font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed transition-colors text-sm shadow-lg shadow-emerald-500/20"
                 >
-                  {settling ? "Processing…" : "Confirm Settlement"}
+                  {settling ? "Processing…" : "✓ Confirm Settlement"}
                 </button>
               </div>
             </div>
