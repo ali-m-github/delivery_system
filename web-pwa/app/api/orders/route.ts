@@ -48,7 +48,16 @@ export async function GET(request: NextRequest) {
 
   // Build where clause from filters
   const where: Record<string, unknown> = {};
-  if (location) where.location = location;
+  if (location) {
+    // "With Driver" is the union of both driver-held states: ASSIGNED (order
+    // queued with a driver) and WITH_DRIVER (order out for delivery). An exact
+    // match on "WITH_DRIVER" alone hides the orders assigned through the driver
+    // assignment workflows, which persist location = "ASSIGNED".
+    where.location =
+      location === "WITH_DRIVER"
+        ? { in: ["WITH_DRIVER", "ASSIGNED"] }
+        : location;
+  }
   // Archive filter: only include the currently-viewed set (active vs archived)
   if (isArchived === "true" || isArchived === "false") {
     where.isArchived = isArchived === "true";
