@@ -16,6 +16,7 @@ const DRIVER_ALLOWED_LOCATIONS = new Set<string>([
   "RETURN",
   "WITH_DRIVER",
   "ASSIGNED",
+  "ASSIGNED_TR",
 ]);
 const BULK_FINANCIAL_FIELDS = ["collectedUsd", "collectedLbp"] as const;
 
@@ -107,7 +108,7 @@ export async function PATCH(request: Request) {
               id,
               success: false,
               error:
-                "Drivers can only move their orders to DELIVERED, RETURN, WITH_DRIVER or ASSIGNED",
+                "Drivers can only move their orders to DELIVERED, RETURN, WITH_DRIVER, ASSIGNED or ASSIGNED_TR",
             });
             continue;
           }
@@ -267,10 +268,19 @@ export async function PATCH(request: Request) {
             }
           } else if (
             updateData.location === "ASSIGNED" ||
+            updateData.location === "ASSIGNED_TR" ||
             updateData.location === "WITH_DRIVER"
           ) {
             updateData.financialStatus = "UD";
-            changes.push("Returned to Driver");
+            if (
+              updateData.location === "ASSIGNED_TR" &&
+              updateData.driverId !== undefined &&
+              updateData.driverId !== existing.driverId
+            ) {
+              changes.push("Assigned to Driver (Transit)");
+            } else {
+              changes.push("Returned to Driver");
+            }
             if (existing.deliveredAt) {
               updateData.deliveredAt = null;
             }

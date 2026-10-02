@@ -14,7 +14,13 @@ import ConfirmPayoutModal from "@/components/payouts/ConfirmPayoutModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import PermissionGuard from "@/components/PermissionGuard";
 
-type Tab = "assigned" | "delivered" | "returns" | "payouts" | "rates";
+type Tab =
+  | "assigned"
+  | "assigned_tr"
+  | "delivered"
+  | "returns"
+  | "payouts"
+  | "rates";
 
 type SortKey =
   | "orderId"
@@ -70,6 +76,7 @@ export default function DriverProfilePage() {
   // ─── Sort State per Tab ─────────────────────────────────────────────────
   const [sortConfig, setSortConfig] = useState<Record<Tab, SortConfig | null>>({
     assigned: null,
+    assigned_tr: null,
     delivered: null,
     returns: null,
     payouts: null,
@@ -79,6 +86,8 @@ export default function DriverProfilePage() {
   // ─── Pagination State per Tab ────────────────────────────────────────────
   const [assignedPage, setAssignedPage] = useState(1);
   const [assignedItemsPerPage, setAssignedItemsPerPage] = useState(50);
+  const [assignedTrPage, setAssignedTrPage] = useState(1);
+  const [assignedTrItemsPerPage, setAssignedTrItemsPerPage] = useState(50);
   const [deliveredPage, setDeliveredPage] = useState(1);
   const [deliveredItemsPerPage, setDeliveredItemsPerPage] = useState(50);
   const [returnsPage, setReturnsPage] = useState(1);
@@ -238,11 +247,23 @@ export default function DriverProfilePage() {
   // ─── Derived Data ───────────────────────────────────────────────────────
   const deliveries: any[] = driver?.deliveries || [];
 
+  // ── Driver-held batches ──────────────────────────────────────────────────
+  // Standard batch ("Assigned - Dr"): ASSIGNED / WITH_DRIVER (out for delivery).
+  // Transit batch ("Assigned - Tr"): ASSIGNED_TR, assigned via "Assign to Tr".
   const assignedOrders = useMemo(
     () =>
       deliveries.filter((o: any) => {
         const loc = String(o.location).toUpperCase();
         return loc === "WITH_DRIVER" || loc === "ASSIGNED";
+      }),
+    [deliveries],
+  );
+
+  const assignedTrOrders = useMemo(
+    () =>
+      deliveries.filter((o: any) => {
+        const loc = String(o.location).toUpperCase();
+        return loc === "ASSIGNED_TR";
       }),
     [deliveries],
   );
@@ -283,6 +304,12 @@ export default function DriverProfilePage() {
     return sorted.slice(start, start + assignedItemsPerPage);
   }, [assignedOrders, assignedPage, assignedItemsPerPage, sortConfig]);
 
+  const paginatedAssignedTr = useMemo(() => {
+    const sorted = sortOrders(assignedTrOrders, "assigned_tr");
+    const start = (assignedTrPage - 1) * assignedTrItemsPerPage;
+    return sorted.slice(start, start + assignedTrItemsPerPage);
+  }, [assignedTrOrders, assignedTrPage, assignedTrItemsPerPage, sortConfig]);
+
   const paginatedDelivered = useMemo(() => {
     const sorted = sortOrders(deliveredOrders, "delivered");
     const start = (deliveredPage - 1) * deliveredItemsPerPage;
@@ -306,6 +333,15 @@ export default function DriverProfilePage() {
     0,
   );
   const assignedLbpSum = assignedOrders.reduce(
+    (sum: number, o: any) => sum + (o.amountLbp ?? 0),
+    0,
+  );
+
+  const assignedTrUsdSum = assignedTrOrders.reduce(
+    (sum: number, o: any) => sum + (o.amountUsd ?? 0),
+    0,
+  );
+  const assignedTrLbpSum = assignedTrOrders.reduce(
     (sum: number, o: any) => sum + (o.amountLbp ?? 0),
     0,
   );
@@ -826,7 +862,7 @@ export default function DriverProfilePage() {
         </div>
 
         {/* ── Top Metrics Bar ────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div className="bg-[#121824] border border-white/5 rounded-xl p-5">
             <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">
               Driver
@@ -840,7 +876,7 @@ export default function DriverProfilePage() {
           </div>
           <div className="bg-[#121824] border border-white/5 rounded-xl p-5">
             <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">
-              Assigned Orders
+              Assigned Orders (Dr)
             </p>
             <p className="text-cyan-400 text-2xl font-bold">
               {assignedOrders.length}
@@ -851,6 +887,22 @@ export default function DriverProfilePage() {
               </span>
               <span className="text-yellow-400 font-mono">
                 {assignedLbpSum.toLocaleString()} LL
+              </span>
+            </div>
+          </div>
+          <div className="bg-[#121824] border border-white/5 rounded-xl p-5">
+            <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">
+              Assigned Orders (Tr)
+            </p>
+            <p className="text-amber-400 text-2xl font-bold">
+              {assignedTrOrders.length}
+            </p>
+            <div className="flex gap-3 mt-1 text-xs">
+              <span className="text-green-400 font-mono">
+                ${assignedTrUsdSum.toFixed(2)}
+              </span>
+              <span className="text-yellow-400 font-mono">
+                {assignedTrLbpSum.toLocaleString()} LL
               </span>
             </div>
           </div>
@@ -876,7 +928,8 @@ export default function DriverProfilePage() {
         <div className="flex gap-1 mb-6 border-b border-white/10">
           {(
             [
-              ["assigned", "Assigned"],
+              ["assigned", "Assigned - Dr"],
+              ["assigned_tr", "Assigned - Tr"],
               ["delivered", "Delivered"],
               ["returns", "Returns/Exchange"],
               ["payouts", `Pending Payouts (${payouts.length})`],
@@ -896,6 +949,11 @@ export default function DriverProfilePage() {
               {key === "assigned" && (
                 <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
                   {assignedOrders.length}
+                </span>
+              )}
+              {key === "assigned_tr" && (
+                <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                  {assignedTrOrders.length}
                 </span>
               )}
               {key === "delivered" && (
@@ -1180,6 +1238,301 @@ export default function DriverProfilePage() {
                               }`}
                             >
                               {order.location}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span className="px-2 py-1 text-[10px] font-bold rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                              {order.financialStatus || "—"}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-right text-green-400 font-mono text-sm">
+                            ${(order.amountUsd ?? 0).toFixed(2)}
+                          </td>
+                          <td className="px-5 py-3.5 text-right text-yellow-400 font-mono text-sm">
+                            {(order.amountLbp ?? 0).toLocaleString()} LL
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ── Tab: Assigned - Tr (transit batch) ─────────────────────── */}
+        {activeTab === "assigned_tr" && (
+          <>
+            {selectedOrders.length > 0 && (
+              <div className="mb-4 flex items-center gap-3 flex-wrap">
+                <span className="text-sm text-gray-400">
+                  {selectedOrders.length} of {assignedTrOrders.length} selected
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => openOrdersInNewTab(assignedTrOrders)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+                    title="Open all in new tab"
+                  >
+                    🔗 All
+                  </button>
+                  <button
+                    onClick={() =>
+                      exportOrdersToExcel(
+                        assignedTrOrders,
+                        driverFileName("transit_orders"),
+                      )
+                    }
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
+                    title="Download all as Excel"
+                  >
+                    📊 Excel
+                  </button>
+                  <button
+                    onClick={() =>
+                      downloadOrdersPdf(
+                        assignedTrOrders,
+                        driverFileName("transit_orders"),
+                      )
+                    }
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors"
+                    title="Download all as PDF"
+                  >
+                    📑 PDF
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="bg-white/[0.02] border border-white/5 rounded-xl overflow-hidden backdrop-blur-md">
+              {/* ── Bulk Action Toolbar ──────────────────────────────────── */}
+              {selectedOrders.length > 0 && (
+                <div className="flex items-center gap-3 px-5 py-3 border-b border-white/10 bg-amber-500/5 flex-wrap">
+                  <span className="text-sm text-gray-400">
+                    {selectedOrders.length} selected
+                  </span>
+                  <button
+                    onClick={() => handleBulkAction("DELIVERED")}
+                    className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 transition-colors shadow-lg shadow-emerald-500/20"
+                  >
+                    🚚 Deliver
+                  </button>
+                  <button
+                    onClick={() => handleBulkAction("WAREHOUSE")}
+                    className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-yellow-600 hover:bg-yellow-500 transition-colors shadow-lg shadow-yellow-500/20"
+                  >
+                    📦 Return to Warehouse
+                  </button>
+                  <button
+                    onClick={() => handleBulkAction("RETURN")}
+                    className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-500 transition-colors shadow-lg shadow-red-500/20"
+                  >
+                    ↩ Return
+                  </button>
+                  <div className="flex items-center gap-1.5 ml-auto border-l border-white/10 pl-3">
+                    <button
+                      onClick={() => {
+                        const sel = assignedTrOrders.filter((o: any) =>
+                          selectedOrders.includes(o.id),
+                        );
+                        openOrdersInNewTab(sel);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+                      title="Open printable orders export"
+                    >
+                      🖨️ Print
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Pagination Controls - Assigned (Tr) */}
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <span>Rows per page:</span>
+                  <select
+                    value={assignedTrItemsPerPage}
+                    onChange={(e) => {
+                      setAssignedTrItemsPerPage(Number(e.target.value));
+                      setAssignedTrPage(1);
+                    }}
+                    className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-gray-300 focus:ring-cyan-500 focus:border-cyan-500"
+                  >
+                    {[50, 100, 200, 500, 1000].map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="ml-2">
+                    Showing{" "}
+                    {assignedTrOrders.length
+                      ? Math.min(
+                          assignedTrPage * assignedTrItemsPerPage,
+                          assignedTrOrders.length,
+                        )
+                      : 0}{" "}
+                    of {assignedTrOrders.length}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setAssignedTrPage((p) => Math.max(1, p - 1))}
+                    disabled={assignedTrPage === 1}
+                    className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    onClick={() =>
+                      setAssignedTrPage((p) =>
+                        p * assignedTrItemsPerPage < assignedTrOrders.length
+                          ? p + 1
+                          : p,
+                      )
+                    }
+                    disabled={
+                      assignedTrPage * assignedTrItemsPerPage >=
+                      assignedTrOrders.length
+                    }
+                    className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-white/[0.03] border-b border-white/10 text-gray-400 text-xs uppercase tracking-wider">
+                      <th className="px-5 py-4 font-semibold w-10">
+                        <input
+                          type="checkbox"
+                          checked={
+                            assignedTrOrders.length > 0 &&
+                            selectedOrders.length === assignedTrOrders.length
+                          }
+                          onChange={() =>
+                            toggleSelectAll(
+                              assignedTrOrders.map((o: any) => o.id),
+                            )
+                          }
+                          className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                        />
+                      </th>
+                      <SortHeader tab="assigned_tr" sortKey="orderId">
+                        Tracking ID
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="createdAt">
+                        Date Received
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="merchantName">
+                        Seller
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="customerName">
+                        Customer
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="customerPhone">
+                        Phone
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="customerAddress">
+                        Address
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="zoneName">
+                        Zone
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="location">
+                        Location
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="financialStatus">
+                        Fin. Status
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="amountUsd">
+                        <span className="text-right block">$ Amt</span>
+                      </SortHeader>
+                      <SortHeader tab="assigned_tr" sortKey="amountLbp">
+                        <span className="text-right block">LL Amt</span>
+                      </SortHeader>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedAssignedTr.length === 0 &&
+                    assignedTrOrders.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={12}
+                          className="text-center py-10 text-gray-500 italic"
+                        >
+                          No transit assignments for this driver.
+                        </td>
+                      </tr>
+                    ) : (
+                      paginatedAssignedTr.map((order: any) => (
+                        <tr
+                          key={order.id}
+                          className="border-b border-white/5 hover:bg-white/[0.02] transition-colors"
+                        >
+                          <td className="px-5 py-3.5">
+                            <input
+                              type="checkbox"
+                              checked={selectedOrders.includes(order.id)}
+                              onChange={() => toggleSelection(order.id)}
+                              className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                            />
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={() =>
+                                  setHistoryModalOrder({
+                                    id: order.id,
+                                    history: order.history || [],
+                                  })
+                                }
+                                title="Order History"
+                                className="text-[10px] px-1 py-0.5 rounded border transition-all bg-white/5 text-gray-500 border-white/10 hover:bg-cyan-500/10 hover:text-cyan-400"
+                              >
+                                &#9776;
+                              </button>
+                              <span className="font-mono text-cyan-400 text-sm">
+                                {order.orderId}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-300 text-sm whitespace-nowrap">
+                            {formatDate(order.createdAt)}
+                          </td>
+                          <td className="px-5 py-3.5 text-white text-sm">
+                            {order.merchant?.merchantName || "—"}
+                          </td>
+                          <td className="px-5 py-3.5 text-white text-sm">
+                            {order.customerName}
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-300 text-sm font-mono">
+                            {order.customerPhone || "—"}
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-400 text-sm max-w-[200px] truncate">
+                            {order.customerAddress || "—"}
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-400 text-sm">
+                            {order.zone?.name || "—"}
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span
+                              className={`px-2 py-1 text-[10px] font-bold rounded border ${
+                                order.location === "ASSIGNED_TR"
+                                  ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                  : order.location === "WITH_DRIVER"
+                                    ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                                    : order.location === "WAREHOUSE"
+                                      ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
+                                      : "bg-gray-500/10 text-gray-400 border-gray-500/20"
+                              }`}
+                            >
+                              {order.location === "ASSIGNED_TR"
+                                ? "With Driver - Tr"
+                                : order.location}
                             </span>
                           </td>
                           <td className="px-5 py-3.5">

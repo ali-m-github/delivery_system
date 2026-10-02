@@ -53,7 +53,9 @@ export default async function DriverPage() {
   // their assigned zones. The zone restriction only applies to warehouse
   // orders (what they can pick up), not to their own deliveries.
   const deliveryWhere = {
-    location: { in: ["WITH_DRIVER", "ASSIGNED", "DELIVERED"] },
+    // ASSIGNED_TR = transit batch ("With Driver - Tr"); drivers must see both
+    // their standard (ASSIGNED/WITH_DRIVER) and transit orders.
+    location: { in: ["WITH_DRIVER", "ASSIGNED", "ASSIGNED_TR", "DELIVERED"] },
     financialStatus: { notIn: ["PS", "WO", "Arc"] },
   };
 

@@ -228,7 +228,8 @@ export default function MerchantClient({
       if (
         boxFilter === "IN_TRANSIT" &&
         order.location !== "WITH_DRIVER" &&
-        order.location !== "ASSIGNED"
+        order.location !== "ASSIGNED" &&
+        order.location !== "ASSIGNED_TR"
       )
         return false;
       if (boxFilter === "WAREHOUSE" && order.location !== "WAREHOUSE")
@@ -279,7 +280,10 @@ export default function MerchantClient({
     const total = visible.length;
     const delivered = visible.filter((o) => o.location === "DELIVERED").length;
     const inTransit = visible.filter(
-      (o) => o.location === "WITH_DRIVER" || o.location === "ASSIGNED",
+      (o) =>
+        o.location === "WITH_DRIVER" ||
+        o.location === "ASSIGNED" ||
+        o.location === "ASSIGNED_TR",
     ).length;
     const warehouse = visible.filter((o) => o.location === "WAREHOUSE").length;
     const cp = visible.filter((o) => o.location === "CP").length;
@@ -1000,6 +1004,7 @@ export default function MerchantClient({
                     <option value="WAREHOUSE">Warehouse</option>
                     <option value="WITH_DRIVER">With Driver</option>
                     <option value="ASSIGNED">Assigned</option>
+                    <option value="ASSIGNED_TR">With Driver - Tr</option>
                     <option value="DELIVERED">Delivered</option>
                     <option value="RETURNED">Returned</option>
                   </select>
@@ -1406,11 +1411,13 @@ export default function MerchantClient({
                                 className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold ${
                                   order.location === "DELIVERED"
                                     ? "bg-green-500/10 text-green-400 border border-green-500/30"
+                                    : order.location === "ASSIGNED_TR"
+                                      ? "bg-amber-500/10 text-amber-400 border border-amber-500/30"
                                     : order.location === "WITH_DRIVER" ||
                                         order.location === "ASSIGNED"
                                       ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/30"
-                                      : order.location === "RETURNED"
-                                        ? "bg-red-500/10 text-red-400 border border-red-500/30"
+                                    : order.location === "RETURNED"
+                                      ? "bg-red-500/10 text-red-400 border border-red-500/30"
                                         : order.location === "CP"
                                           ? "bg-purple-500/10 text-purple-300 border border-purple-500/30"
                                           : "bg-yellow-500/10 text-yellow-400 border border-yellow-500/30"
@@ -1418,10 +1425,12 @@ export default function MerchantClient({
                               >
                                 {order.location === "WAREHOUSE"
                                   ? "Warehouse"
+                                  : order.location === "ASSIGNED_TR"
+                                    ? "With Driver - Tr"
                                   : order.location === "WITH_DRIVER"
                                     ? "With Driver"
-                                    : order.location === "ASSIGNED"
-                                      ? "Assigned"
+                                  : order.location === "ASSIGNED"
+                                    ? "Assigned"
                                       : order.location === "DELIVERED"
                                         ? "Delivered"
                                         : order.location === "RETURNED"

@@ -174,7 +174,7 @@ export function toCustomerMessage(entry: {
   // Location / status changes
   if (loc === "WAREHOUSE" || action.includes("Order Created"))
     return { status: "Order received", detail: "At our warehouse" };
-  if (loc === "ASSIGNED")
+  if (loc === "ASSIGNED" || loc === "ASSIGNED_TR")
     return { status: "With delivery courier", detail: null };
   if (loc === "WITH_DRIVER")
     return { status: "With delivery courier", detail: "Out for delivery" };
@@ -201,7 +201,7 @@ export function toCustomerMessage(entry: {
   if (action.includes("Location changed")) {
     if (loc === "WAREHOUSE")
       return { status: "Order received", detail: "At our warehouse" };
-    if (loc === "ASSIGNED" || loc === "WITH_DRIVER")
+    if (loc === "ASSIGNED" || loc === "ASSIGNED_TR" || loc === "WITH_DRIVER")
       return { status: "With delivery courier", detail: null };
     if (loc === "DELIVERED") return { status: "Delivered", detail: null };
     if (loc === "RETURN" || loc === "RETURNED")
@@ -226,7 +226,7 @@ export function currentStatusLabel(location: string): string {
   if (loc === "DELIVERED") return "Delivered";
   if (loc === "RETURN" || loc === "RETURNED" || loc === "RTS")
     return "Returned";
-  if (loc === "ASSIGNED" || loc === "WITH_DRIVER")
+  if (loc === "ASSIGNED" || loc === "ASSIGNED_TR" || loc === "WITH_DRIVER")
     return "With delivery courier";
   if (loc === "POSTPONED") return "Postponed";
   if (loc === "CP") return "Preparing for dispatch";

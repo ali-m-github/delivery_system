@@ -66,7 +66,35 @@ export default async function PrintOrdersPage({
   // configured $0 is valid; a missing rate is shown as "—" (never $0).
   let driverRateTable: DriverRateTable | null = null;
   if (driverId) {
-    driverRateTable = await loadDriverRateTable(prisma, driverId);
+    // The `driverId` query param may carry EITHER the profile cuid (what
+    // settlements / cleared-payouts / payout APIs pass via `payout.driverId`)
+    // OR the driver's short code (DriverProfile.driverId, e.g. "D0111" —
+    // what a human types from the driver list, where links are keyed by the
+    // code). Resolving only by cuid meant a code-typed URL silently produced
+    // an EMPTY rate table (profile not found), so every order was flagged
+    // "rate NOT CONFIGURED" even though rates exist under the real profile.
+    // Resolve the code first (case-insensitive, mirroring
+    // /api/admin/drivers/[id]) and fall back to the cuid so both URL shapes
+    // work. The resolved userId is passed through so cash-seller exceptions
+    // (keyed by User.id) are never dropped.
+    const byCode = await prisma.driverProfile.findFirst({
+      where: { driverId: { equals: driverId, mode: "insensitive" } },
+      select: { id: true, userId: true },
+    });
+    const byCuid = byCode
+      ? null
+      : await prisma.driverProfile.findUnique({
+          where: { id: driverId },
+          select: { id: true, userId: true },
+        });
+    const resolvedDriver = byCode ?? byCuid;
+    if (resolvedDriver) {
+      driverRateTable = await loadDriverRateTable(
+        prisma,
+        resolvedDriver.id,
+        resolvedDriver.userId,
+      );
+    }
   }
 
   // ── Fetch payout context if payoutId is present (for debt display) ──
@@ -240,10 +268,15 @@ export default async function PrintOrdersPage({
         <p className="text-xs text-gray-500 mt-1">
           {enrichedOrders.length} order
           {enrichedOrders.length !== 1 ? "s" : ""} · Generated{" "}
+          {/* Beirut local time (Asia/Beirut), independent of server/browser
+              timezone — matches every other print/invoice timestamp. */}
           {new Date().toLocaleDateString("en-US", {
+            timeZone: "Asia/Beirut",
             year: "numeric",
             month: "short",
             day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
           })}
         </p>
       </div>

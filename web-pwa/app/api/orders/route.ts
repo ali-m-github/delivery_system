@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
     // assignment workflows, which persist location = "ASSIGNED".
     where.location =
       location === "WITH_DRIVER"
-        ? { in: ["WITH_DRIVER", "ASSIGNED"] }
+        ? { in: ["WITH_DRIVER", "ASSIGNED", "ASSIGNED_TR"] }
         : location;
   }
   // Archive filter: only include the currently-viewed set (active vs archived)
@@ -138,6 +138,34 @@ export async function GET(request: NextRequest) {
     );
   }
   Object.assign(where, authScope);
+
+  // ── Which visible orders already have a "-Exchange" proof order? ─────────
+  // A one-shot in-memory map built from the same auth scope as the list
+  // itself: any order whose "<orderId>-Exchange" row exists (whether created
+  // by the manual button or by the delivery flow) cannot have a second
+  // exchange order — the UI hides the Exchange action and the POST
+  // /api/orders/:id/exchange route rejects it (idempotency guard).
+  const exchangeIds = new Set<string>();
+  if (Array.isArray(where.orderId)) {
+    // Bulk lookup: scope is already narrowed to the requested orderIds.
+    const hits = await prisma.order.findMany({
+      where: { orderId: { in: where.orderId }, ...authScope },
+      select: { orderId: true },
+    });
+    for (const o of hits) {
+      if (o.orderId.endsWith("-Exchange")) {
+        exchangeIds.add(o.orderId.slice(0, -"-Exchange".length));
+      }
+    }
+  } else {
+    const proof = await prisma.order.findMany({
+      where: { orderId: { endsWith: "-Exchange" }, ...authScope },
+      select: { orderId: true },
+    });
+    for (const o of proof) {
+      exchangeIds.add(o.orderId.slice(0, -"-Exchange".length));
+    }
+  }
 
   try {
     // Tab badges need totals from the database, not only the current page of
@@ -237,7 +265,10 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(
       {
-        data: orders,
+        data: orders.map((o) => ({
+          ...o,
+          exchangeExists: exchangeIds.has(o.orderId),
+        })),
         meta: {
           total,
           rwdTotal,
@@ -294,7 +325,10 @@ export async function GET(request: NextRequest) {
       const basicTotal = await prisma.order.count({ where });
       return NextResponse.json(
         {
-          data: basicOrders,
+          data: basicOrders.map((o) => ({
+            ...o,
+            exchangeExists: exchangeIds.has(o.orderId),
+          })),
           meta: {
             total: basicTotal,
             rwdTotal: 0,
@@ -470,6 +504,7 @@ const DRIVER_ALLOWED_LOCATIONS = new Set<string>([
   "RETURN",
   "WITH_DRIVER",
   "ASSIGNED",
+  "ASSIGNED_TR",
 ]);
 
 const MERCHANT_UPDATABLE_FIELDS = new Set<string>([
@@ -740,7 +775,7 @@ export async function PATCH(request: Request) {
         return NextResponse.json(
           {
             error:
-              "Drivers can only move their orders to DELIVERED, RETURN, WITH_DRIVER or ASSIGNED",
+              "Drivers can only move their orders to DELIVERED, RETURN, WITH_DRIVER, ASSIGNED or ASSIGNED_TR",
           },
           { status: 403 },
         );
@@ -813,7 +848,11 @@ export async function PATCH(request: Request) {
         if (data.collectedLbp === undefined) {
           data.collectedLbp = existing.amountLbp ?? 0;
         }
-      } else if (newLocation === "ASSIGNED" || newLocation === "WITH_DRIVER") {
+      } else if (
+        newLocation === "ASSIGNED" ||
+        newLocation === "ASSIGNED_TR" ||
+        newLocation === "WITH_DRIVER"
+      ) {
         // Order returned to driver (e.g., rolled back from payout).
         // Enforce UD — order is assigned to driver but not delivered.
         // WD is only for delivered orders in pending payout.
@@ -946,6 +985,10 @@ export async function PATCH(request: Request) {
       data.driverId !== existing.driverId
     ) {
       if (data.driverId === null) changes.push("Driver Unassigned");
+      else if (newLocation === "ASSIGNED_TR")
+        // The transit label is already recorded by the location sync branch
+        // above ("Assigned to Driver (Transit)"); avoid a duplicate entry.
+        changes.push("Assigned to Driver (Transit)");
       else changes.push("Assigned to Driver");
     }
 

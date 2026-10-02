@@ -32,6 +32,13 @@ export const SYSTEM_PERMISSIONS = [
   // to the warehouse (RETURN/Re) or to any other status. Only assignable to
   // staff who should be allowed to roll back already-delivered orders.
   "ACTION_ORDER_RETURN",
+  // ── Granular Exchange-Order Creation RBAC ──
+  // Grants the ability to manually create the "<orderId>-Exchange" proof order
+  // (e.g. when the returned/exchange item arrives before the order is
+  // delivered). Independent of ACTION_ORDER_RETURN so admins can allow staff
+  // to create exchange orders without granting the full returned-order
+  // rollback power.
+  "ACTION_ORDER_EXCHANGE",
 ] as const;
 
 export type SystemPermission = (typeof SYSTEM_PERMISSIONS)[number];
@@ -135,6 +142,7 @@ export const PERMISSION_GROUPS: {
       "ORDERS_DISPATCH",
       "ORDERS_FINANCIAL",
       "ACTION_ORDER_RETURN",
+      "ACTION_ORDER_EXCHANGE",
     ],
   },
   {
@@ -178,6 +186,7 @@ export const PERMISSION_LABELS: Record<SystemPermission, string> = {
   ORDERS_DISPATCH: "Dispatch Orders",
   ORDERS_FINANCIAL: "Order Financial Adjustments",
   ACTION_ORDER_RETURN: "Return Delivered Orders",
+  ACTION_ORDER_EXCHANGE: "Create Exchange Orders",
   MANAGE_DRIVERS: "Manage Drivers",
   DRIVERS_VIEW: "View Drivers",
   DRIVERS_CREATE: "Create Drivers",
@@ -202,6 +211,8 @@ export const PERMISSION_DESCRIPTIONS: Record<SystemPermission, string> = {
   ORDERS_DISPATCH: "Dispatch orders to drivers for delivery.",
   ORDERS_FINANCIAL: "Apply financial corrections to orders (fees, amounts, status).",
   ACTION_ORDER_RETURN: "Roll delivered orders back to the warehouse or another status.",
+  ACTION_ORDER_EXCHANGE:
+    "Manually create the -Exchange proof order (when the returned item arrives before delivery).",
   MANAGE_DRIVERS: "Create, edit and delete driver profiles and their zones.",
   DRIVERS_VIEW: "See the driver directory and driver details.",
   DRIVERS_CREATE: "Register new drivers.",
@@ -228,6 +239,7 @@ export const DANGEROUS_PERMISSIONS: readonly SystemPermission[] = [
   "ACTION_TREASURY_TRANSACT",
   "ORDERS_FINANCIAL",
   "ACTION_ORDER_RETURN",
+  "ACTION_ORDER_EXCHANGE",
 ];
 
 const DANGEROUS_SET: ReadonlySet<string> = new Set(DANGEROUS_PERMISSIONS);

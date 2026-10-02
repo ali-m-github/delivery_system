@@ -115,6 +115,8 @@ interface Order {
   zone: { id: string; name: string } | null;
   hasExchange: boolean;
   openParcelAllowed?: boolean;
+  /** True when a "<orderId>-Exchange" proof order already exists for this order. */
+  exchangeExists?: boolean;
   location: string;
   financialStatus: string;
   amountUsd: number;
@@ -171,6 +173,7 @@ const LOCATION_LABELS: Record<string, string> = {
   CP: "CP (Pickup)",
   WITH_DRIVER: "With Driver",
   ASSIGNED: "With Driver",
+  ASSIGNED_TR: "With Driver - Tr",
   DELIVERED: "Delivered",
   RETURN: "Returned",
   Re: "Returned",
@@ -184,6 +187,7 @@ const LOCATION_COLORS: Record<string, string> = {
   CP: "text-purple-400 bg-purple-500/10 border-purple-500/30",
   WITH_DRIVER: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30",
   ASSIGNED: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30",
+  ASSIGNED_TR: "text-amber-400 bg-amber-500/10 border-amber-500/30",
   DELIVERED: "text-green-400 bg-green-500/10 border-green-500/30",
   RETURN: "text-red-400 bg-red-500/10 border-red-500/30",
   Re: "text-red-400 bg-red-500/10 border-red-500/30",
@@ -880,11 +884,19 @@ function OrdersPageInner() {
   // ── Bulk Dispatch State ──
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [driverSearchTerm, setDriverSearchTerm] = useState("");
+  // "ASSIGNED" = standard assignment ("Assign to Dr"); "ASSIGNED_TR" = transit
+  // batch ("Assign to Tr"). The modal's two action buttons pick this value.
+  const [assignTargetLocation, setAssignTargetLocation] = useState<
+    "ASSIGNED" | "ASSIGNED_TR"
+  >("ASSIGNED");
 
   // ── Quick Assign State (type order IDs + pick driver) ──
   const [quickAssignModalOpen, setQuickAssignModalOpen] = useState(false);
   const [quickAssignOrderIdsText, setQuickAssignOrderIdsText] = useState("");
   const [quickAssignDriverId, setQuickAssignDriverId] = useState("");
+  const [quickAssignTargetLocation, setQuickAssignTargetLocation] = useState<
+    "ASSIGNED" | "ASSIGNED_TR"
+  >("ASSIGNED");
 
   // ── Scan-to-Assign State ──
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -1204,7 +1216,11 @@ function OrdersPageInner() {
   };
 
   // ── Bulk Assign to Driver ──
-  const handleBulkAssign = async () => {
+  // `targetLocation` selects the batch: "ASSIGNED" (standard "With Driver")
+  // or "ASSIGNED_TR" (transit "With Driver - Tr").
+  const handleBulkAssign = async (
+    targetLocation: "ASSIGNED" | "ASSIGNED_TR" = assignTargetLocation,
+  ) => {
     if (!driverSearchTerm) return alert("Please select a driver.");
 
     // Reverse-lookup driver UUID from the datalist string
@@ -1244,7 +1260,7 @@ function OrdersPageInner() {
             body: JSON.stringify({
               id,
               driverId: matchedDriver.id,
-              location: "ASSIGNED",
+              location: targetLocation,
               financialStatus: "UD",
             }),
           }),
@@ -1254,6 +1270,7 @@ function OrdersPageInner() {
       setAssignModalOpen(false);
       setSelectedOrderIds([]);
       setDriverSearchTerm("");
+      setAssignTargetLocation("ASSIGNED");
       fetchOrders();
     } catch (error) {
       console.error("Failed to bulk assign orders", error);
@@ -1262,7 +1279,9 @@ function OrdersPageInner() {
   };
 
   // ── Quick Assign (type order IDs + pick driver) ──
-  const handleQuickAssign = async () => {
+  const handleQuickAssign = async (
+    targetLocation: "ASSIGNED" | "ASSIGNED_TR" = quickAssignTargetLocation,
+  ) => {
     if (!quickAssignDriverId) return alert("Please select a driver.");
     if (!quickAssignOrderIdsText.trim())
       return alert("Please enter at least one order ID.");
@@ -1343,7 +1362,7 @@ function OrdersPageInner() {
             body: JSON.stringify({
               id: o.id,
               driverId: matchedDriver.id,
-              location: "ASSIGNED",
+              location: targetLocation,
               financialStatus: "UD",
             }),
           }),
@@ -1353,9 +1372,12 @@ function OrdersPageInner() {
       setQuickAssignModalOpen(false);
       setQuickAssignOrderIdsText("");
       setQuickAssignDriverId("");
+      setQuickAssignTargetLocation("ASSIGNED");
       fetchOrders();
       alert(
-        `Successfully assigned ${assignableOrders.length} order(s) to ${matchedDriver.firstName} ${matchedDriver.lastName}.`,
+        `Successfully assigned ${assignableOrders.length} order(s) to ${matchedDriver.firstName} ${matchedDriver.lastName}${
+          targetLocation === "ASSIGNED_TR" ? " (Transit)" : ""
+        }.`,
       );
     } catch (error) {
       console.error("Failed to quick-assign orders", error);
@@ -1507,7 +1529,7 @@ function OrdersPageInner() {
     if (locationFilter !== "ALL") {
       const matchLocations =
         locationFilter === "WITH_DRIVER"
-          ? ["WITH_DRIVER", "ASSIGNED"]
+          ? ["WITH_DRIVER", "ASSIGNED", "ASSIGNED_TR"]
           : [locationFilter];
       list = list.filter((o) => matchLocations.includes(o.location));
     }
@@ -1893,6 +1915,94 @@ function OrdersPageInner() {
       await fetchOrders();
     } catch (error: any) {
       alert(error.message || "Failed to return the order to warehouse.");
+    }
+  };
+
+  // ── Manually create the "-Exchange" proof order(s) (toolbar bulk action) ──
+  // For when the returned/exchange item is received before the order itself
+  // is delivered — the automatic flow only fires on delivery. Creating it
+  // now means delivering the order later will NOT create a duplicate (the
+  // generator is idempotent on "<orderId>-Exchange", so orders that already
+  // have an exchange order are skipped, not duplicated).
+  const [exchangeCreating, setExchangeCreating] = useState(false);
+  const handleCreateExchange = async () => {
+    if (selectedOrderIds.length === 0 || exchangeCreating) return;
+
+    // Pre-filter what the server will actually act on:
+    //  - must have the exchange flag checked
+    //  - must not already have an "-Exchange" proof order
+    const selected = orders.filter((o) => selectedOrderIds.includes(o.id));
+    const eligible = selected.filter(
+      (o) => o.hasExchange && !o.exchangeExists &&
+        !String(o.orderId).toLowerCase().endsWith("-exchange"),
+    );
+    const noExchange = selected.filter(
+      (o) =>
+        !o.hasExchange &&
+        !String(o.orderId).toLowerCase().endsWith("-exchange"),
+    );
+    if (eligible.length === 0) {
+      if (noExchange.length > 0) {
+        alert(
+          `None of the ${selected.length} selected order(s) have the exchange flag checked — no exchange order can be created.`,
+        );
+      } else {
+        alert(
+          `No exchange orders to create: the selected order(s) already have an exchange order (or are themselves exchange proof orders).`,
+        );
+      }
+      return;
+    }
+
+    const skipNote =
+      selected.length - eligible.length > 0
+        ? `\n\n${selected.length - eligible.length} order(s) skipped (no exchange flag, or exchange order already exists).`
+        : "";
+    if (
+      !window.confirm(
+        `Create the exchange proof order for ${eligible.length} selected order(s)?${skipNote}\n\nUse this when the exchange/return item was received before the order(s) were delivered. Proof orders carry no price and deduct $0 when resolved in a payout.`,
+      )
+    )
+      return;
+
+    setExchangeCreating(true);
+    try {
+      const results = await Promise.all(
+        eligible.map(async (o) => {
+          try {
+            const res = await fetch(`/api/orders/${o.id}/exchange`, {
+              method: "POST",
+            });
+            const data = await res.json().catch(() => ({}));
+            return {
+              orderId: o.orderId,
+              created: res.ok && data.created === true,
+              alreadyExists: res.ok && data.alreadyExists === true,
+              error: res.ok ? null : data.error || "Failed",
+            };
+          } catch {
+            return {
+              orderId: o.orderId,
+              created: false,
+              alreadyExists: false,
+              error: "Network error",
+            };
+          }
+        }),
+      );
+      const created = results.filter((r) => r.created).length;
+      const existed = results.filter((r) => r.alreadyExists).length;
+      const failed = results.filter((r) => r.error);
+      await fetchOrders();
+      const failNote =
+        failed.length > 0
+          ? `\n\nFailed: ${failed.map((f) => `${f.orderId} (${f.error})`).join(", ")}`
+          : "";
+      alert(
+        `Exchange orders created: ${created}.${existed > 0 ? ` Already existed (skipped): ${existed}.` : ""}${failNote}`,
+      );
+    } finally {
+      setExchangeCreating(false);
     }
   };
 
@@ -2541,6 +2651,28 @@ function OrdersPageInner() {
                       title="Return selected delivered (WO/WD) orders to the warehouse (Returned / Re)"
                     >
                       Return Delivered
+                    </button>
+                  </PermissionGuard>
+
+                  {/* ── Create Exchange proof order(s) — permission-gated ── */}
+                  <PermissionGuard requires="ACTION_ORDER_EXCHANGE">
+                    <button
+                      onClick={handleCreateExchange}
+                      disabled={selectedOrderIds.length === 0 || exchangeCreating}
+                      className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
+                                 bg-cyan-500/20 text-cyan-300 border border-cyan-500/30
+                                 hover:bg-cyan-500/30 hover:shadow-[0_0_12px_rgba(6,182,212,0.3)]
+                                 disabled:opacity-30 disabled:cursor-not-allowed
+                                 transition-all duration-200"
+                      title="Create the -Exchange proof order for selected orders (when the returned item arrived before delivery)"
+                    >
+                      {exchangeCreating
+                        ? "Creating…"
+                        : `⇄ Exchange${
+                            selectedOrderIds.length > 0
+                              ? ` (${selectedOrderIds.length})`
+                              : ""
+                          }`}
                     </button>
                   </PermissionGuard>
 
@@ -6204,6 +6336,7 @@ function OrdersPageInner() {
                 setQuickAssignModalOpen(false);
                 setQuickAssignOrderIdsText("");
                 setQuickAssignDriverId("");
+                setQuickAssignTargetLocation("ASSIGNED");
               }}
             />
 
@@ -6273,27 +6406,37 @@ function OrdersPageInner() {
               </div>
 
               {/* Actions */}
-              <div className="flex gap-3">
+              <div className="flex flex-col gap-3">
                 <button
                   onClick={() => {
                     setQuickAssignModalOpen(false);
                     setQuickAssignOrderIdsText("");
                     setQuickAssignDriverId("");
+                    setQuickAssignTargetLocation("ASSIGNED");
                   }}
-                  className="flex-1 px-4 py-2.5 text-sm font-semibold rounded-xl
+                  className="w-full px-4 py-2.5 text-sm font-semibold rounded-xl
                              bg-white/5 text-gray-400 border border-white/10
                              hover:text-white hover:bg-white/10 transition-all duration-200"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleQuickAssign}
-                  className="flex-1 px-4 py-2.5 text-sm font-semibold rounded-xl
+                  onClick={() => handleQuickAssign("ASSIGNED")}
+                  className="w-full px-4 py-2.5 text-sm font-semibold rounded-xl
                              bg-emerald-500/20 text-emerald-300 border border-emerald-500/30
                              hover:bg-emerald-500/30 hover:shadow-[0_0_16px_rgba(16,185,129,0.3)]
                              transition-all duration-200"
                 >
-                  Submit Assignment
+                  Assign to Dr
+                </button>
+                <button
+                  onClick={() => handleQuickAssign("ASSIGNED_TR")}
+                  className="w-full px-4 py-2.5 text-sm font-semibold rounded-xl
+                             bg-amber-500/20 text-amber-300 border border-amber-500/30
+                             hover:bg-amber-500/30 hover:shadow-[0_0_16px_rgba(245,158,11,0.3)]
+                             transition-all duration-200"
+                >
+                  Assign to Tr
                 </button>
               </div>
             </div>
@@ -6352,26 +6495,36 @@ function OrdersPageInner() {
                 </datalist>
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex flex-col gap-3">
                 <button
                   onClick={() => {
                     setAssignModalOpen(false);
                     setDriverSearchTerm("");
+                    setAssignTargetLocation("ASSIGNED");
                   }}
-                  className="flex-1 px-4 py-2.5 text-sm font-semibold rounded-xl
+                  className="w-full px-4 py-2.5 text-sm font-semibold rounded-xl
                              bg-white/5 text-gray-400 border border-white/10
                              hover:text-white hover:bg-white/10 transition-all duration-200"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleBulkAssign}
-                  className="flex-1 px-4 py-2.5 text-sm font-semibold rounded-xl
+                  onClick={() => handleBulkAssign("ASSIGNED")}
+                  className="w-full px-4 py-2.5 text-sm font-semibold rounded-xl
                              bg-sky-500/20 text-sky-300 border border-sky-500/30
                              hover:bg-sky-500/30 hover:shadow-[0_0_16px_rgba(14,165,233,0.3)]
                              transition-all duration-200"
                 >
-                  Confirm Assignment
+                  Assign to Dr
+                </button>
+                <button
+                  onClick={() => handleBulkAssign("ASSIGNED_TR")}
+                  className="w-full px-4 py-2.5 text-sm font-semibold rounded-xl
+                             bg-amber-500/20 text-amber-300 border border-amber-500/30
+                             hover:bg-amber-500/30 hover:shadow-[0_0_16px_rgba(245,158,11,0.3)]
+                             transition-all duration-200"
+                >
+                  Assign to Tr
                 </button>
               </div>
             </div>

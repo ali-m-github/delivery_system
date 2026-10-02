@@ -153,7 +153,11 @@ function WaybillCard({ order }: { order: Order }) {
           // Column 2 is a touch wider than the reference's 1.455in so the
           // receiver name stays on one line with a regular-width font.
           gridTemplateColumns: "1.34fr 1.5fr 1.44fr 1.51fr",
-          gridTemplateRows: "0.89in 1.03in 0.495in 0.55in 1fr",
+          // Row 1 grew 0.89in → 1.24in so the 110px waybill QR fits without
+          // clipping; the freed space is reclaimed from the single-line rows
+          // below (address / signature only need ~20px each). Total stays
+          // exactly 3.36in: 1.24 + 0.97 + 0.33 + 0.47 + 0.35 (1fr).
+          gridTemplateRows: "1.24in 0.97in 0.33in 0.47in 1fr",
           overflow: "hidden",
           // The reference label is typeset in a condensed face (Arial Narrow);
           // request a condensed stretch so body text fits the same way.
@@ -221,13 +225,15 @@ function WaybillCard({ order }: { order: Order }) {
       <div
         style={{
           ...B(["b"]),
-          padding: "0.07in",
+          // Tightened padding: 110px QR + 2×0.04in (3.84px) = 117.7px, which
+          // fits the 1.24in (119px) header row with ~1px of headroom.
+          padding: "0.04in",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
         }}
       >
-        <WaybillQRCode value={order.orderId} size={70} />
+        <WaybillQRCode value={order.orderId} size={110} level="M" />
       </div>
 
       {/* ── ROW 2: SHIPMENT DETAILS | SHIP TO (RECEIVER) | SELLER / MERCHANT | TOTAL C.O.D. DUE ── */}

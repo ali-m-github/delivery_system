@@ -35,6 +35,7 @@ type TabKey =
   | "CP"
   | "WAREHOUSE"
   | "ASSIGNED"
+  | "ASSIGNED_TR"
   | "WD"
   | "WO"
   | "RETURN"
@@ -56,6 +57,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
     "CP",
     "WAREHOUSE",
     "ASSIGNED",
+    "ASSIGNED_TR",
     "WD",
     "WO",
     "RETURN",
@@ -290,6 +292,9 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
         (o: any) => o.location === "WAREHOUSE",
       ),
       ASSIGNED: nonExchangeOrders.filter((o: any) => o.location === "ASSIGNED"),
+      ASSIGNED_TR: nonExchangeOrders.filter(
+        (o: any) => o.location === "ASSIGNED_TR",
+      ),
       WD: deliveredWD,
       WO: deliveredWO,
       RETURN: normalizedOrders.filter((o: any) => o.location === "RETURN"),
@@ -458,6 +463,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
     { key: "CP", label: "CP (Pickup)" },
     { key: "WAREHOUSE", label: "Warehouse" },
     { key: "ASSIGNED", label: "Dr (Assigned)" },
+    { key: "ASSIGNED_TR", label: "Dr - Tr (Transit)" },
     { key: "WD", label: "WD (With Driver)" },
     { key: "WO", label: "WO (With Office)" },
     { key: "RETURN", label: "Returns/Exchange" },

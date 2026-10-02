@@ -405,7 +405,8 @@ export default function DriverClient({
     () =>
       deliveries.filter((o) => {
         const loc = String(o.location).toUpperCase();
-        return loc === "WITH_DRIVER" || loc === "ASSIGNED";
+        // ASSIGNED_TR (transit batch) is driver-held like ASSIGNED.
+        return loc === "WITH_DRIVER" || loc === "ASSIGNED" || loc === "ASSIGNED_TR";
       }),
     [deliveries],
   );
