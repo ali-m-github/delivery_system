@@ -278,6 +278,13 @@ export async function PATCH(request: Request) {
               updateData.driverId !== existing.driverId
             ) {
               changes.push("Assigned to Driver (Transit)");
+            } else if (updateData.location === "ASSIGNED_TR") {
+              // Same-driver transfer from the regular batch to the transit
+              // batch ("Move to Tr" on the driver profile).
+              changes.push('Location updated to "With driver - Tr"');
+            } else if (existing.location === "ASSIGNED_TR") {
+              // Same-driver transfer back from the transit batch ("Move to Dr").
+              changes.push('Location updated to "With driver"');
             } else {
               changes.push("Returned to Driver");
             }

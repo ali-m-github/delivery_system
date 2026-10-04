@@ -608,6 +608,53 @@ export default function DriverProfilePage() {
     await refreshData();
   };
 
+  // ─── Transfer Between "Assigned - Dr" and "Assigned - Tr" ───────────────
+  // Moves the selected orders directly between the two driver-held batches
+  // (ASSIGNED/WITH_DRIVER ⇄ ASSIGNED_TR) without unassigning: the bulk
+  // endpoint keeps driverId untouched and derives financialStatus (UD)
+  // server-side. driverActionLog records a meaningful OrderHistory entry.
+  const [transferringLocation, setTransferringLocation] = useState(false);
+  const handleTransferLocation = async (
+    targetLocation: "ASSIGNED" | "ASSIGNED_TR",
+  ) => {
+    if (selectedOrders.length === 0 || transferringLocation) return;
+    setTransferringLocation(true);
+    try {
+      const res = await fetch("/api/orders/bulk", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: selectedOrders.map((id) => ({
+            id,
+            location: targetLocation,
+            driverActionLog:
+              targetLocation === "ASSIGNED_TR"
+                ? 'Moved to Transit: Location updated to "With driver - Tr"'
+                : 'Moved to Regular: Location updated to "With driver"',
+          })),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.error || "Failed to transfer orders");
+      }
+      const data = await res.json();
+      const results = Array.isArray(data?.results) ? data.results : [];
+      const failed = results.filter((r: any) => !r.success);
+      if (failed.length > 0) {
+        alert(
+          `${results.length - failed.length} order(s) moved, ${failed.length} failed: ${failed[0].error || "Unknown error"}`,
+        );
+      }
+      setSelectedOrders([]);
+      await refreshData();
+    } catch (e: any) {
+      alert(e.message || "Transfer failed");
+    } finally {
+      setTransferringLocation(false);
+    }
+  };
+
   // ─── Bulk Return to Warehouse Handler (RWD -> Re) ───────────────────────
   const [returningToWarehouse, setReturningToWarehouse] = useState(false);
   const handleReturnToWarehouse = async () => {
@@ -1021,6 +1068,14 @@ export default function DriverProfilePage() {
                     {selectedOrders.length} selected
                   </span>
                   <button
+                    onClick={() => handleTransferLocation("ASSIGNED_TR")}
+                    disabled={transferringLocation}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-bold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition-colors ${transferringLocation ? "opacity-40 cursor-not-allowed" : ""}`}
+                    title="Move selected orders to the transit batch (Assigned - Tr)"
+                  >
+                    {transferringLocation ? "Moving…" : "🔁 Move to Tr"}
+                  </button>
+                  <button
                     onClick={() => handleBulkAction("DELIVERED")}
                     className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 transition-colors shadow-lg shadow-emerald-500/20"
                   >
@@ -1311,6 +1366,14 @@ export default function DriverProfilePage() {
                   <span className="text-sm text-gray-400">
                     {selectedOrders.length} selected
                   </span>
+                  <button
+                    onClick={() => handleTransferLocation("ASSIGNED")}
+                    disabled={transferringLocation}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-bold text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 transition-colors ${transferringLocation ? "opacity-40 cursor-not-allowed" : ""}`}
+                    title="Move selected orders back to the regular batch (Assigned - Dr)"
+                  >
+                    {transferringLocation ? "Moving…" : "🔁 Move to Dr"}
+                  </button>
                   <button
                     onClick={() => handleBulkAction("DELIVERED")}
                     className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 transition-colors shadow-lg shadow-emerald-500/20"
