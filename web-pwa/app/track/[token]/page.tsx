@@ -305,7 +305,7 @@ export default function TrackOrderPage() {
 
       {/* ── Footer ── */}
       <p className="text-center text-gray-600 text-xs mt-8 pb-8">
-        Delivery System &middot; Tracking Portal
+        Jet Delivery &middot; Tracking Portal
       </p>
     </div>
   );

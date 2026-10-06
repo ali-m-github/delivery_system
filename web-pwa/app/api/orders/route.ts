@@ -419,7 +419,12 @@ export async function POST(request: Request) {
         ...(createdAt && { createdAt }),
         history: {
           create: {
-            action: "Order Created",
+            // Tag the creation entry when the order came through an import
+            // tool, so the order history shows which option created it.
+            action:
+              body.importSource === "bulk-csv"
+                ? "Order Created (Imported via Bulk Excel/CSV)"
+                : "Order Created",
             location: "WAREHOUSE",
             userId: creatorId,
           },

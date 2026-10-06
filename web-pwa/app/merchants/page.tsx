@@ -444,7 +444,7 @@ export default function SellersPage() {
                         </button>
                         {!seller.user && (
                           <Link
-                            href={`/admin?tab=employees&merchantId=${seller.id}`}
+                            href={`/admin?tab=merchants&merchantId=${seller.id}`}
                             title="Create a login account linked to this seller"
                             className="bg-green-600/20 text-green-400 hover:bg-green-600/40 border border-green-500/30 px-3 py-1.5 rounded transition-colors text-xs font-bold mr-2"
                           >

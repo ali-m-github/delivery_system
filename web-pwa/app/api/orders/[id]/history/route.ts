@@ -32,7 +32,21 @@ export async function GET(
 
     const order = await prisma.order.findUnique({
       where: { id },
-      select: { id: true, orderId: true, driverId: true, merchantId: true },
+      select: {
+        id: true,
+        orderId: true,
+        driverId: true,
+        merchantId: true,
+        // The payout batch this order was paid in (if any)
+        cashPayoutBatch: {
+          select: {
+            id: true,
+            batchReference: true,
+            createdAt: true,
+            merchantId: true,
+          },
+        },
+      },
     });
     if (!order) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
@@ -96,6 +110,14 @@ export async function GET(
       orderId: order.id,
       orderReference: order.orderId,
       count: history.length,
+      payoutBatch: order.cashPayoutBatch
+        ? {
+            id: order.cashPayoutBatch.id,
+            batchReference: order.cashPayoutBatch.batchReference,
+            createdAt: order.cashPayoutBatch.createdAt,
+            merchantId: order.cashPayoutBatch.merchantId,
+          }
+        : null,
       history: history.map((h) => ({
         id: h.id,
         action: h.action,

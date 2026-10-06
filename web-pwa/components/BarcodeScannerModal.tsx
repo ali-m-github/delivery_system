@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Html5Qrcode } from "html5-qrcode";
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 
 // ─── TypeScript Interfaces ────────────────────────────────────────────────────
 
@@ -26,6 +26,13 @@ export default function BarcodeScannerModal({
 }: BarcodeScannerModalProps) {
   const html5QrRef = useRef<Html5Qrcode | null>(null);
   const isScanningRef = useRef(false);
+  // Keep the latest onScanSuccess in a ref so startCamera's identity never
+  // changes when the parent re-renders — otherwise every parent state change
+  // (toasts, spinners, router.refresh) tears down and restarts the camera.
+  const onScanSuccessRef = useRef(onScanSuccess);
+  useEffect(() => {
+    onScanSuccessRef.current = onScanSuccess;
+  }, [onScanSuccess]);
   const [error, setError] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(false);
 
@@ -62,37 +69,28 @@ export default function BarcodeScannerModal({
     }
 
     try {
-      const html5QrCode = new Html5Qrcode(viewportId);
-
-      // Check if cameras are available
-      const cameras = await Html5Qrcode.getCameras();
-      if (!cameras || cameras.length === 0) {
-        setError(
-          "No camera detected on this device. Ensure your device has a camera and you've granted permission.",
-        );
-        setInitializing(false);
-        return;
-      }
-
+      // Use the browser's native BarcodeDetector when available (hardware
+      // accelerated on Android Chrome) and restrict decoding to the
+      // symbologies we actually print: QR on waybills, Code 128 on packages.
+      // Fewer decoders per frame = noticeably faster scans on low-end phones.
+      const html5QrCode = new Html5Qrcode(viewportId, {
+        verbose: false,
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.QR_CODE,
+          Html5QrcodeSupportedFormats.CODE_128,
+        ],
+        useBarCodeDetectorIfSupported: true,
+      });
       html5QrRef.current = html5QrCode;
 
-      // Prefer rear/environment camera; fall back to first available
-      const environmentCam = cameras.find(
-        (cam) =>
-          cam.label.toLowerCase().includes("back") ||
-          cam.label.toLowerCase().includes("rear") ||
-          cam.label.toLowerCase().includes("environment"),
-      );
-      const cameraId = environmentCam
-        ? { deviceId: { exact: environmentCam.id } }
-        : { facingMode: "environment" };
-
+      // Start the rear camera directly — skips the slow getCameras()
+      // enumeration round-trip. Non-"exact" facingMode lets browsers without
+      // a rear camera (e.g. desktop webcams) fall back to the default camera.
       await html5QrCode.start(
-        cameraId,
+        { facingMode: "environment" },
         {
           fps: 10,
           qrbox: { width: 250, height: 250 },
-          aspectRatio: 1,
         },
         (decodedText: string) => {
           // Prevent duplicate callbacks from rapid re-scans
@@ -100,15 +98,16 @@ export default function BarcodeScannerModal({
           isScanningRef.current = true;
 
           // Call success handler
-          onScanSuccess(decodedText);
+          onScanSuccessRef.current(decodedText);
 
           // The parent will call onClose, which triggers stopCamera via useEffect
         },
         // Ignore scan errors (e.g., partial reads, blurry frames)
         () => {},
       );
-    } catch (err: any) {
-      const message = err?.message || String(err);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : String(err);
       if (
         message.includes("NotAllowedError") ||
         message.includes("Permission denied") ||
@@ -128,7 +127,7 @@ export default function BarcodeScannerModal({
     } finally {
       setInitializing(false);
     }
-  }, [onScanSuccess, stopCamera]);
+  }, [stopCamera]);
 
   // ── React to isOpen changes ────────────────────────────────────────────
   useEffect(() => {

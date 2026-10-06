@@ -11,18 +11,32 @@ import {
 
 // Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
+// Roles that are NOT staff accounts: DRIVER accounts are managed on /drivers
+// (they own a DriverProfile) and MERCHANT accounts on /merchants (they own a
+// Merchant ledger). They must never appear in the employees list.
+const NON_EMPLOYEE_ROLES = ["DRIVER", "MERCHANT"] as const;
+
 // Helper: read a string field from a FormData payload (empty → null)
 function formString(formData: FormData, key: string): string | null {
   const value = formData.get(key);
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-// GET /api/admin/users — Fetch all users (select fields)
+// GET /api/admin/users — Fetch staff accounts (ADMIN / EMPLOYEE / USER) for the
+// employees tab. Pass `?role=MERCHANT` to fetch merchant login accounts for the
+// merchants tab instead. DRIVER accounts are never returned here: they are
+// managed on /drivers, which owns the DriverProfile linked to those accounts.
 export async function GET(request: Request) {
   const auth = await requireServerPermission(request, "MANAGE_USERS");
   if (auth instanceof Response) return auth;
   try {
+    const roleFilter = new URL(request.url).searchParams.get("role");
+    const where =
+      roleFilter === "MERCHANT"
+        ? { role: "MERCHANT" }
+        : { role: { notIn: [...NON_EMPLOYEE_ROLES] } };
     const users = await prisma.user.findMany({
+      where,
       select: {
         id: true,
         username: true,
@@ -31,6 +45,8 @@ export async function GET(request: Request) {
         permissionGroupId: true,
         permissionGroup: { select: { id: true, name: true, permissions: true } },
         customPermissions: true,
+        // Linked seller ledger — shown on the merchants tab.
+        merchant: { select: { id: true, merchantId: true, merchantName: true } },
       },
       orderBy: { username: "asc" },
     });

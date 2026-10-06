@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Delivery System",
+  title: "Jet Delivery",
   description: "Logistics & Delivery Management Platform",
 };
 

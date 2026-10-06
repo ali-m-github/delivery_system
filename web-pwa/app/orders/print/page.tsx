@@ -121,7 +121,11 @@ function WaybillCard({ order }: { order: Order }) {
   const codLbp = Number(order.amountLbp) || 0;
   const packages = Number(order.packages) || 1;
   const address = (order.customerAddress || "").trim();
-  const notes = (order.notes || "").trim();
+  // Internal import markers (e.g. bulk Excel/CSV imports) are metadata, not
+  // merchant/user notes — never print them as Special Instructions.
+  const AUTO_IMPORT_NOTE = "Imported via Bulk Excel/CSV tool";
+  const rawNotes = (order.notes || "").trim();
+  const notes = rawNotes === AUTO_IMPORT_NOTE ? "" : rawNotes;
 
   return (
     <div

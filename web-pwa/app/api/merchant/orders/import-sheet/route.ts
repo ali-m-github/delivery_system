@@ -193,12 +193,49 @@ export async function POST(request: Request) {
     });
 
     // ── Step 5: Bulk insert with deduplication ──────────────────────────
+    // Drop in-sheet duplicates and rows whose tracking ID already exists, so
+    // the history entries written in Step 6 attach only to orders this import
+    // actually created (never to a pre-existing order with the same ID).
+    const seenOrderIds = new Set<string>();
+    const uniqueOrders = mappedOrders.filter((o) => {
+      if (seenOrderIds.has(o.orderId)) return false;
+      seenOrderIds.add(o.orderId);
+      return true;
+    });
+
+    const existingRows = await prisma.order.findMany({
+      where: { orderId: { in: uniqueOrders.map((o) => o.orderId) } },
+      select: { orderId: true },
+    });
+    const existingOrderIds = new Set(existingRows.map((r) => r.orderId));
+    const newOrders = uniqueOrders.filter((o) => !existingOrderIds.has(o.orderId));
+
     const result = await prisma.order.createMany({
-      data: mappedOrders,
+      data: newOrders,
       skipDuplicates: true,
     });
 
-    // ── Step 6: Return summary ──────────────────────────────────────────
+    // ── Step 6: Record creation history for the imported orders ─────────
+    // createMany cannot return ids, so re-resolve the created rows through
+    // their unique tracking IDs and write one creation entry per order,
+    // attributed to the importing merchant and tagged with the import source.
+    if (result.count > 0) {
+      const createdOrders = await prisma.order.findMany({
+        where: { orderId: { in: newOrders.map((o) => o.orderId) } },
+        select: { id: true },
+      });
+
+      await prisma.orderHistory.createMany({
+        data: createdOrders.map((o) => ({
+          orderId: o.id,
+          action: "Order Created (Imported via Google Sheets)",
+          location: "CP",
+          userId: user.id,
+        })),
+      });
+    }
+
+    // ── Step 7: Return summary ──────────────────────────────────────────
     return NextResponse.json(
       {
         success: true,

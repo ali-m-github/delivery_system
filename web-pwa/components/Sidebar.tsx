@@ -303,7 +303,7 @@ export default function Sidebar() {
         </span>
         {!isCollapsed && (
           <span className="text-base font-bold tracking-wide bg-gradient-to-r from-cyan-400 to-purple-500 bg-clip-text text-transparent whitespace-nowrap">
-            Delivery System
+            Jet Delivery
           </span>
         )}
       </div>

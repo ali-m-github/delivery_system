@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 
 interface HistoryDriver {
   id: string;
@@ -17,6 +18,13 @@ interface HistoryEntry {
   user?: { id: string; username: string; role?: string } | null;
   driver?: HistoryDriver | null;
   createdAt: string;
+}
+
+interface PayoutBatchInfo {
+  id: number;
+  batchReference: string;
+  createdAt: string;
+  merchantId: string;
 }
 
 interface OrderHistoryModalProps {
@@ -103,6 +111,7 @@ export default function OrderHistoryModal({
   const [history, setHistory] = useState<HistoryEntry[] | null>(
     hasSeed ? initialHistory : null,
   );
+  const [payoutBatch, setPayoutBatch] = useState<PayoutBatchInfo | null>(null);
   const [loading, setLoading] = useState(!hasSeed);
   const [error, setError] = useState(false);
 
@@ -118,13 +127,14 @@ export default function OrderHistoryModal({
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
-      .then((data: { history?: HistoryEntry[] }) => {
+      .then((data: { history?: HistoryEntry[]; payoutBatch?: PayoutBatchInfo | null }) => {
         if (cancelled) return;
         if (Array.isArray(data.history)) {
           setHistory(data.history);
         } else {
           setHistory([]);
         }
+        setPayoutBatch(data.payoutBatch ?? null);
         setLoading(false);
       })
       .catch(() => {
@@ -171,6 +181,18 @@ export default function OrderHistoryModal({
             {payoutReference && (
               <p className="text-xs text-cyan-400 mt-0.5 font-mono">
                 Payout: {payoutReference}
+              </p>
+            )}
+            {payoutBatch && (
+              <p className="text-xs text-amber-400 mt-0.5 font-mono">
+                Paid in Payout Batch:{" "}
+                <Link
+                  href={`/merchants/${payoutBatch.merchantId}/payouts/${payoutBatch.id}`}
+                  className="underline decoration-amber-400/40 hover:text-amber-300 hover:decoration-amber-300 transition-colors"
+                  title="Open payout batch"
+                >
+                  {payoutBatch.batchReference}
+                </Link>
               </p>
             )}
             <p className="text-xs text-gray-500 mt-0.5">

@@ -336,10 +336,10 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
           </div>
         </div>
 
-        {/* ── Section 2: Adjustments Ledger ── */}
+        {/* ── Section 2: Payout Adjustments ── */}
         <div className="mb-6">
           <h2 className="text-white font-semibold text-sm uppercase tracking-wider mb-4 border-b border-white/10 pb-2">
-            Adjustments Ledger
+            Payout Adjustments
           </h2>
           {batch.adjustments.length === 0 ? (
             <div className="bg-[#121824] border border-white/5 rounded-xl p-6 text-center text-gray-600 text-sm">

@@ -114,6 +114,7 @@ interface Order {
   zoneId: string;
   zone: { id: string; name: string } | null;
   hasExchange: boolean;
+  packages?: number;
   openParcelAllowed?: boolean;
   /** True when a "<orderId>-Exchange" proof order already exists for this order. */
   exchangeExists?: boolean;
@@ -361,6 +362,20 @@ const EXPORT_COLUMNS: {
     value: (o) => formatDDMMYYYY(o.deliveredAt || ""),
   },
   {
+    key: "packages",
+    label: "Packages",
+    header: "Packages",
+    width: 10,
+    value: (o) => o.packages ?? 1,
+  },
+  {
+    key: "exchange",
+    label: "Exchange",
+    header: "Exchange",
+    width: 12,
+    value: (o) => (o.hasExchange ? "Yes" : "No"),
+  },
+  {
     key: "notes",
     label: "Notes",
     header: "Notes",
@@ -373,6 +388,51 @@ const EXPORT_COLUMNS: {
     header: "Payout Ref",
     width: 20,
     value: (o) => o.driverPayout?.payoutReference || "",
+  },
+];
+
+// ─── Libanex export template ─────────────────────────────────────────────────
+// Fixed column set and order required by the Libanex partner site. Selecting
+// this template exports only these columns, in this exact order, with the
+// headers spelled exactly as their system expects.
+const LIBANEX_TEMPLATE: {
+  key: string;
+  header: string;
+  width: number;
+  value: (order: Order) => string | number;
+}[] = [
+  { key: "orderId", header: "Order Id", width: 15, value: (o) => o.orderId },
+  { key: "usd", header: "Amount$", width: 12, value: (o) => o.amountUsd ?? 0 },
+  {
+    key: "customer",
+    header: "Customer",
+    width: 25,
+    value: (o) => o.customerName,
+  },
+  {
+    key: "address",
+    header: "Address",
+    width: 35,
+    value: (o) => o.customerAddress,
+  },
+  {
+    key: "phone",
+    header: "Cust Telephone",
+    width: 18,
+    value: (o) => o.customerPhone,
+  },
+  { key: "lbp", header: "Amt LL", width: 15, value: (o) => o.amountLbp ?? 0 },
+  {
+    key: "exchange",
+    header: "Exch",
+    width: 8,
+    value: (o) => (o.hasExchange ? "Yes" : "No"),
+  },
+  {
+    key: "packages",
+    header: "Packages",
+    width: 10,
+    value: (o) => o.packages ?? 1,
   },
 ];
 
@@ -676,7 +736,7 @@ function OrdersPageInner() {
             openParcelAllowed: false,
             extraShipping: "0",
             packages: "1",
-            notes: "Imported via Bulk Excel/CSV tool",
+            importSource: "bulk-csv",
             dateReceived: parsedDate,
           }),
         });
@@ -878,6 +938,21 @@ function OrdersPageInner() {
     setRwdPage(1);
   }, [rwdSearchTerm]);
 
+  // Reset "all" tab pagination whenever its server-side filters change. The API
+  // paginates this tab (skip/take), so a stale page index would request a
+  // window past the end of the (now smaller) filtered result set and render
+  // an empty table.
+  useEffect(() => {
+    setAllPage(1);
+  }, [searchTerm, locationFilter, dateFilter, showArchived]);
+
+  // Clamp the page index when the result set shrinks (e.g. after a mutation
+  // or archive toggle) so the API is never asked for a window past the end.
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(totalOrders / allItemsPerPage));
+    if (allPage > totalPages) setAllPage(totalPages);
+  }, [totalOrders, allItemsPerPage, allPage]);
+
   // ── Bulk Zone Reassignment State ──
   const [bulkTargetZoneId, setBulkTargetZoneId] = useState<string>("");
 
@@ -922,7 +997,32 @@ function OrdersPageInner() {
         params.search = searchTerm.trim();
       }
       if (locationFilter !== "ALL") params.location = locationFilter;
-      if (dateFilter) params.dateFrom = dateFilter;
+      // Bound the date filter to a single UTC day so the server-side window
+      // matches the client-side exact-day filter (and the page counts).
+      if (dateFilter) {
+        params.dateFrom = dateFilter;
+        params.dateTo = `${dateFilter}T23:59:59.999Z`;
+      }
+    } else if (!params) {
+      // Non-"all" tabs: rebuild the same server-side filters the tab-switch
+      // effect uses. Without this, a no-arg refetch after a mutation (e.g.
+      // "Move to returns warehouse") silently falls back to an unfiltered
+      // 500-order fetch, and the client-side tab filter then only finds the
+      // few matching orders inside that recent window.
+      if (currentTab === "rwd") {
+        params = {
+          skip: "0",
+          take: "5000",
+          location: "RETURN",
+          financialStatus: "RWD,EWD",
+        };
+      } else if (currentTab === "cp") {
+        params = { skip: "0", take: "5000", location: "CP" };
+      } else if (currentTab === "returns") {
+        params = { skip: "0", take: "5000", location: "RETURN" };
+      } else {
+        params = { skip: "0", take: "500" };
+      }
     }
 
     // On the "all" tab, always request the currently-viewed set (active vs
@@ -1032,17 +1132,25 @@ function OrdersPageInner() {
   useEffect(() => {
     if (currentTab === "all") {
       // For comma-separated (multi-order) searches, fetch ALL orders (up to API max)
-      // so the client-side filter can match orders across all pages.
+      // so the client-side filter can match orders across all pages. Every other
+      // All-tab view is paginated server-side: the API must receive the real
+      // offset for the clicked page, otherwise it keeps returning page 1 and the
+      // client-side slice finds nothing past the fetched window ("no orders").
       const isCommaSearch = searchTerm.includes(",");
       const params: Record<string, string> = {
-        skip: "0",
+        skip: isCommaSearch ? "0" : String((allPage - 1) * allItemsPerPage),
         take: isCommaSearch ? "5000" : String(allItemsPerPage),
       };
       if (searchTerm.trim() && !isCommaSearch) {
         params.search = searchTerm.trim();
       }
       if (locationFilter !== "ALL") params.location = locationFilter;
-      if (dateFilter) params.dateFrom = dateFilter;
+      // Bound the date filter to a single UTC day so the server-side window
+      // matches the client-side exact-day filter (and the page counts).
+      if (dateFilter) {
+        params.dateFrom = dateFilter;
+        params.dateTo = `${dateFilter}T23:59:59.999Z`;
+      }
       fetchOrders(params);
     } else if (currentTab === "rwd") {
       // RWD/EWD tab: filter server-side to avoid missing orders beyond the fetch limit
@@ -1746,12 +1854,19 @@ function OrdersPageInner() {
 
   // ── Paginated values (for count displays) ──
   const paginatedAll = useMemo(() => {
-    // Use allFiltered for the "all" tab so client-side search filters apply
-    return allFiltered.slice(
-      (allPage - 1) * allItemsPerPage,
-      allPage * allItemsPerPage,
-    );
-  }, [allFiltered, allPage, allItemsPerPage, currentTab]);
+    // The API already returns exactly the current page window (skip/take) for
+    // the All tab, so slicing again would read past the fetched window and
+    // render an empty page. Comma-separated searches are the exception: they
+    // fetch the full set (take=5000) and are filtered client-side, so they
+    // still need client-side slicing.
+    if (searchTerm.includes(",")) {
+      return allFiltered.slice(
+        (allPage - 1) * allItemsPerPage,
+        allPage * allItemsPerPage,
+      );
+    }
+    return allFiltered;
+  }, [allFiltered, allPage, allItemsPerPage, searchTerm]);
 
   const zoneItems = useMemo(() => {
     if (!activeWarehouseZone) return [];
@@ -5718,6 +5833,66 @@ function OrdersPageInner() {
                   );
                 })}
               </div>
+
+              <button
+                onClick={async () => {
+                  const ExcelJS = (await import("exceljs")).default;
+                  const workbook = new ExcelJS.Workbook();
+                  const worksheet = workbook.addWorksheet("Orders");
+
+                  // Fixed template columns — no user selection involved
+                  worksheet.columns = LIBANEX_TEMPLATE.map((c) => ({
+                    header: c.header,
+                    key: c.key,
+                    width: c.width,
+                  }));
+
+                  const exportData = orders.filter((o) =>
+                    selectedOrderIds.includes(o.id),
+                  );
+                  exportData.forEach((order) => {
+                    const row: Record<string, string | number> = {};
+                    LIBANEX_TEMPLATE.forEach((c) => {
+                      row[c.key] = c.value(order);
+                    });
+                    worksheet.addRow(row);
+                  });
+
+                  // Apply borders and centering to all cells
+                  worksheet.eachRow((row, rowNumber) => {
+                    row.eachCell((cell) => {
+                      cell.alignment = {
+                        vertical: "middle",
+                        horizontal: "center",
+                      };
+                      cell.border = {
+                        top: { style: "thin" },
+                        left: { style: "thin" },
+                        bottom: { style: "thin" },
+                        right: { style: "thin" },
+                      };
+                      if (rowNumber === 1) cell.font = { bold: true };
+                    });
+                  });
+
+                  const buffer = await workbook.xlsx.writeBuffer();
+                  const blob = new Blob([buffer], {
+                    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                  });
+                  const link = document.createElement("a");
+                  link.href = URL.createObjectURL(blob);
+                  link.download = "Libanex_Orders_Export.xlsx";
+                  link.click();
+
+                  setExcelModalOpen(false);
+                }}
+                className="w-full mb-4 px-4 py-2.5 text-sm font-semibold rounded-xl
+                           bg-emerald-500/20 text-emerald-300 border border-emerald-500/30
+                           hover:bg-emerald-500/30 hover:shadow-[0_0_16px_rgba(16,185,129,0.3)]
+                           transition-all duration-200"
+              >
+                📊 Libanex Export Template
+              </button>
 
               <div className="flex gap-3">
                 <button

@@ -6,6 +6,7 @@ import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { hasPermission } from "@/lib/permissions";
 import ProfitTab from "@/components/admin/ProfitTab";
 import EmployeesTab from "@/components/admin/EmployeesTab";
+import MerchantsTab from "@/components/admin/MerchantsTab";
 import PermissionGroupsTab from "@/components/admin/PermissionGroupsTab";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -24,10 +25,17 @@ interface Zone {
 }
 
 
-type Tab = "employees" | "zones" | "drivers" | "permission-groups" | "profit";
+type Tab =
+  | "employees"
+  | "merchants"
+  | "zones"
+  | "drivers"
+  | "permission-groups"
+  | "profit";
 
 const VALID_TABS: Tab[] = [
   "employees",
+  "merchants",
   "zones",
   "drivers",
   "permission-groups",
@@ -80,6 +88,7 @@ function AdminContent() {
 
   const allTabs: { key: Tab; label: string }[] = [
     { key: "employees", label: "Employees" },
+    { key: "merchants", label: "Merchants" },
     { key: "zones", label: "Zones" },
     { key: "drivers", label: "Drivers" },
     { key: "permission-groups", label: "Permission Groups" },
@@ -134,6 +143,8 @@ function AdminContent() {
         {/* ── Tab Content ── */}
         {activeTab === "employees" ? (
           <EmployeesTab />
+        ) : activeTab === "merchants" ? (
+          <MerchantsTab />
         ) : activeTab === "zones" ? (
           <ZonesTab />
         ) : activeTab === "drivers" ? (
