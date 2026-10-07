@@ -32,8 +32,11 @@ export async function GET(request: NextRequest) {
 
   // Pagination defaults
   const skip = Math.max(0, parseInt(searchParams.get("skip") || "0", 10));
+  // Cap raised to 10000 so tab views that request the full un-pagined set
+  // (warehouse, returns, reports) never silently drop older undelivered
+  // orders. The "all" tab still paginates with its own skip/take.
   const take = Math.min(
-    5000,
+    10000,
     Math.max(1, parseInt(searchParams.get("take") || "500", 10)),
   );
 

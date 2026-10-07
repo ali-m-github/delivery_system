@@ -60,6 +60,9 @@ export default async function DriverPage() {
   };
 
   // ── Fetch warehouse orders from assigned zones ─────────────────────────
+  // No practical cap: a driver must see the FULL warehouse backlog for
+  // their zones, including old undelivered orders. (The cap matches the
+  // /api/orders route's maximum so both sides agree on the same set.)
   const warehouseOrders =
     assignedZoneIds.length > 0
       ? await prisma.order.findMany({
@@ -77,7 +80,7 @@ export default async function DriverPage() {
             },
           },
           orderBy: { createdAt: "desc" },
-          take: 500,
+          take: 10000,
         })
       : [];
 

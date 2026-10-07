@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import prisma from "@/lib/prisma";
 import { getSessionUser } from "@/lib/server-permissions";
+import { compareZoneNames } from "@/lib/zoneSort";
 import ZonesClient from "./ZonesClient";
 
 // ─── Server Component ─────────────────────────────────────────────────────────
@@ -16,9 +17,9 @@ export default async function ZonesPage() {
     redirect("/dashboard");
   }
 
-  const zones = await prisma.zone.findMany({
-    orderBy: { name: "asc" },
-  });
+  const zones = await prisma.zone.findMany();
+  // Natural sort so "Zone 2" comes before "Zone 10" (smallest → largest).
+  zones.sort((a, b) => compareZoneNames(a.name, b.name));
 
   return <ZonesClient zones={zones} />;
 }

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import SettingsModal from "./SettingsModal";
+import ThemeToggle from "./ThemeToggle";
 import { hasPermission } from "@/lib/permissions";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -414,6 +415,9 @@ export default function Sidebar() {
             </div>
           </div>
         )}
+
+        {/* ── Theme Toggle ── */}
+        <ThemeToggle variant="sidebar" isCollapsed={isCollapsed} />
 
         {/* ── Settings Button ── */}
         <button

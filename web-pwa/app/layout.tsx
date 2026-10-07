@@ -31,6 +31,21 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <head>
+        {/* Apply the persisted theme before hydration so there is no flash of dark theme. */}
+        <script
+          id="theme-init"
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  if (localStorage.getItem('jet-theme') === 'light') {
+                    document.documentElement.classList.add('light');
+                  }
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
         {/* Crypto polyfill — deferred to avoid blocking initial render.
             crypto.randomUUID() is natively supported in Chrome 74+, Firefox 76+, Safari 15+. */}
         <Script

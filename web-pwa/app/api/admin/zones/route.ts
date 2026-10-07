@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
+import { compareZoneNames } from "@/lib/zoneSort";
 
 // Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
@@ -20,8 +21,9 @@ export async function GET(request: Request) {
           },
         },
       },
-      orderBy: { name: "asc" },
     });
+    // Natural sort so "Zone 2" comes before "Zone 10" (smallest → largest).
+    zones.sort((a, b) => compareZoneNames(a.name, b.name));
     return NextResponse.json(zones);
   } catch (error) {
     console.error("Fetch Zones Error:", error);

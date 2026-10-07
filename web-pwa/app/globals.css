@@ -325,3 +325,189 @@ body {
     print-color-adjust: exact;
   }
 }
+
+/* ── Light theme ───────────────────────────────────────────────────────────
+   Dark is the default (no class on <html>). Adding class="light" to <html>
+   remaps the Tailwind v4 palette variables that every utility already
+   references (e.g. .text-gray-400 { color: var(--color-gray-400) }), which
+   flips the whole UI without touching components.
+   These rules are intentionally unlayered so they win over Tailwind's
+   layered utilities. */
+
+html.light {
+  color-scheme: light;
+
+  --background: #eef1f6;
+  --foreground: #0b1220;
+
+  /* "white" is the primary text/line color in the dark UI → becomes dark ink */
+  --color-white: #0b1220;
+
+  /* Neutral ramps inverted: dark-surface shades become light surfaces and
+     muted-text shades become dark text. */
+  --color-gray-100: #111827;
+  --color-gray-200: #1f2937;
+  --color-gray-300: #374151;
+  --color-gray-400: #4b5563;
+  --color-gray-500: #6b7280;
+  --color-gray-600: #9ca3af;
+  --color-gray-700: #d1d5db;
+  --color-gray-800: #e5e7eb;
+  --color-gray-900: #f3f4f6;
+  --color-gray-950: #f8fafc;
+
+  --color-slate-100: #0f172a;
+  --color-slate-200: #1e293b;
+  --color-slate-300: #334155;
+  --color-slate-400: #475569;
+  --color-slate-500: #64748b;
+  --color-slate-600: #94a3b8;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #f1f5f9;
+  --color-slate-950: #f8fafc;
+
+  /* Accent shades used as text/icons: darken so they stay legible on light bg.
+     Solid button shades (600+) are left mostly intact. */
+  --color-cyan-300: #0e7490;
+  --color-cyan-400: #0e7490;
+  --color-cyan-500: #0891b2;
+  --color-red-200: #dc2626;
+  --color-red-300: #dc2626;
+  --color-red-400: #dc2626;
+  --color-red-500: #dc2626;
+  --color-green-300: #15803d;
+  --color-green-400: #15803d;
+  --color-green-500: #16a34a;
+  --color-emerald-300: #047857;
+  --color-emerald-400: #047857;
+  --color-emerald-500: #059669;
+  --color-amber-200: #b45309;
+  --color-amber-300: #b45309;
+  --color-amber-400: #b45309;
+  --color-amber-500: #d97706;
+  --color-yellow-300: #a16207;
+  --color-yellow-400: #a16207;
+  --color-yellow-500: #ca8a04;
+  --color-purple-200: #7e22ce;
+  --color-purple-300: #7e22ce;
+  --color-purple-400: #7e22ce;
+  --color-orange-300: #c2410c;
+  --color-orange-400: #c2410c;
+  --color-blue-300: #1d4ed8;
+  --color-blue-400: #1d4ed8;
+  --color-sky-300: #0369a1;
+  --color-indigo-400: #4338ca;
+  --color-pink-400: #be185d;
+  --color-fuchsia-300: #a21caf;
+  --color-teal-400: #0f766e;
+  --color-violet-300: #6d28d9;
+}
+
+/* Keep genuinely-white surfaces (print pages) and black text intact */
+html.light .bg-white {
+  background-color: #ffffff;
+}
+
+/* Solid colored buttons/gradients keep white text: restore --color-white on
+   those elements so .text-white (and its descendants) resolve to #fff. */
+html.light
+  :is(
+    .bg-cyan-400,
+    .bg-cyan-500,
+    .bg-cyan-600,
+    .bg-emerald-500,
+    .bg-emerald-600,
+    .bg-red-500,
+    .bg-red-500\/90,
+    .bg-red-600,
+    .bg-amber-500,
+    .bg-amber-600,
+    .bg-yellow-500,
+    .bg-yellow-600,
+    .bg-green-500,
+    .bg-green-600,
+    .bg-purple-500,
+    .bg-purple-600,
+    .bg-purple-700,
+    .bg-orange-500,
+    .bg-orange-600,
+    .bg-blue-500,
+    .bg-blue-600,
+    .bg-blue-700,
+    .bg-blue-800,
+    .from-cyan-400,
+    .from-cyan-500,
+    .from-purple-400,
+    .from-purple-500,
+    .from-amber-400,
+    .from-amber-500,
+    .from-red-400,
+    .from-red-500,
+    .from-emerald-500,
+    .from-green-400,
+    .from-green-500,
+    .from-green-600,
+    .from-orange-500,
+    .via-cyan-400,
+    .to-cyan-500,
+    .to-cyan-600,
+    .to-purple-500,
+    .to-purple-600,
+    .to-amber-600,
+    .to-red-500,
+    .to-red-600,
+    .to-emerald-500,
+    .to-emerald-600,
+    .to-green-600,
+    .to-orange-600
+  ) {
+  --color-white: #ffffff;
+}
+
+/* Hardcoded dark hex utilities (arbitrary values compile to static colors,
+   so they need explicit overrides). Case-sensitive, matching the source. */
+html.light .bg-\[\#0B0F17\] {
+  background-color: #eef1f6;
+}
+html.light .bg-\[\#0B0F17\]\/95 {
+  background-color: rgba(238, 241, 246, 0.95);
+}
+html.light .bg-\[\#0B0F17\]\/50 {
+  background-color: rgba(238, 241, 246, 0.5);
+}
+html.light .bg-\[\#121824\] {
+  background-color: #ffffff;
+}
+html.light .bg-\[\#111318\],
+html.light .bg-\[\#111620\],
+html.light .bg-\[\#10131e\] {
+  background-color: #f8fafc;
+}
+html.light .bg-\[\#0a0f1a\] {
+  background-color: #e8edf4;
+}
+html.light .bg-\[\#0b1329\],
+html.light .bg-\[\#1a2235\] {
+  background-color: #eef2f7;
+}
+html.light .bg-\[\#232529\],
+html.light .bg-\[\#1a1a1a\] {
+  background-color: #e5e7eb;
+}
+html.light .border-b-\[\#121824\] {
+  border-bottom-color: #e2e8f0;
+}
+html.light .border-\[\#0B0F17\] {
+  border-color: #d7dce5;
+}
+html.light .to-\[\#121824\] {
+  --tw-gradient-to: #ffffff;
+}
+
+/* Printing must stay on white paper regardless of theme */
+@media print {
+  html.light {
+    --color-white: #ffffff;
+  }
+}

@@ -1020,8 +1020,16 @@ function OrdersPageInner() {
         params = { skip: "0", take: "5000", location: "CP" };
       } else if (currentTab === "returns") {
         params = { skip: "0", take: "5000", location: "RETURN" };
+      } else if (currentTab === "warehouse") {
+        // Warehouse tab: the zone sub-tabs and counts are computed
+        // client-side from the fetched set, so it must contain the FULL
+        // warehouse population — a 500-order window silently hides older
+        // undelivered orders (e.g. zone 99 backlog).
+        params = { skip: "0", take: "5000", location: "WAREHOUSE" };
       } else {
-        params = { skip: "0", take: "500" };
+        // Reports / order-entry tabs: derive stats from the complete order
+        // set so per-day breakdowns and lookups never miss older orders.
+        params = { skip: "0", take: "5000" };
       }
     }
 
@@ -1171,10 +1179,17 @@ function OrdersPageInner() {
         take: "5000",
         location: "RETURN",
       });
+    } else if (currentTab === "warehouse") {
+      // Warehouse tab: fetch the full warehouse set server-side. The zone
+      // sub-tab counts are computed client-side, so anything less than the
+      // complete WAREHOUSE population under-reports zones with old
+      // undelivered backlog (the 500-order window is sorted by createdAt).
+      fetchOrders({ skip: "0", take: "5000", location: "WAREHOUSE" });
     } else {
-      // For non-"all" tabs (warehouse, reports, order-entry, etc.),
-      // fetch orders with a reasonable limit
-      fetchOrders({ skip: "0", take: "500" });
+      // For non-"all" tabs (reports, order-entry, etc.), fetch the full
+      // order set so stats and lookups cover every order, not just the
+      // most recent window.
+      fetchOrders({ skip: "0", take: "5000" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

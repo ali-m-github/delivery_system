@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import Sidebar from "./Sidebar";
 import RouteGuard from "./RouteGuard";
+import ThemeToggle from "./ThemeToggle";
 
 export default function MainLayout({
   children,
@@ -12,10 +13,17 @@ export default function MainLayout({
   const pathname = usePathname();
   const isTrackPage = pathname.startsWith("/track");
   const isPrintPage = pathname.startsWith("/print");
+  // Pages that render without the sidebar still need a theme switcher
+  const needsFloatingToggle =
+    isTrackPage ||
+    pathname.startsWith("/login") ||
+    pathname.startsWith("/signup") ||
+    pathname.startsWith("/driver");
 
   return (
     <>
       {!isTrackPage && !isPrintPage && <Sidebar />}
+      {needsFloatingToggle && <ThemeToggle variant="floating" />}
       <main
         className={
           isTrackPage || isPrintPage

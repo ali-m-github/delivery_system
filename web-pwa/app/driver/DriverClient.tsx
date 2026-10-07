@@ -746,8 +746,9 @@ export default function DriverClient({
     try {
       // Fetch current order to append to existing notes. The endpoint
       // returns { data, meta } (and now only this driver's own orders), so
-      // normalize the shape before looking the order up.
-      const existingRes = await fetch(`/api/orders`);
+      // normalize the shape before looking the order up. Request a large
+      // page so older orders are never missing from the lookup window.
+      const existingRes = await fetch(`/api/orders?take=5000`);
       const existingJson: unknown = await existingRes.json();
       const allOrders: Order[] = Array.isArray(existingJson)
         ? (existingJson as Order[])
@@ -796,8 +797,9 @@ export default function DriverClient({
     try {
       // Fetch current order to append to existing notes. The endpoint
       // returns { data, meta } (and now only this driver's own orders), so
-      // normalize the shape before looking the order up.
-      const existingRes = await fetch(`/api/orders`);
+      // normalize the shape before looking the order up. Request a large
+      // page so older orders are never missing from the lookup window.
+      const existingRes = await fetch(`/api/orders?take=5000`);
       const existingJson: unknown = await existingRes.json();
       const allOrders: Order[] = Array.isArray(existingJson)
         ? (existingJson as Order[])
