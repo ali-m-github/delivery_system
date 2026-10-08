@@ -45,7 +45,9 @@ interface Batch {
   grossAdvance: number;
   deductedReturns: number;
   netPaid: number;
-  profit: number;
+  // Company-only figure: stripped by the merchant-facing route, so it is
+  // optional here and only rendered when present.
+  profit?: number;
   createdAt: string;
   merchant: { id: string; merchantName: string; merchantId: number };
   orders: BatchOrder[];
@@ -78,7 +80,18 @@ function escapeCSV(value: string): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function BatchDetailClient({ batch }: { batch: Batch }) {
+export default function BatchDetailClient({
+  batch,
+  merchantView = false,
+}: {
+  batch: Batch;
+  /**
+   * When true the page is rendered for the signed-in merchant: back/print
+   * targets switch to merchant-safe routes and the company-only profit
+   * figure is never shown.
+   */
+  merchantView?: boolean;
+}) {
   const router = useRouter();
 
   // ── Row selection state ──
@@ -186,9 +199,13 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
       alert("Please select at least one order to print.");
       return;
     }
-    const url = `/print/orders?ids=${selectedOrderIds.join(",")}`;
+    // Merchant-facing prints use "simple" mode so company-only figures
+    // (driver commission, net payout, profit) never leak onto the document.
+    const url = `/print/orders?ids=${selectedOrderIds.join(",")}${
+      merchantView ? "&simple=true" : ""
+    }`;
     window.open(url, "_blank");
-  }, [selectedOrderIds]);
+  }, [selectedOrderIds, merchantView]);
 
   return (
     <div className="min-h-screen bg-[#0B0F17] text-white p-6 font-sans">
@@ -197,10 +214,18 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
         <div className="flex justify-between items-start mb-6 border-b border-white/10 pb-6">
           <div>
             <button
-              onClick={() => router.push(`/merchants/${batch.merchant.id}`)}
+              onClick={() =>
+                router.push(
+                  merchantView
+                    ? "/merchant?tab=statements"
+                    : `/merchants/${batch.merchant.id}`,
+                )
+              }
               className="text-gray-500 hover:text-gray-300 text-xs mb-2 transition-colors"
             >
-              ← Back to Seller Profile
+              {merchantView
+                ? "← Back to Statements"
+                : "← Back to Seller Profile"}
             </button>
             <h1 className="text-3xl font-bold text-white">
               Payout Batch Details
@@ -220,7 +245,9 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
             <button
               onClick={() =>
                 window.open(
-                  `/print/merchants/${batch.merchant.id}/payouts/${batch.id}`,
+                  merchantView
+                    ? `/print/merchant/payouts/${batch.id}`
+                    : `/print/merchants/${batch.merchant.id}/payouts/${batch.id}`,
                   "_blank",
                 )
               }
@@ -329,9 +356,11 @@ export default function BatchDetailClient({ batch }: { batch: Batch }) {
                 {batch.netPaid >= 0 ? "" : "−"}$
                 {Math.abs(batch.netPaid).toFixed(2)}
               </p>
-              <p className="text-gray-600 text-[10px] mt-1">
-                Profit: ${batch.profit.toFixed(2)}
-              </p>
+              {batch.profit != null && (
+                <p className="text-gray-600 text-[10px] mt-1">
+                  Profit: ${batch.profit.toFixed(2)}
+                </p>
+              )}
             </div>
           </div>
         </div>

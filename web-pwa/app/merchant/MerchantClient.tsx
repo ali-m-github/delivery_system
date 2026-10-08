@@ -617,6 +617,12 @@ export default function MerchantClient({
     window.open(`/print/merchant/payouts/${batch.id}`, "_blank");
   };
 
+  // Open the full payout batch detail page (same view admins use, scoped to
+  // this merchant and with company-only figures stripped server-side).
+  const openBatchDetails = (batch: CashPayoutBatch) => {
+    router.push(`/merchant/payouts/${batch.id}`);
+  };
+
   // Open the merchant-safe printable invoice for a statement.
   const openStatementInvoice = (payout: MerchantPayout) => {
     window.open(`/print/merchant/statements/${payout.id}`, "_blank");
@@ -2003,6 +2009,13 @@ export default function MerchantClient({
                                       className="flex items-center justify-end gap-1.5"
                                       onClick={(e) => e.stopPropagation()}
                                     >
+                                      <button
+                                        onClick={() => openBatchDetails(batch)}
+                                        className="px-2.5 py-1.5 text-[11px] font-bold bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 rounded hover:bg-cyan-500/25 transition-colors"
+                                        title="View full payout batch details"
+                                      >
+                                        🔍 Details
+                                      </button>
                                       <button
                                         onClick={() => openBatchInvoice(batch)}
                                         className="px-2.5 py-1.5 text-[11px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 rounded hover:bg-amber-500/25 transition-colors"
