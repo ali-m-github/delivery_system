@@ -496,7 +496,11 @@ function OrdersPageInner() {
   const [searchTerm, setSearchTerm] = useState("");
   const [missingTokens, setMissingTokens] = useState<string[]>([]);
   const [locationFilter, setLocationFilter] = useState<string>("ALL");
-  const [dateFilter, setDateFilter] = useState("");
+  // Seed the date filter from ?dateFrom= so deep links (e.g. the statistics
+  // day drill-down "View Orders" button) pre-filter to a specific day.
+  const [dateFilter, setDateFilter] = useState(
+    () => searchParams.get("dateFrom") ?? "",
+  );
 
   // ── Returns tab filter states ──
   const [returnDate, setReturnDate] = useState("");

@@ -1,8 +1,9 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script"; // 1. Import Next.js Script
 import "./globals.css";
 import MainLayout from "@/components/MainLayout";
+import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,9 +15,23 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+};
+
 export const metadata: Metadata = {
   title: "Jet Delivery",
   description: "Logistics & Delivery Management Platform",
+  applicationName: "Jet Delivery",
+  // app/manifest.json is served at /manifest.json; linked explicitly so the
+  // <link rel="manifest"> tag is always emitted regardless of file conventions.
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Jet Delivery",
+  },
 };
 
 export default function RootLayout({
@@ -84,6 +99,7 @@ export default function RootLayout({
         suppressHydrationWarning
       >
         <MainLayout>{children}</MainLayout>
+        <ServiceWorkerRegister />
       </body>
     </html>
   );

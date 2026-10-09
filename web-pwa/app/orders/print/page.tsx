@@ -116,6 +116,7 @@ function CheckboxCell({
 // ─── Waybill card — one 6×4 inch label per order (matches Jett-Delivery-Waybill-6x4.pdf) ──
 function WaybillCard({ order }: { order: Order }) {
   const merchantName = order.merchant?.merchantName || "—";
+  const merchantPhone = order.merchant?.phone || "—";
   const logoUrl = order.merchant?.logoUrl || null;
   const codUsd = Number(order.amountUsd) || 0;
   const codLbp = Number(order.amountLbp) || 0;
@@ -278,7 +279,12 @@ function WaybillCard({ order }: { order: Order }) {
       <div style={{ ...B(["r", "b"]), overflow: "hidden" }}>
         <div style={TITLE_BAND}>SELLER / MERCHANT</div>
         <div style={BODY}>
-          <span style={{ fontWeight: 700 }}>Name:</span> {merchantName}
+          <div>
+            <span style={{ fontWeight: 700 }}>Name:</span> {merchantName}
+          </div>
+          <div style={{ marginTop: 3 }}>
+            <span style={{ fontWeight: 700 }}>Phone:</span> {merchantPhone}
+          </div>
         </div>
       </div>
       <div style={{ ...B(["b"]), overflow: "hidden" }}>

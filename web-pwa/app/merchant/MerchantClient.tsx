@@ -2356,7 +2356,7 @@ export default function MerchantClient({
             </div>
 
             {/* Modal Table (Allows expansion on print) */}
-            <div className="overflow-y-auto p-6 print:overflow-visible print:max-h-none">
+            <div className="overflow-y-auto overflow-x-auto p-6 print:overflow-visible print:max-h-none">
               {selectedStatement.orders &&
               selectedStatement.orders.length > 0 ? (
                 <table className="w-full text-sm text-left">

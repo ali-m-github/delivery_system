@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "delivery.jett.twa",
+    "sha256_cert_fingerprints": ["55:64:C0:4C:36:EC:AB:A1:F4:F3:5D:BD:5E:44:FF:D6:E9:84:1D:AD:58:90:E5:D2:23:AF:CC:89:15:E4:C5:1F"]
+  }
+}]

@@ -39,6 +39,11 @@ export const SYSTEM_PERMISSIONS = [
   // to create exchange orders without granting the full returned-order
   // rollback power.
   "ACTION_ORDER_EXCHANGE",
+  // ── Granular Statistics / Reports RBAC ──
+  // Grants access to the /statistics page (reports & dashboards). ADMINS
+  // always have access; assign this to employee Permission Groups or per-user
+  // Custom Permissions to grant it to staff.
+  "VIEW_STATISTICS",
 ] as const;
 
 export type SystemPermission = (typeof SYSTEM_PERMISSIONS)[number];
@@ -176,6 +181,11 @@ export const PERMISSION_GROUPS: {
     label: "Zones",
     permissions: ["MANAGE_ZONES", "ZONES_MANAGE"],
   },
+  {
+    key: "reports",
+    label: "Reports & Statistics",
+    permissions: ["VIEW_STATISTICS"],
+  },
 ];
 
 export const PERMISSION_LABELS: Record<SystemPermission, string> = {
@@ -201,6 +211,7 @@ export const PERMISSION_LABELS: Record<SystemPermission, string> = {
   USERS_MANAGE: "User Management",
   MANAGE_ZONES: "Manage Zones",
   ZONES_MANAGE: "Zone Management",
+  VIEW_STATISTICS: "View Statistics & Reports",
 };
 
 export const PERMISSION_DESCRIPTIONS: Record<SystemPermission, string> = {
@@ -227,6 +238,7 @@ export const PERMISSION_DESCRIPTIONS: Record<SystemPermission, string> = {
   USERS_MANAGE: "User administration actions.",
   MANAGE_ZONES: "Create and manage delivery zones, including auto-assignment and training.",
   ZONES_MANAGE: "Zone management actions (overrides, per-zone editing).",
+  VIEW_STATISTICS: "Open the Statistics page and view reports & dashboards.",
 };
 
 /**

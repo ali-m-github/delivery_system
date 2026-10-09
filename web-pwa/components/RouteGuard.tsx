@@ -20,6 +20,7 @@ const ROUTE_PERMISSIONS: { prefix: string; permission: string }[] = [
   { prefix: "/admin/drivers", permission: "MANAGE_DRIVERS" },
   { prefix: "/admin", permission: "MANAGE_USERS" },
   { prefix: "/merchants", permission: "MANAGE_MERCHANTS" },
+  { prefix: "/statistics", permission: "VIEW_STATISTICS" },
 ];
 
 function requiredPermissionForPath(pathname: string): string | null {

@@ -321,7 +321,7 @@ export default function ProfitTab() {
           No profit data found for the selected period.
         </div>
       ) : (
-        <div className="bg-white/[0.02] border border-white/10 rounded-xl overflow-hidden">
+        <div className="w-full overflow-x-auto bg-white/[0.02] border border-white/10 rounded-xl">
           <table className="w-full text-sm">
             <thead className="bg-white/[0.03] border-b border-white/10 text-gray-400 text-[11px] uppercase">
               <tr>
@@ -393,7 +393,7 @@ export default function ProfitTab() {
             is kept only for the admin panel — it is hidden from all
             driver-facing documents.
           </p>
-          <div className="bg-white/[0.02] border border-white/10 rounded-xl overflow-hidden">
+          <div className="w-full overflow-x-auto bg-white/[0.02] border border-white/10 rounded-xl">
             <table className="w-full text-sm">
               <thead className="bg-white/[0.03] border-b border-white/10 text-gray-400 text-[11px] uppercase">
                 <tr>

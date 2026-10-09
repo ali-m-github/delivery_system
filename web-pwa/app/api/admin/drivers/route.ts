@@ -52,7 +52,41 @@ export async function GET(request: Request) {
       orderBy: { lastName: "asc" },
     });
 
-    return NextResponse.json(drivers, { status: 200 });
+    // Per-driver counts of currently driver-held orders, matching the
+    // /drivers/[id] profile counters exactly:
+    //   Dr = ASSIGNED / WITH_DRIVER (regular batch)
+    //   Tr = ASSIGNED_TR (transit batch)
+    // Archived orders carry location "Archive" and are excluded by the
+    // location filter. One grouped query for the whole fleet — no per-driver
+    // round-trips.
+    const heldCounts = await prisma.order.groupBy({
+      by: ["driverId", "location"],
+      where: {
+        driverId: { in: drivers.map((d) => d.id) },
+        location: { in: ["ASSIGNED", "WITH_DRIVER", "ASSIGNED_TR"] },
+      },
+      _count: { _all: true },
+    });
+
+    const countByDriver = new Map<string, { dr: number; tr: number }>();
+    for (const row of heldCounts) {
+      if (!row.driverId) continue;
+      const entry = countByDriver.get(row.driverId) ?? { dr: 0, tr: 0 };
+      if (row.location === "ASSIGNED_TR") {
+        entry.tr += row._count._all;
+      } else {
+        entry.dr += row._count._all;
+      }
+      countByDriver.set(row.driverId, entry);
+    }
+
+    const driversWithCounts = drivers.map((d) => ({
+      ...d,
+      drCount: countByDriver.get(d.id)?.dr ?? 0,
+      trCount: countByDriver.get(d.id)?.tr ?? 0,
+    }));
+
+    return NextResponse.json(driversWithCounts, { status: 200 });
   } catch (error) {
     console.error("GET /api/admin/drivers Error:", error);
     return NextResponse.json(

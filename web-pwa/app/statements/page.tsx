@@ -218,7 +218,7 @@ export default function StatementsPage() {
               No statements found.
             </div>
           ) : (
-            <div className="bg-[#121824] border border-white/5 rounded-xl overflow-hidden">
+            <div className="w-full overflow-x-auto bg-[#121824] border border-white/5 rounded-xl">
               <table className="w-full text-sm text-left">
                 <thead className="bg-white/[0.03] border-b border-white/10 text-gray-400 text-[11px] uppercase">
                   <tr>

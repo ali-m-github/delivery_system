@@ -315,6 +315,14 @@ model Order {
   waybillUrl       String?
   trackToken       String?        @unique // 8-digit random token for public tracking link: /track/<token>/<orderId>
 
+  // --- Customer delivery actions (set from the public tracking link) ---
+  // Only the holder of the tracking token may update these, and never
+  // once the order is DELIVERED/CANCELLED (enforced in the API layer).
+  latitude           Float?
+  longitude          Float?
+  deliveryPreference String? // e.g. "Leave with concierge", "Call before arrival", "Doorstep"
+  deliveryNotes      String? // Entrance details, gate codes, etc.
+
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   dispatchedAt     DateTime?

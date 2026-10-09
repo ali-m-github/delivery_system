@@ -55,6 +55,10 @@ interface DriverRow {
   username?: string;
   user?: { username: string } | null;
   zoneRates?: DriverZoneRateRow[];
+  // Currently driver-held order counts (Dr = ASSIGNED/WITH_DRIVER,
+  // Tr = ASSIGNED_TR), provided by GET /api/admin/drivers.
+  drCount?: number;
+  trCount?: number;
 }
 
 interface SellerRateRow {
@@ -296,35 +300,33 @@ export default function DriversDirectoryPage() {
     );
   };
 
-  // ── Concurrent initial fetch ──
+  // ── Initial fetch (registry only) ──
+  // The payout ledger is intentionally NOT fetched here: it is the heaviest
+  // payload on this page (the full ledger with nested orders) and the
+  // registry tab never renders it. The ledger effect below lazy-loads it the
+  // first time the ledger tab is opened, so the registry renders as soon as
+  // the (small, fast) drivers list arrives.
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchDrivers = async () => {
       setLoading(true);
-      setPayoutsLoading(true);
       try {
-        const [driversRes, payoutsRes] = await Promise.all([
-          fetch("/api/admin/drivers"),
-          fetch("/api/drivers/payouts"),
-        ]);
+        const driversRes = await fetch("/api/admin/drivers");
         if (driversRes.ok) {
           const data = await driversRes.json();
           setDrivers(data);
         }
-        if (payoutsRes.ok) {
-          const data = await payoutsRes.json();
-          setPayouts(data);
-        }
       } catch (error) {
-        console.error("Failed to fetch data", error);
+        console.error("Failed to fetch drivers", error);
       } finally {
         setLoading(false);
-        setPayoutsLoading(false);
       }
     };
-    fetchData();
+    fetchDrivers();
   }, []);
 
-  // ── Refetch payouts when filters change ──
+  // ── Load payouts when the ledger tab opens, and refetch when filters change ──
+  // First run with activeMainTab === "ledger" is the lazy initial load;
+  // subsequent runs are filter-driven refetches.
   useEffect(() => {
     if (activeMainTab !== "ledger") return;
 
@@ -597,7 +599,12 @@ export default function DriversDirectoryPage() {
                       <th className="px-6 py-4 font-semibold">
                         System Username
                       </th>
-                      <th className="px-6 py-4 font-semibold">Role</th>
+                      <th className="px-6 py-4 font-semibold text-right">
+                        Orders (Dr)
+                      </th>
+                      <th className="px-6 py-4 font-semibold text-right">
+                        Orders (Tr)
+                      </th>
                       <th className="px-6 py-4 font-semibold text-right">
                         Actions
                       </th>
@@ -607,7 +614,7 @@ export default function DriversDirectoryPage() {
                     {loading ? (
                       <tr>
                         <td
-                          colSpan={5}
+                          colSpan={6}
                           className="text-center py-8 text-gray-500"
                         >
                           Loading fleet data...
@@ -616,7 +623,7 @@ export default function DriversDirectoryPage() {
                     ) : drivers.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={5}
+                          colSpan={6}
                           className="text-center py-8 text-gray-500 italic"
                         >
                           No drivers registered in the system.
@@ -638,9 +645,14 @@ export default function DriversDirectoryPage() {
                           <td className="px-6 py-4 text-gray-400 text-sm">
                             {driver.user?.username || driver.username || "—"}
                           </td>
-                          <td className="px-6 py-4">
-                            <span className="px-2 py-1 text-[10px] font-bold rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                              DRIVER
+                          <td className="px-6 py-4 text-right">
+                            <span className="px-2 py-1 text-[10px] font-bold rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-mono">
+                              {driver.drCount ?? 0}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            <span className="px-2 py-1 text-[10px] font-bold rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono">
+                              {driver.trCount ?? 0}
                             </span>
                           </td>
                           <td className="px-6 py-4 text-right">

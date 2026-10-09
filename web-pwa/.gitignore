@@ -52,3 +52,6 @@ uplifted-earth-468521-v2-9418c17e7b6e.json
 # database backups & cron logs (sensitive data - never commit)
 /scripts/backups/
 /scripts/db_backup.log
+
+# may contain a hardcoded GitHub token - never commit
+/scripts/toggle-repo-visibility.bat

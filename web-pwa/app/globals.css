@@ -19,6 +19,13 @@
   }
 }
 
+html,
+body {
+  /* Prevent awkward horizontal page-scrolling on mobile; wide tables scroll
+     inside their own overflow-x-auto wrappers instead. */
+  overflow-x: hidden;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);

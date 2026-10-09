@@ -119,6 +119,23 @@ const ClearedPayoutsIcon = () => (
   </svg>
 );
 
+const StatisticsIcon = () => (
+  <svg
+    className="w-5 h-5 shrink-0"
+    fill="none"
+    viewBox="0 0 24 24"
+    stroke="currentColor"
+    strokeWidth={1.5}
+  >
+    {/* lucide "bar-chart-3" */}
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M3 3v18h18M18 17V9M13 17V5M8 17v-3"
+    />
+  </svg>
+);
+
 const AdminIcon = () => (
   <svg
     className="w-5 h-5 shrink-0"
@@ -158,6 +175,12 @@ const NAV_ITEMS: NavItem[] = [
   },
   { label: "Statements", href: "/statements", icon: <OrdersIcon /> },
   {
+    label: "Statistics",
+    href: "/statistics",
+    icon: <StatisticsIcon />,
+    permission: "VIEW_STATISTICS",
+  },
+  {
     label: "Treasury",
     href: "/admin/treasury",
     icon: <SettlementsIcon />,
@@ -179,6 +202,7 @@ export default function Sidebar() {
   const pathname = usePathname();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [user, setUser] = useState<{
     id: string;
     username: string;
@@ -240,6 +264,11 @@ export default function Sidebar() {
       });
   }, [pathname]);
 
+  // ── Close the mobile drawer whenever the route changes ──
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
   // ── Keyboard shortcut: Ctrl+B to toggle collapse ──
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -286,13 +315,15 @@ export default function Sidebar() {
   };
 
   // ── Sidebar content ──
-  const sidebarContent = (
+  // isMobile forces the full-width (expanded) layout inside the mobile drawer,
+  // independent of the desktop collapse state.
+  const renderSidebarContent = (isMobile = false) => (
     <aside
       className={`
         h-full flex flex-col
         bg-[#0B0F17] border-r border-white/5
         transition-all duration-300 ease-in-out
-        ${isCollapsed ? "w-16" : "w-64"}
+        ${isMobile || !isCollapsed ? "w-64" : "w-16"}
       `}
     >
       {/* ── Logo / Brand ── */}
@@ -312,7 +343,7 @@ export default function Sidebar() {
       {/* ── Collapse Toggle ── */}
       <button
         onClick={() => setIsCollapsed((prev) => !prev)}
-        className="mx-2 mt-2 p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-all duration-200 flex items-center justify-center"
+        className="mx-2 mt-2 p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-all duration-200 hidden lg:flex items-center justify-center"
         title={
           isCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"
         }
@@ -508,9 +539,45 @@ export default function Sidebar() {
 
   return (
     <>
-      <div className="h-screen sticky top-0 shrink-0 print:hidden">
-        {sidebarContent}
+      {/* ── Desktop: sidebar permanently visible and docked ── */}
+      <div className="hidden lg:block h-screen sticky top-0 shrink-0 print:hidden">
+        {renderSidebarContent()}
       </div>
+
+      {/* ── Mobile: hamburger button (hidden on desktop) ── */}
+      <button
+        onClick={() => setMobileOpen(true)}
+        aria-label="Open navigation menu"
+        className="lg:hidden fixed top-3 left-3 z-50 p-2 rounded-lg bg-[#0B0F17]/90 border border-white/10 text-gray-300 hover:text-white shadow-lg print:hidden"
+      >
+        <svg
+          className="w-5 h-5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M4 6h16M4 12h16M4 18h16"
+          />
+        </svg>
+      </button>
+
+      {/* ── Mobile: slide-over drawer with backdrop ── */}
+      {mobileOpen && (
+        <div className="lg:hidden fixed inset-0 z-40 print:hidden">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setMobileOpen(false)}
+          />
+          <div className="absolute inset-y-0 left-0 h-full shadow-2xl">
+            {renderSidebarContent(true)}
+          </div>
+        </div>
+      )}
+
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

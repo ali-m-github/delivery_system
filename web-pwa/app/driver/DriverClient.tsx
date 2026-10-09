@@ -26,6 +26,10 @@ type Order = {
   location: string;
   financialStatus?: string;
   notes?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  deliveryPreference?: string | null;
+  deliveryNotes?: string | null;
   zoneId: string;
   merchantId?: string;
   driverPayoutId?: string | null;
@@ -1431,6 +1435,40 @@ export default function DriverClient({
                           {order.customerAddress}
                         </p>
 
+                        {/* Delivery Preference Chip */}
+                        {order.deliveryPreference && (
+                          <div className="mb-2">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-violet-500/15 text-violet-300 border border-violet-500/30">
+                              📌 {order.deliveryPreference}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Customer Delivery Notes / Gate Code */}
+                        {order.deliveryNotes && (
+                          <div className="mb-3 flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                            <svg
+                              className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                              />
+                            </svg>
+                            <div className="text-xs text-amber-200 leading-relaxed">
+                              <span className="block text-[10px] font-bold text-amber-300 uppercase tracking-wider mb-0.5">
+                                Customer Delivery Notes
+                              </span>
+                              {order.deliveryNotes}
+                            </div>
+                          </div>
+                        )}
+
                         {/* Amounts */}
                         <div className="flex items-center gap-4 text-sm">
                           <span className="text-green-400 font-mono font-semibold">
@@ -1441,6 +1479,39 @@ export default function DriverClient({
                           </span>
                         </div>
                       </div>
+
+                      {/* ── GPS Navigation (large, tap-friendly) ───────────────── */}
+                      {order.latitude != null && order.longitude != null && (
+                        <div className="px-4 mt-4">
+                          <a
+                            href={`https://www.google.com/maps/dir/?api=1&destination=${order.latitude},${order.longitude}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-center gap-2 w-full px-4 py-4 rounded-xl text-base font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/30 active:bg-cyan-500/40 transition-colors shadow-[0_0_12px_rgba(6,182,212,0.25)]"
+                          >
+                            <svg
+                              className="w-5 h-5"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
+                              />
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
+                              />
+                            </svg>
+                            Navigate to GPS Pin
+                          </a>
+                        </div>
+                      )}
 
                       {/* ── Action Buttons (Quick Deliver + 2x2 Grid) ──────────── */}
                       <div className="grid grid-cols-2 gap-2 mt-4 px-4 pb-4">

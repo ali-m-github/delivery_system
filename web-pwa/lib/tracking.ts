@@ -232,3 +232,118 @@ export function currentStatusLabel(location: string): string {
   if (loc === "CP") return "Preparing for dispatch";
   return "At warehouse";
 }
+
+// ──────────────────────────────────────────────
+// Customer delivery actions (public tracking PATCH)
+//
+// Shared by the tokenized tracking endpoints so both apply identical
+// validation and the same "locked" rule: once an order is delivered
+// or cancelled, the customer can no longer change its delivery
+// details. "CANCELLED"/"CANCEL" are defensive: the current workflow
+// has no cancel location, but the requirement covers it.
+// ──────────────────────────────────────────────
+
+export const LOCKED_DELIVERY_LOCATIONS = ["DELIVERED", "CANCELLED", "CANCEL"];
+
+const DELIVERY_PREFERENCE_MAX = 100;
+const DELIVERY_NOTES_MAX = 500;
+
+export type DeliveryUpdateData = {
+  latitude?: number | null;
+  longitude?: number | null;
+  deliveryPreference?: string | null;
+  deliveryNotes?: string | null;
+};
+
+/**
+ * Validate a delivery-update PATCH body. Every field is optional, but
+ * at least one must be present. Sending null (or an empty string for
+ * the text fields) clears the stored value.
+ */
+export function parseDeliveryUpdate(
+  raw: Record<string, unknown>,
+): { error: string } | { data: DeliveryUpdateData } {
+  const data: DeliveryUpdateData = {};
+  let provided = 0;
+
+  if ("latitude" in raw) {
+    provided++;
+    if (raw.latitude === null) {
+      data.latitude = null;
+    } else if (
+      typeof raw.latitude !== "number" ||
+      !Number.isFinite(raw.latitude) ||
+      raw.latitude < -90 ||
+      raw.latitude > 90
+    ) {
+      return { error: "latitude must be a number between -90 and 90" };
+    } else {
+      data.latitude = raw.latitude;
+    }
+  }
+
+  if ("longitude" in raw) {
+    provided++;
+    if (raw.longitude === null) {
+      data.longitude = null;
+    } else if (
+      typeof raw.longitude !== "number" ||
+      !Number.isFinite(raw.longitude) ||
+      raw.longitude < -180 ||
+      raw.longitude > 180
+    ) {
+      return { error: "longitude must be a number between -180 and 180" };
+    } else {
+      data.longitude = raw.longitude;
+    }
+  }
+
+  if ("deliveryPreference" in raw) {
+    provided++;
+    if (raw.deliveryPreference === null) {
+      data.deliveryPreference = null;
+    } else if (typeof raw.deliveryPreference !== "string") {
+      return { error: "deliveryPreference must be a string" };
+    } else {
+      const trimmed = raw.deliveryPreference.trim();
+      if (trimmed.length === 0) {
+        data.deliveryPreference = null;
+      } else if (trimmed.length > DELIVERY_PREFERENCE_MAX) {
+        return {
+          error: `deliveryPreference must be at most ${DELIVERY_PREFERENCE_MAX} characters`,
+        };
+      } else {
+        data.deliveryPreference = trimmed;
+      }
+    }
+  }
+
+  if ("deliveryNotes" in raw) {
+    provided++;
+    if (raw.deliveryNotes === null) {
+      data.deliveryNotes = null;
+    } else if (typeof raw.deliveryNotes !== "string") {
+      return { error: "deliveryNotes must be a string" };
+    } else {
+      const trimmed = raw.deliveryNotes.trim();
+      if (trimmed.length === 0) {
+        data.deliveryNotes = null;
+      } else if (trimmed.length > DELIVERY_NOTES_MAX) {
+        return {
+          error: `deliveryNotes must be at most ${DELIVERY_NOTES_MAX} characters`,
+        };
+      } else {
+        data.deliveryNotes = trimmed;
+      }
+    }
+  }
+
+  if (provided === 0) {
+    return {
+      error:
+        "No delivery fields provided. Expected any of: latitude, longitude, deliveryPreference, deliveryNotes",
+    };
+  }
+
+  return { data };
+}

@@ -59,5 +59,6 @@ export const config = {
     "/settlements/:path*",
     "/merchant/:path*",
     "/zones/:path*",
+    "/statistics/:path*",
   ],
 };

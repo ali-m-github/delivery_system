@@ -375,7 +375,7 @@ export default function BatchDetailClient({
               No manual adjustments were applied to this batch.
             </div>
           ) : (
-            <div className="bg-[#121824] border border-white/5 rounded-xl overflow-hidden">
+            <div className="w-full overflow-x-auto bg-[#121824] border border-white/5 rounded-xl">
               <table className="w-full text-xs">
                 <thead className="border-b border-white/5 text-gray-500">
                   <tr>
