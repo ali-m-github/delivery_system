@@ -4,7 +4,15 @@ import { useState, useMemo, useCallback, Fragment } from "react";
 import Image from "next/image";
 import { useSearchParams, useRouter } from "next/navigation";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
+import OrderDetailsModal from "@/components/OrderDetailsModal";
+import CopyOrderId from "@/components/CopyOrderId";
 import ImportGoogleSheetsModal from "@/components/orders/ImportGoogleSheetsModal";
+import {
+  SortableTh,
+  getOrderSortValue,
+  compareSortValues,
+} from "@/components/SharedOrderTable";
+import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Order {
@@ -87,6 +95,7 @@ interface MerchantData {
   address: string | null;
   logoUrl: string | null;
   isCashSeller: boolean;
+  createdAt: string;
   sheetImportConfig: {
     startRow?: number;
     colMapping?: Record<string, number>;
@@ -102,6 +111,124 @@ interface MerchantClientProps {
 }
 
 type TabKey = "deliveries" | "newOrder" | "statements";
+
+// Merchants whose auto-generated Order ID preview in the Order Entry form is
+// click-to-copy (their staff paste IDs straight into their own sheets).
+// All other merchants see the plain read-only field.
+const COPYABLE_PREVIEW_ID_MERCHANT_IDS = new Set([2]); // 2 = Electroni
+
+// ─── Excel export column definitions ─────────────────────────────────────────
+// Mirrors the admin-side EXPORT_COLUMNS pattern in app/orders/page.tsx: each
+// entry drives both the column-selection modal and the actual export, so
+// adding a new exportable column only requires adding one definition here.
+// Scoped to fields available on the merchant Order type.
+const MERCHANT_EXPORT_COLUMNS: {
+  key: string;
+  label: string;
+  header: string;
+  width: number;
+  value: (order: Order) => string | number | Date;
+}[] = [
+  {
+    key: "orderId",
+    label: "Order ID",
+    header: "Order ID",
+    width: 15,
+    value: (o) => o.orderId,
+  },
+  {
+    key: "date",
+    label: "Date",
+    header: "Date",
+    width: 15,
+    value: (o) => new Date(o.createdAt),
+  },
+  {
+    key: "customer",
+    label: "Customer",
+    header: "Customer",
+    width: 25,
+    value: (o) => o.customerName,
+  },
+  {
+    key: "phone",
+    label: "Tel Number",
+    header: "Tel Number",
+    width: 18,
+    value: (o) => o.customerPhone || "—",
+  },
+  {
+    key: "address",
+    label: "Address",
+    header: "Address",
+    width: 35,
+    value: (o) => o.customerAddress || "—",
+  },
+  {
+    key: "zone",
+    label: "Zone",
+    header: "Zone",
+    width: 12,
+    value: (o) => o.zone?.name || "—",
+  },
+  {
+    key: "location",
+    label: "Location",
+    header: "Location",
+    width: 15,
+    value: (o) => o.location,
+  },
+  {
+    key: "usd",
+    label: "Amount $",
+    header: "Amount $",
+    width: 15,
+    value: (o) => o.amountUsd ?? 0,
+  },
+  {
+    key: "lbp",
+    label: "Amount LL",
+    header: "Amount LL",
+    width: 15,
+    value: (o) => o.amountLbp ?? 0,
+  },
+  {
+    key: "collectedUsd",
+    label: "$ Collected",
+    header: "$ Collected",
+    width: 15,
+    value: (o) => {
+      const isDelivered = o.location === "DELIVERED";
+      const raw = Number(o.collectedUsd ?? 0);
+      return isDelivered && raw === 0 ? Number(o.amountUsd ?? 0) : raw;
+    },
+  },
+  {
+    key: "collectedLbp",
+    label: "LL Collected",
+    header: "LL Collected",
+    width: 15,
+    value: (o) => {
+      const isDelivered = o.location === "DELIVERED";
+      const raw = Number(o.collectedLbp ?? 0);
+      return isDelivered && raw === 0 ? Number(o.amountLbp ?? 0) : raw;
+    },
+  },
+  {
+    key: "packages",
+    label: "Packages",
+    header: "Packages",
+    width: 10,
+    value: (o) => o.packages ?? 1,
+  },
+  {
+    key: "notes",
+    label: "Notes",
+    header: "Notes",
+    width: 25,
+    value: (o) => o.notes || "",
+  },
+];
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function MerchantClient({
@@ -140,6 +267,11 @@ export default function MerchantClient({
     id: string;
     history: any[];
   } | null>(null);
+  // Full order-details modal, opened by clicking an order ID in any table.
+  const [detailsModalOrder, setDetailsModalOrder] = useState<any | null>(null);
+  // Orders created during this browser session (shown under the New Order
+  // Request form so merchants can quickly copy their IDs to their own sheets).
+  const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
 
   // ── Interactive Data Grid states ─────────────────────────────────────────
   const [boxFilter, setBoxFilter] = useState<string | null>(null);
@@ -147,6 +279,32 @@ export default function MerchantClient({
   const [dateFilter, setDateFilter] = useState("");
   const [locationFilter, setLocationFilter] = useState("");
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
+
+  // ── Column sorting (click header arrows to toggle asc/desc) ────────────
+  const [sortKey, setSortKey] = useState<string>("");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  const handleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+    // Jump back to the first page so the newly sorted rows are visible.
+    setPage(1);
+  };
+
+  // ── Excel column-selection modal ─────────────────────────────────────────
+  // All exportable columns are derived from MERCHANT_EXPORT_COLUMNS and
+  // default to on, matching the admin orders page behaviour.
+  const [excelModalOpen, setExcelModalOpen] = useState(false);
+  const [excelCols, setExcelCols] = useState<Record<string, boolean>>(
+    () =>
+      Object.fromEntries(
+        MERCHANT_EXPORT_COLUMNS.map((c) => [c.key, true]),
+      ) as Record<string, boolean>,
+  );
 
   // ── Order Form State ────────────────────────────────────────────────────
   // orderId is intentionally omitted — it is autogenerated server-side as
@@ -161,6 +319,7 @@ export default function MerchantClient({
     packages: "1",
     hasExchange: false,
     openParcelAllowed: false,
+    isFragile: false,
   });
   const [submitting, setSubmitting] = useState(false);
   const [formMessage, setFormMessage] = useState<{
@@ -181,6 +340,9 @@ export default function MerchantClient({
   });
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+
+  // Transient inline "Copied" feedback for the tracking-link button (per-row).
+  const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
 
   // ── Orders state ────────────────────────────────────────────────────────
   const [orders, setOrders] = useState<Order[]>(merchant.orders || []);
@@ -267,11 +429,40 @@ export default function MerchantClient({
     });
   }, [orders, boxFilter, locationFilter, dateFilter, searchTerm, isPaidOrder, isUnpaidOrder]);
 
+  // ── Column sorting applied on top of the filtered list ─────────────────
+  const sortedOrders = useMemo(() => {
+    if (!sortKey) return filteredOrders;
+    const dir = sortDir;
+    return [...filteredOrders].sort((a, b) => {
+      const va = getOrderSortValue(a, sortKey);
+      const vb = getOrderSortValue(b, sortKey);
+      const cmp = compareSortValues(va, vb);
+      return dir === "asc" ? cmp : -cmp;
+    });
+  }, [filteredOrders, sortKey, sortDir]);
+
   // ── Current page slice ──────────────────────────────────────────────────
   const paginatedOrders = useMemo(() => {
-    return filteredOrders.slice((page - 1) * pageSize, page * pageSize);
-  }, [filteredOrders, page, pageSize]);
+    return sortedOrders.slice((page - 1) * pageSize, page * pageSize);
+  }, [sortedOrders, page, pageSize]);
   // ── Stat summaries (computed from full dataset) ─────────────────────────
+  // Preview of the next auto-generated Order ID, mirroring the server-side
+  // generator in app/api/merchant/orders/route.ts ("{merchantId}-{nextSeq}").
+  // Shown read-only in the New Order form; advances automatically after each
+  // save because the created order is prepended to `orders`.
+  const nextOrderIdPreview = useMemo(() => {
+    const pattern = new RegExp(`^${merchant.merchantId}-(\\d+)$`);
+    let maxSeq = 0;
+    for (const o of orders) {
+      const match = String(o.orderId).match(pattern);
+      if (match) {
+        const seq = parseInt(match[1], 10);
+        if (seq > maxSeq) maxSeq = seq;
+      }
+    }
+    return `${merchant.merchantId}-${String(maxSeq + 1).padStart(4, "0")}`;
+  }, [orders, merchant.merchantId]);
+
   const stats = useMemo(() => {
     // Exchange proof orders ("-Exchange") are hidden from the merchant's page
     const visible = orders.filter(
@@ -307,6 +498,13 @@ export default function MerchantClient({
   // ── Submit new order ────────────────────────────────────────────────────
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // The "Save & Print" submit button carries data-print="true"; detect it via
+    // the submitter so Enter-key submits still behave like a plain save.
+    const printWaybill =
+      (e.nativeEvent as SubmitEvent).submitter?.getAttribute("data-print") ===
+      "true";
+
     setFormMessage(null);
     setSubmitting(true);
 
@@ -324,6 +522,7 @@ export default function MerchantClient({
           packages: formData.packages,
           hasExchange: formData.hasExchange,
           openParcelAllowed: formData.openParcelAllowed,
+          isFragile: formData.isFragile,
         }),
       });
 
@@ -334,6 +533,8 @@ export default function MerchantClient({
 
       const newOrder = await res.json();
       setOrders((prev) => [newOrder, ...prev]);
+      // Track it in the session list rendered under the New Order form.
+      setSessionOrders((prev) => [newOrder, ...prev]);
       setFormData({
         customerName: "",
         customerPhone: "",
@@ -344,8 +545,14 @@ export default function MerchantClient({
         packages: "1",
         hasExchange: false,
         openParcelAllowed: false,
+        isFragile: false,
       });
       setFormMessage({ type: "success", text: "Order created successfully!" });
+
+      // "Save & Print": open the waybill print view and auto-trigger printing.
+      if (printWaybill && newOrder?.id) {
+        window.open(`/orders/print?ids=${newOrder.id}&auto=true`, "_blank");
+      }
     } catch (error: any) {
       setFormMessage({
         type: "error",
@@ -434,48 +641,66 @@ export default function MerchantClient({
   };
 
   // ── Export selected orders to Excel ─────────────────────────────────────
+  // Builds the workbook dynamically from the column definitions the user
+  // enabled in the "Select Columns to Export" modal.
   const exportSelectedOrders = async () => {
     if (selectedOrders.length === 0) return;
+
+    const selectedDefs = MERCHANT_EXPORT_COLUMNS.filter((c) => excelCols[c.key]);
+    if (selectedDefs.length === 0) {
+      alert("Please select at least one column to export.");
+      return;
+    }
 
     const selectedData = orders.filter((o) => selectedOrders.includes(o.id));
     const ExcelJS = (await import("exceljs")).default;
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Selected_Orders");
 
-    worksheet.columns = [
-      { header: "Order ID", key: "orderId", width: 15 },
-      { header: "Date", key: "date", width: 15 },
-      { header: "Customer Name", key: "customerName", width: 25 },
-      { header: "Phone", key: "phone", width: 15 },
-      { header: "Address", key: "address", width: 30 },
-      { header: "Location", key: "location", width: 15 },
-      { header: "Financial Status", key: "financialStatus", width: 18 },
-      { header: "Amount USD", key: "amountUsd", width: 15 },
-      { header: "Amount LBP", key: "amountLbp", width: 15 },
-    ];
+    worksheet.columns = selectedDefs.map((c) => ({
+      header: c.header,
+      key: c.key,
+      width: c.width,
+    }));
 
     selectedData.forEach((order) => {
-      worksheet.addRow({
-        orderId: order.orderId,
-        date: formatDate(order.createdAt),
-        customerName: order.customerName,
-        phone: order.customerPhone || "—",
-        address: order.customerAddress || "—",
-        location: order.location,
-        financialStatus: order.financialStatus,
-        amountUsd: order.amountUsd,
-        amountLbp: order.amountLbp,
+      const row: Record<string, string | number | Date> = {};
+      selectedDefs.forEach((c) => {
+        row[c.key] = c.value(order);
       });
+      const excelRow = worksheet.addRow(row);
+
+      // Order ID: write purely-numeric IDs as real numbers and everything else
+      // as explicit text, so Excel never re-interprets it as a date.
+      if (excelCols.orderId) {
+        const orderIdCell = excelRow.getCell("orderId");
+        const rawId = String(order.orderId ?? "");
+        if (/^\d+$/.test(rawId)) {
+          orderIdCell.value = Number(rawId);
+          orderIdCell.numFmt = "0";
+        } else {
+          orderIdCell.value = rawId;
+          orderIdCell.numFmt = "@";
+        }
+      }
+
+      // Date: store as a real date value formatted as a date, not a string.
+      if (excelCols.date) {
+        excelRow.getCell("date").numFmt = "mm/dd/yyyy";
+      }
     });
 
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `Orders_${merchant.merchantName}_${new Date().toISOString().split("T")[0]}.xlsx`;
-    link.click();
+    // Center all cells and add borders (shared across every Excel export)
+    styleWorksheet(worksheet);
+
+    // downloadWorkbook also suppresses Excel's green "Number Stored as Text"
+    // triangles on phone numbers and other numeric-looking strings.
+    await downloadWorkbook(
+      workbook,
+      `Orders_${merchant.merchantName}_${new Date().toISOString().split("T")[0]}.xlsx`,
+    );
+
+    setExcelModalOpen(false);
   };
 
   // ── Export statement to Excel ───────────────────────────────────────────
@@ -517,7 +742,7 @@ export default function MerchantClient({
       const collUsd = order.collectedUsd ?? order.amountUsd ?? 0;
       const collLbp = order.collectedLbp ?? order.amountLbp ?? 0;
 
-      worksheet.addRow({
+      const row = worksheet.addRow({
         orderId: order.orderId,
         customer: order.customerName,
         phone: order.customerPhone || "—",
@@ -531,16 +756,25 @@ export default function MerchantClient({
         netUsd: collUsd - shipUsd,
         netLbp: collLbp - shipLbp,
       });
+
+      // Order ID: write purely-numeric IDs as real numbers and everything else
+      // as explicit text, so Excel never re-interprets it as a date.
+      const orderIdCell = row.getCell("orderId");
+      const rawId = String(order.orderId ?? "");
+      if (/^\d+$/.test(rawId)) {
+        orderIdCell.value = Number(rawId);
+        orderIdCell.numFmt = "0";
+      } else {
+        orderIdCell.value = rawId;
+        orderIdCell.numFmt = "@";
+      }
     });
 
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `Statement_${merchant.merchantName}_#${statement.sequentialIndex}.xlsx`;
-    link.click();
+    styleWorksheet(worksheet);
+    await downloadWorkbook(
+      workbook,
+      `Statement_${merchant.merchantName}_#${statement.sequentialIndex}.xlsx`,
+    );
   };
 
   // ── Master checkbox toggle ──────────────────────────────────────────────
@@ -562,17 +796,19 @@ export default function MerchantClient({
   };
 
   // ── Copy tracking link to clipboard ────────────────────────────────────
-  const handleCopyLink = (order: Order) => {
+  // Resolves to whether the copy succeeded so the row can show inline
+  // "Copied" feedback instead of an alert popup.
+  const handleCopyLink = (order: Order): Promise<boolean> => {
     const trackingUrl = order.trackToken
       ? window.location.origin + "/track/" + order.trackToken + "/" + order.orderId
       : window.location.origin + "/track/" + order.orderId;
 
     if (navigator.clipboard && window.isSecureContext) {
       // Modern HTTPS approach
-      navigator.clipboard
-        .writeText(trackingUrl)
-        .then(() => alert(`Tracking link copied!\n${trackingUrl}`))
-        .catch(() => alert(`Failed to copy. Manual link:\n${trackingUrl}`));
+      return navigator.clipboard.writeText(trackingUrl).then(
+        () => true,
+        () => false,
+      );
     } else {
       // Legacy HTTP Fallback
       const textArea = document.createElement("textarea");
@@ -584,21 +820,31 @@ export default function MerchantClient({
       textArea.select();
       try {
         document.execCommand("copy");
-        alert(`Tracking link copied!\n${trackingUrl}`);
+        return Promise.resolve(true);
       } catch (err) {
-        alert(`Failed to copy link. Manual link:\n${trackingUrl}`);
+        return Promise.resolve(false);
+      } finally {
+        textArea.remove();
       }
-      textArea.remove();
     }
   };
 
   // ── Format helpers ──────────────────────────────────────────────────────
-  const formatDate = (iso: string) =>
-    new Date(iso).toLocaleDateString("en-US", {
-      month: "2-digit",
-      day: "2-digit",
-      year: "2-digit",
-    });
+  // Day/month/year, matching the user side (SharedOrderTable, tracking).
+  const formatDate = (iso: string) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
+  };
+
+  const formatDateTime = (iso: string) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return `${formatDate(iso)} ${d
+      .getHours()
+      .toString()
+      .padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+  };
 
   const formatCurrency = (val: number) => val.toFixed(2);
 
@@ -808,6 +1054,14 @@ export default function MerchantClient({
                   📍 {merchant.address}
                 </span>
               )}
+              {merchant.createdAt && (
+                <span
+                  className="flex items-center gap-1"
+                  title="Merchant account creation date"
+                >
+                  🗓️ Member since: {formatDate(merchant.createdAt)}
+                </span>
+              )}
             </div>
 
             {/* Shipping Rates */}
@@ -965,6 +1219,45 @@ export default function MerchantClient({
             <>
               {/* ── Toolbar ── */}
               <div className="flex flex-wrap items-end gap-3 mb-4 p-4 rounded-xl backdrop-blur-xl bg-white/5 border border-white/10">
+                {selectedOrders.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400 mr-1">
+                      {selectedOrders.length} selected
+                    </span>
+                    <button
+                      onClick={() =>
+                        window.open(
+                          `/orders/print?ids=${selectedOrders.join(",")}`,
+                          "_blank",
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+                      title="Print waybills for the selected orders"
+                    >
+                      🖨️ Print Waybill
+                    </button>
+                    <button
+                      onClick={() => setExcelModalOpen(true)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
+                      title="Download as Excel"
+                    >
+                      📊 Excel
+                    </button>
+                    <button
+                      onClick={() =>
+                        window.open(
+                          `/orders/print?ids=${selectedOrders.join(",")}&pdf=true`,
+                          "_blank",
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors"
+                      title="Download as PDF"
+                    >
+                      📑 PDF
+                    </button>
+                  </div>
+                )}
+                <div className="flex-1" />
                 <div className="flex flex-col gap-1 min-w-[180px]">
                   <label className="text-[10px] text-gray-500 uppercase tracking-wider">
                     Multi-Keyword Search
@@ -1015,7 +1308,6 @@ export default function MerchantClient({
                     <option value="RETURNED">Returned</option>
                   </select>
                 </div>
-                <div className="flex-1" />
                 {/* ── Rows per page (right-aligned with the search box) ── */}
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] text-gray-500 uppercase tracking-wider">
@@ -1045,252 +1337,6 @@ export default function MerchantClient({
                     {paginatedOrders.length} of {filteredOrders.length} order(s)
                   </span>
                 </div>
-                {selectedOrders.length > 0 && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-400 mr-1">
-                      {selectedOrders.length} selected
-                    </span>
-                    <button
-                      onClick={() =>
-                        window.open(
-                          `/orders/print?ids=${selectedOrders.join(",")}`,
-                          "_blank",
-                        )
-                      }
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
-                      title="Print waybills for the selected orders"
-                    >
-                      🖨️ Print Waybill
-                    </button>
-                    <button
-                      onClick={() => exportSelectedOrders()}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-green-400 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors"
-                      title="Download as Excel"
-                    >
-                      📊 Excel
-                    </button>
-                    <button
-                      onClick={() =>
-                        window.open(
-                          `/orders/print?ids=${selectedOrders.join(",")}&pdf=true`,
-                          "_blank",
-                        )
-                      }
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors"
-                      title="Download as PDF"
-                    >
-                      📑 PDF
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* ── Inline Order Entry (like the main orders page) ── */}
-              <div className="bg-[#121824] border border-white/5 rounded-xl p-4 shadow-2xl mb-4">
-                <div className="flex items-center gap-3 mb-3">
-                  <h2 className="text-sm font-bold text-white uppercase tracking-wider">
-                    Order Entry
-                  </h2>
-                  <span className="text-[10px] text-gray-500 font-mono">
-                    Fields auto-clear on save &middot; Press Enter to submit
-                  </span>
-                </div>
-
-                {formMessage && (
-                  <div
-                    className={`mb-3 px-3 py-2 rounded-lg text-sm ${
-                      formMessage.type === "success"
-                        ? "bg-green-500/10 border border-green-500/30 text-green-400"
-                        : "bg-red-500/10 border border-red-500/30 text-red-400"
-                    }`}
-                  >
-                    {formMessage.text}
-                  </div>
-                )}
-
-                <form onSubmit={handleCreateOrder}>
-                  <div className="flex flex-nowrap gap-2 items-end overflow-x-auto pb-1">
-                    {/* Customer */}
-                    <div className="flex flex-col gap-1 min-w-[120px]">
-                      <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        Customer
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={formData.customerName}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            customerName: e.target.value,
-                          })
-                        }
-                        placeholder="John Doe"
-                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
-                      />
-                    </div>
-
-                    {/* Phone */}
-                    <div className="flex flex-col gap-1 min-w-[120px]">
-                      <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        Phone
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={formData.customerPhone}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            customerPhone: e.target.value,
-                          })
-                        }
-                        placeholder="+1 555 123 4567"
-                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
-                      />
-                    </div>
-
-                    {/* Address */}
-                    <div className="flex flex-col gap-1 min-w-[200px] flex-1">
-                      <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        Address
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={formData.customerAddress}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            customerAddress: e.target.value,
-                          })
-                        }
-                        placeholder="123 Main St, City"
-                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
-                      />
-                    </div>
-
-                    {/* USD */}
-                    <div className="flex flex-col gap-1 min-w-[80px]">
-                      <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        USD
-                      </label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        required
-                        value={formData.price}
-                        onChange={(e) =>
-                          setFormData({ ...formData, price: e.target.value })
-                        }
-                        placeholder="0.00"
-                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
-                      />
-                    </div>
-
-                    {/* LBP */}
-                    <div className="flex flex-col gap-1 min-w-[80px]">
-                      <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        LBP
-                      </label>
-                      <input
-                        type="number"
-                        step="1"
-                        value={formData.amountLbp}
-                        onChange={(e) =>
-                          setFormData({ ...formData, amountLbp: e.target.value })
-                        }
-                        placeholder="0"
-                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
-                      />
-                    </div>
-
-                    {/* Pckgs */}
-                    <div className="flex flex-col gap-1 min-w-[60px]">
-                      <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        Pckgs
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={formData.packages}
-                        onChange={(e) =>
-                          setFormData({ ...formData, packages: e.target.value })
-                        }
-                        placeholder="1"
-                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
-                      />
-                    </div>
-
-                    {/* Exchange */}
-                    <div className="flex flex-col gap-1 min-w-[60px] items-center">
-                      <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        Exchange
-                      </label>
-                      <label className="flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={formData.hasExchange}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              hasExchange: e.target.checked,
-                            })
-                          }
-                          className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
-                        />
-                      </label>
-                    </div>
-
-                    {/* Open Parcel */}
-                    <div className="flex flex-col gap-1 min-w-[60px] items-center">
-                      <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        Open P
-                      </label>
-                      <label className="flex items-center cursor-pointer" title="Open Parcel Allowed">
-                        <input
-                          type="checkbox"
-                          checked={formData.openParcelAllowed}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              openParcelAllowed: e.target.checked,
-                            })
-                          }
-                          className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
-                        />
-                      </label>
-                    </div>
-
-                    {/* Notes */}
-                    <div className="flex flex-col gap-1 min-w-[120px]">
-                      <label className="text-[10px] text-gray-500 font-mono uppercase">
-                        Notes
-                      </label>
-                      <input
-                        type="text"
-                        value={formData.notes}
-                        onChange={(e) =>
-                          setFormData({ ...formData, notes: e.target.value })
-                        }
-                        placeholder="Optional"
-                        className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
-                      />
-                    </div>
-
-                    {/* Save */}
-                    <div className="flex flex-col gap-1 min-w-[80px]">
-                      <div className="h-[10px]" />
-                      <button
-                        type="submit"
-                        disabled={submitting}
-                        className="w-full px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
-                      >
-                        {submitting ? "..." : "Save"}
-                      </button>
-                    </div>
-                  </div>
-                </form>
               </div>
 
               {filteredOrders.length === 0 ? (
@@ -1317,29 +1363,72 @@ export default function MerchantClient({
                               className="accent-cyan-500 w-3.5 h-3.5 cursor-pointer"
                             />
                           </th>
+                          <SortableTh
+                            label="Order ID"
+                            sortKey="orderId"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onSort={handleSort}
+                            className="py-3"
+                          />
+                          <SortableTh
+                            label="Date"
+                            sortKey="dateReceived"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onSort={handleSort}
+                            className="py-3"
+                          />
+                          <SortableTh
+                            label="Customer"
+                            sortKey="customer"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onSort={handleSort}
+                            className="py-3"
+                          />
+                          <SortableTh
+                            label="Phone"
+                            sortKey="phone"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onSort={handleSort}
+                            className="py-3"
+                          />
+                          <SortableTh
+                            label="Address"
+                            sortKey="address"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onSort={handleSort}
+                            className="py-3"
+                          />
+                          <SortableTh
+                            label="Amount"
+                            sortKey="amountUsd"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onSort={handleSort}
+                            className="py-3"
+                          />
+                          <SortableTh
+                            label="Amount Collected"
+                            sortKey="collectedUsd"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onSort={handleSort}
+                            className="py-3"
+                          />
+                          <SortableTh
+                            label="Location"
+                            sortKey="location"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onSort={handleSort}
+                            className="py-3"
+                          />
                           <th className="px-2 py-3 text-left font-medium">
-                            Order ID
-                          </th>
-                          <th className="px-2 py-3 text-left font-medium">
-                            Date
-                          </th>
-                          <th className="px-2 py-3 text-left font-medium">
-                            Customer
-                          </th>
-                          <th className="px-2 py-3 text-left font-medium">
-                            Phone
-                          </th>
-                          <th className="px-2 py-3 text-left font-medium">
-                            Address
-                          </th>
-                          <th className="px-2 py-3 text-left font-medium">
-                            Amount
-                          </th>
-                          <th className="px-2 py-3 text-left font-medium">
-                            Amount Collected
-                          </th>
-                          <th className="px-2 py-3 text-left font-medium">
-                            Location
+                            Note
                           </th>
                           <th className="px-4 py-3 text-right font-medium">
                             Action
@@ -1374,9 +1463,13 @@ export default function MerchantClient({
                                 >
                                   &#9776;
                                 </button>
-                                <span className="font-mono text-cyan-400">
+                                <button
+                                  onClick={() => setDetailsModalOrder(order)}
+                                  title="View order details"
+                                  className="font-mono text-cyan-400 hover:text-cyan-300 underline decoration-cyan-500/40 decoration-dashed underline-offset-4 transition-colors"
+                                >
                                   {order.orderId}
-                                </span>
+                                </button>
                               </div>
                             </td>
                             <td className="px-2 py-2.5 text-xs text-gray-500">
@@ -1444,16 +1537,34 @@ export default function MerchantClient({
                                           : order.location === "CP"
                                             ? "CP (Pickup)"
                                             : order.location}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-right">
+                             </span>
+                           </td>
+                           <td
+                             className="px-2 py-2.5 text-xs text-gray-400 max-w-[150px] truncate"
+                             title={order.notes || undefined}
+                           >
+                             {order.notes ? order.notes : "—"}
+                           </td>
+                           <td className="px-4 py-3 whitespace-nowrap text-right">
                               <div className="flex items-center justify-end gap-1.5">
-                                <button
-                                  onClick={() => handleCopyLink(order)}
-                                  className="px-3 py-1.5 text-xs font-bold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded transition-colors"
-                                >
-                                  🔗 Copy Link
-                                </button>
+                                {copiedLinkId === order.id ? (
+                                  <span className="px-3 py-1.5 text-xs font-bold text-green-400">
+                                    Copied
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => {
+                                      handleCopyLink(order).then((ok) => {
+                                        if (!ok) return;
+                                        setCopiedLinkId(order.id);
+                                        setTimeout(() => setCopiedLinkId(null), 1000);
+                                      });
+                                    }}
+                                    className="px-3 py-1.5 text-xs font-bold text-cyan-400 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded transition-colors"
+                                  >
+                                    🔗 Copy Link
+                                  </button>
+                                )}
                                 {order.location === "CP" ? (
                                   <button
                                     onClick={() => startEditOrder(order)}
@@ -1474,7 +1585,7 @@ export default function MerchantClient({
                           </tr>
                           {editingOrderId === order.id && (
                             <tr className="bg-[#121824] border-b border-white/10">
-                              <td colSpan={9} className="px-4 py-3">
+                              <td colSpan={10} className="px-4 py-3">
                                 <form onSubmit={handleSaveEdit}>
                                   <div className="flex flex-wrap gap-2 items-end">
                                     <div className="flex flex-col gap-1 min-w-[140px]">
@@ -1733,6 +1844,31 @@ export default function MerchantClient({
 
                 <form onSubmit={handleCreateOrder}>
                   <div className="flex flex-nowrap gap-2 items-end overflow-x-auto pb-1">
+                    {/* Order ID (auto-generated, read-only; copyable for
+                        allowlisted merchants only) */}
+                    <div className="flex flex-col gap-1 min-w-[100px]">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Order ID
+                      </label>
+                      {COPYABLE_PREVIEW_ID_MERCHANT_IDS.has(
+                        merchant.merchantId,
+                      ) ? (
+                        <CopyOrderId
+                          orderId={nextOrderIdPreview}
+                          variant="field"
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          value={nextOrderIdPreview}
+                          readOnly
+                          disabled
+                          title="Automatically generated — cannot be changed"
+                          className="px-2 py-1.5 text-xs rounded bg-slate-950/60 border border-gray-800 text-cyan-400 font-mono cursor-not-allowed opacity-70"
+                        />
+                      )}
+                    </div>
+
                     {/* Customer */}
                     <div className="flex flex-col gap-1 min-w-[120px]">
                       <label className="text-[10px] text-gray-500 font-mono uppercase">
@@ -1885,6 +2021,26 @@ export default function MerchantClient({
                       </label>
                     </div>
 
+                    {/* Fragile */}
+                    <div className="flex flex-col gap-1 min-w-[60px] items-center">
+                      <label className="text-[10px] text-gray-500 font-mono uppercase">
+                        Fragile
+                      </label>
+                      <label className="flex items-center cursor-pointer" title="Fragile">
+                        <input
+                          type="checkbox"
+                          checked={formData.isFragile}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              isFragile: e.target.checked,
+                            })
+                          }
+                          className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                        />
+                      </label>
+                    </div>
+
                     {/* Notes */}
                     <div className="flex flex-col gap-1 min-w-[120px]">
                       <label className="text-[10px] text-gray-500 font-mono uppercase">
@@ -1901,20 +2057,63 @@ export default function MerchantClient({
                       />
                     </div>
 
-                    {/* Save */}
+                    {/* Save / Save & Print */}
                     <div className="flex flex-col gap-1 min-w-[80px]">
                       <div className="h-[10px]" />
-                      <button
-                        type="submit"
-                        disabled={submitting}
-                        className="w-full px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
-                      >
-                        {submitting ? "..." : "Save"}
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          disabled={submitting}
+                          className="px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
+                        >
+                          {submitting ? "..." : "Save"}
+                        </button>
+                        <button
+                          type="submit"
+                          data-print="true"
+                          disabled={submitting}
+                          title="Save the order and immediately print its waybill"
+                          className="px-4 py-1.5 text-xs font-bold rounded bg-violet-600 hover:bg-violet-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
+                        >
+                          {submitting ? "..." : "Save & Print"}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </form>
               </div>
+
+              {/* ── Orders created in this session (click an ID to copy it) ── */}
+              {sessionOrders.length > 0 && (
+                <div className="bg-[#121824] border border-white/5 rounded-xl p-4 shadow-2xl">
+                  <div className="flex items-center gap-3 mb-3">
+                    <h2 className="text-sm font-bold text-white uppercase tracking-wider">
+                      Orders Created This Session
+                    </h2>
+                    <span className="text-[10px] text-gray-500 font-mono">
+                      Click an Order ID to copy it to your clipboard
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {sessionOrders.map((o) => (
+                      <div
+                        key={o.id}
+                        className="flex items-center justify-between gap-3 border border-white/5 rounded px-3 py-2 bg-white/[0.02]"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <CopyOrderId orderId={o.orderId} className="text-xs" />
+                          <span className="text-xs text-gray-400 truncate">
+                            {o.customerName}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-gray-600 font-mono whitespace-nowrap">
+                          {formatDateTime(o.createdAt)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           )}
 
@@ -2056,9 +2255,19 @@ export default function MerchantClient({
                                                   className="border border-white/5 rounded px-2 py-1.5 bg-white/[0.02]"
                                                 >
                                                   <div className="flex items-center justify-between mb-1">
-                                                    <span className="font-mono text-xs text-white font-semibold">
+                                                    <button
+                                                      onClick={() =>
+                                                        setDetailsModalOrder(
+                                                          orders.find(
+                                                            (x) => x.id === o.id,
+                                                          ) ?? o,
+                                                        )
+                                                      }
+                                                      title="View order details"
+                                                      className="font-mono text-xs text-white font-semibold hover:text-cyan-300 underline decoration-cyan-500/40 decoration-dashed underline-offset-4 transition-colors"
+                                                    >
                                                       {o.orderId}
-                                                    </span>
+                                                    </button>
                                                     <div className="flex items-center gap-2">
                                                       <span className="font-mono text-xs text-green-400">
                                                         ${o.amountUsd.toFixed(2)}
@@ -2114,9 +2323,19 @@ export default function MerchantClient({
                                                   className="border border-white/5 rounded px-2 py-1.5 bg-white/[0.02]"
                                                 >
                                                   <div className="flex items-center justify-between mb-1">
-                                                    <span className="font-mono text-xs text-white font-semibold">
+                                                    <button
+                                                      onClick={() =>
+                                                        setDetailsModalOrder(
+                                                          orders.find(
+                                                            (x) => x.id === r.id,
+                                                          ) ?? r,
+                                                        )
+                                                      }
+                                                      title="View order details"
+                                                      className="font-mono text-xs text-white font-semibold hover:text-cyan-300 underline decoration-cyan-500/40 decoration-dashed underline-offset-4 transition-colors"
+                                                    >
                                                       {r.orderId}
-                                                    </span>
+                                                    </button>
                                                     <div className="flex items-center gap-2">
                                                       <span className="font-mono text-xs text-orange-400">
                                                         -${r.amountUsd.toFixed(2)}
@@ -2291,7 +2510,7 @@ export default function MerchantClient({
                 </h2>
                 <p className="text-gray-400 text-sm print:text-gray-600 mt-1">
                   {merchant.merchantName} &middot;{" "}
-                  {new Date(selectedStatement.createdAt).toLocaleString()}
+                  {formatDateTime(selectedStatement.createdAt)}
                 </p>
               </div>
 
@@ -2492,6 +2711,14 @@ export default function MerchantClient({
         />
       )}
 
+      {/* ── Order Details Modal ──────────────────────────────────────────── */}
+      {detailsModalOrder && (
+        <OrderDetailsModal
+          order={detailsModalOrder}
+          onClose={() => setDetailsModalOrder(null)}
+        />
+      )}
+
       {/* ── Import Google Sheets Modal ───────────────────────────────────── */}
       {sheetModalOpen && (
         <ImportGoogleSheetsModal
@@ -2505,6 +2732,145 @@ export default function MerchantClient({
           }}
           onClose={() => setSheetModalOpen(false)}
         />
+      )}
+
+      {/* ════════════════════════════════════════ */}
+      {/* EXCEL COLUMN SELECTOR MODAL (glassmorphism) */}
+      {/* ════════════════════════════════════════ */}
+      {excelModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setExcelModalOpen(false)}
+          />
+
+          {/* Modal */}
+          <div
+            className="relative w-full max-w-md backdrop-blur-2xl bg-white/10 rounded-3xl
+                       border border-white/20 shadow-[0_0_40px_rgba(6,182,212,0.2)]
+                       p-6 sm:p-8"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold text-white mb-1">
+              Select Columns to Export
+            </h2>
+            <p className="text-xs text-gray-400 mb-5">
+              Choose which columns to include in the Excel file.
+            </p>
+
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs text-gray-500">
+                {Object.values(excelCols).filter(Boolean).length} of{" "}
+                {MERCHANT_EXPORT_COLUMNS.length} columns selected
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExcelCols(
+                      Object.fromEntries(
+                        MERCHANT_EXPORT_COLUMNS.map((c) => [c.key, true]),
+                      ) as Record<string, boolean>,
+                    )
+                  }
+                  className="px-2 py-1 text-[10px] font-semibold rounded-md
+                             bg-white/5 text-gray-300 border border-white/10
+                             hover:bg-white/10 transition-colors"
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExcelCols(
+                      Object.fromEntries(
+                        MERCHANT_EXPORT_COLUMNS.map((c) => [c.key, false]),
+                      ) as Record<string, boolean>,
+                    )
+                  }
+                  className="px-2 py-1 text-[10px] font-semibold rounded-md
+                             bg-white/5 text-gray-300 border border-white/10
+                             hover:bg-white/10 transition-colors"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mb-6 max-h-[50vh] overflow-y-auto pr-1">
+              {MERCHANT_EXPORT_COLUMNS.map((col) => {
+                const val = excelCols[col.key];
+                return (
+                  <label
+                    key={col.key}
+                    className="flex items-center gap-3 cursor-pointer group"
+                  >
+                    <div
+                      className={`w-5 h-5 rounded-md border-2 flex items-center justify-center
+                                  transition-all duration-200
+                                  ${
+                                    val
+                                      ? "bg-cyan-500 border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                                      : "border-gray-600 group-hover:border-gray-500"
+                                  }`}
+                    >
+                      {val && (
+                        <svg
+                          className="w-3 h-3 text-white"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={3}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M5 13l4 4L19 7"
+                          />
+                        </svg>
+                      )}
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={val}
+                      onChange={() =>
+                        setExcelCols((prev) => ({
+                          ...prev,
+                          [col.key]: !prev[col.key],
+                        }))
+                      }
+                      className="sr-only"
+                    />
+                    <span className="text-sm text-gray-300 group-hover:text-white transition-colors">
+                      {col.label}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setExcelModalOpen(false)}
+                className="flex-1 px-4 py-2.5 text-sm font-semibold rounded-xl
+                           bg-white/5 text-gray-400 border border-white/10
+                           hover:text-white hover:bg-white/10 transition-all duration-200"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={exportSelectedOrders}
+                className="flex-1 px-4 py-2.5 text-sm font-semibold rounded-xl
+                           bg-cyan-500/20 text-cyan-300 border border-cyan-500/30
+                           hover:bg-cyan-500/30 hover:shadow-[0_0_16px_rgba(6,182,212,0.3)]
+                           transition-all duration-200"
+              >
+                Export to Excel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

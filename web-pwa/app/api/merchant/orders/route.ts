@@ -110,6 +110,7 @@ export async function POST(request: Request) {
             hasExchange: body.hasExchange === true || body.hasExchange === "true",
             openParcelAllowed:
               body.openParcelAllowed === true || body.openParcelAllowed === "true",
+            isFragile: body.isFragile === true || body.isFragile === "true",
             amountUsd: amountUsd,
             amountLbp: amountLbp,
             extraShipping: extraShipping,

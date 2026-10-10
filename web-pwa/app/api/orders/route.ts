@@ -40,6 +40,16 @@ export async function GET(request: NextRequest) {
     Math.max(1, parseInt(searchParams.get("take") || "500", 10)),
   );
 
+  // Optional: restrict the result to an explicit set of order record IDs.
+  // Used by the waybill print page — without this, printing a handful of
+  // waybills required downloading the entire order table (multi-MB payload).
+  const idsParam = searchParams.get("ids");
+  const idFilter = idsParam
+    ? idsParam.split(",").filter(Boolean).slice(0, 10000)
+    : null;
+  // An explicit id selection must never be truncated by the page size.
+  const effectiveTake = idFilter ? Math.max(take, idFilter.length) : take;
+
   // Optional server-side filters
   const location = searchParams.get("location");
   const search = searchParams.get("search");
@@ -90,6 +100,9 @@ export async function GET(request: NextRequest) {
       { customerName: { contains: search, mode: "insensitive" } },
       { customerPhone: { contains: search, mode: "insensitive" } },
     ];
+  }
+  if (idFilter && idFilter.length > 0) {
+    where.id = { in: idFilter };
   }
 
   // ── Authorization scope (server-side only — never from query/body) ───────
@@ -149,7 +162,10 @@ export async function GET(request: NextRequest) {
   // exchange order — the UI hides the Exchange action and the POST
   // /api/orders/:id/exchange route rejects it (idempotency guard).
   const exchangeIds = new Set<string>();
-  if (Array.isArray(where.orderId)) {
+  if (idFilter) {
+    // An explicit id selection (the print flow) never reads exchangeExists;
+    // skip the global "-Exchange" scan entirely.
+  } else if (Array.isArray(where.orderId)) {
     // Bulk lookup: scope is already narrowed to the requested orderIds.
     const hits = await prisma.order.findMany({
       where: { orderId: { in: where.orderId }, ...authScope },
@@ -193,7 +209,7 @@ export async function GET(request: NextRequest) {
       prisma.order.findMany({
         where,
         skip,
-        take,
+        take: effectiveTake,
         select: {
           id: true,
           orderId: true,
@@ -203,6 +219,7 @@ export async function GET(request: NextRequest) {
           zoneId: true,
           hasExchange: true,
           openParcelAllowed: true,
+          isFragile: true,
           location: true,
           financialStatus: true,
           amountUsd: true,
@@ -278,7 +295,7 @@ export async function GET(request: NextRequest) {
           cpTotal,
           skip,
           take,
-          hasMore: skip + take < total,
+          hasMore: skip + effectiveTake < total,
         },
       },
       { status: 200 },
@@ -305,6 +322,7 @@ export async function GET(request: NextRequest) {
           zoneId: true,
           hasExchange: true,
           openParcelAllowed: true,
+          isFragile: true,
           location: true,
           financialStatus: true,
           amountUsd: true,
@@ -413,6 +431,7 @@ export async function POST(request: Request) {
         hasExchange: body.hasExchange === true || body.hasExchange === "true",
         openParcelAllowed:
           body.openParcelAllowed === true || body.openParcelAllowed === "true",
+        isFragile: body.isFragile === true || body.isFragile === "true",
         amountUsd: amountUsd,
         extraShipping: extraShipping,
         creatorId,
@@ -494,6 +513,7 @@ const STAFF_UPDATABLE_FIELDS = new Set<string>([
   "zoneId",
   "hasExchange",
   "openParcelAllowed",
+  "isFragile",
   "isArchived",
   "deliveredAt",
   "dispatchedAt",
@@ -955,6 +975,11 @@ export async function PATCH(request: Request) {
         data.openParcelAllowed !== existing.openParcelAllowed
       )
         affected.push("openParcelAllowed");
+      if (
+        data.isFragile !== undefined &&
+        data.isFragile !== existing.isFragile
+      )
+        affected.push("isFragile");
 
       if (affected.length > 0) {
         return NextResponse.json(

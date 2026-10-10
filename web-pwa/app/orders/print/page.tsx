@@ -15,6 +15,7 @@ interface Order {
   location: string;
   hasExchange: boolean;
   openParcelAllowed: boolean;
+  isFragile: boolean;
   amountUsd: number;
   amountLbp: number;
   notes: string | null;
@@ -35,6 +36,26 @@ function formatDate(iso: string): string {
     month: "2-digit",
     year: "numeric",
   });
+}
+
+/** Print timestamp for the waybill footer. Always rendered in Beirut local
+ *  time (GMT+2/GMT+3 with DST) regardless of the viewer's machine timezone.
+ *  en-GB for the date, en-US for the time so the AM/PM marker is uppercase. */
+function formatPrintTimestamp(): string {
+  const d = new Date();
+  const date = d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "Asia/Beirut",
+  });
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Beirut",
+  });
+  return `${date} ${time}`;
 }
 
 function formatLbp(value: number): string {
@@ -68,53 +89,93 @@ const TITLE_BAND: React.CSSProperties = {
 
 const BODY: React.CSSProperties = { padding: "6px 7px 4px" };
 
-// ─── Checkbox cell (Ex-Change / Open Parcel Allowed) ──────────────────────────
+// ─── Checkbox cell (Exchange / Open Parcel Allowed / Fragile) ─────────────────
+// Renders stacked checkbox rows inside a grid cell. The waybill uses a single
+// instance spanning the address + special-instructions rows (rowStart/rowSpan)
+// with `distribute`, so all three checkboxes share identical vertical spacing.
+// `border` controls which edges draw a line — the spanning cell keeps only its
+// bottom edge so no divider cuts between the checkboxes.
 function CheckboxCell({
-  label,
-  checked,
+  items,
   colStart,
   colSpan,
+  rowStart,
+  rowSpan,
+  distribute = false,
+  border = ["b"],
 }: {
-  label: string;
-  checked: boolean;
+  items: Array<{ label: string; checked: boolean }>;
   colStart: number;
   colSpan: number;
+  rowStart?: number;
+  rowSpan?: number;
+  distribute?: boolean;
+  border?: Array<"t" | "r" | "b" | "l">;
 }) {
   return (
     <div
       style={{
-        ...B(["b"]),
+        ...B(border),
         gridColumnStart: colStart,
         gridColumnEnd: colStart + colSpan,
+        ...(rowStart
+          ? { gridRowStart: rowStart, gridRowEnd: rowStart + (rowSpan ?? 1) }
+          : {}),
         display: "flex",
-        alignItems: "center",
-        // Space-between mirrors the reference: short labels ("Ex-Change")
-        // leave the box right-aligned; long labels ("Open Parcel Allowed")
-        // push the box to sit right after the label.
-        justifyContent: "space-between",
+        flexDirection: "column",
+        justifyContent: "center",
         padding: "0 6px",
-        gap: 4,
         fontSize: "10.5px",
         fontWeight: 700,
       }}
     >
-      <span style={{ whiteSpace: "nowrap", letterSpacing: "-0.2px" }}>{label}</span>
-      <span
+      {/* Inner wrapper: `distribute` stretches it to the full cell height and
+          spaces the rows evenly; otherwise rows sit flush (gap 0). The small
+          vertical padding insets the first/last rows so they don't crowd the
+          cell's top/bottom borders while keeping all gaps identical. */}
+      <div
         style={{
-          width: 14,
-          height: 14,
-          border: "2px solid #000",
-          display: "inline-block",
-          flexShrink: 0,
-          background: checked ? "#000" : "#fff",
+          display: "flex",
+          flexDirection: "column",
+          gap: 0,
+          ...(distribute
+            ? { flex: 1, justifyContent: "space-between", paddingTop: 3, paddingBottom: 3 }
+            : {}),
         }}
-      />
+      >
+        {items.map((item) => (
+          <div
+            key={item.label}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              // Space-between mirrors the reference: short labels ("Exchange")
+              // leave the box right-aligned; long labels ("Open Parcel Allowed")
+              // push the box to sit right after the label.
+              justifyContent: "space-between",
+              gap: 4,
+            }}
+          >
+            <span style={{ whiteSpace: "nowrap", letterSpacing: "-0.2px" }}>{item.label}</span>
+            <span
+              style={{
+                width: 14,
+                height: 14,
+                border: "2px solid #000",
+                display: "inline-block",
+                flexShrink: 0,
+                background: item.checked ? "#000" : "#fff",
+              }}
+            />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 // ─── Waybill card — one 6×4 inch label per order (matches Jett-Delivery-Waybill-6x4.pdf) ──
-function WaybillCard({ order }: { order: Order }) {
+function WaybillCard({ order, printedAt }: { order: Order; printedAt: string }) {
   const merchantName = order.merchant?.merchantName || "—";
   const merchantPhone = order.merchant?.phone || "—";
   const logoUrl = order.merchant?.logoUrl || null;
@@ -132,6 +193,7 @@ function WaybillCard({ order }: { order: Order }) {
     <div
       className="waybill-card"
       style={{
+        position: "relative",
         width: "6in",
         height: "4in",
         boxSizing: "border-box",
@@ -159,10 +221,13 @@ function WaybillCard({ order }: { order: Order }) {
           // receiver name stays on one line with a regular-width font.
           gridTemplateColumns: "1.34fr 1.5fr 1.44fr 1.51fr",
           // Row 1 grew 0.89in → 1.24in so the 110px waybill QR fits without
-          // clipping; the freed space is reclaimed from the single-line rows
-          // below (address / signature only need ~20px each). Total stays
-          // exactly 3.36in: 1.24 + 0.97 + 0.33 + 0.47 + 0.35 (1fr).
-          gridTemplateRows: "1.24in 0.97in 0.33in 0.47in 1fr",
+          // clipping. The address row (row 3) is a minmax track: it keeps its
+          // 0.33in single-line height for short addresses but grows to fit
+          // wrapped multi-line addresses. The declaration/signature row (row 5)
+          // is minmax(0, 1fr): it absorbs the leftover space normally and
+          // shrinks (down to its content height) only when the address row
+          // grows — so long addresses are never truncated.
+          gridTemplateRows: "1.24in 0.97in minmax(0.33in, auto) 0.47in minmax(0, 1fr)",
           overflow: "hidden",
           // The reference label is typeset in a condensed face (Arial Narrow);
           // request a condensed stretch so body text fits the same way.
@@ -310,15 +375,15 @@ function WaybillCard({ order }: { order: Order }) {
       >
         <b>Address:</b>
         {address ? (
-          <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          // Wraps onto as many lines as needed (the grid row grows with it);
+          // break-word/anywhere prevents a single long token from overflowing.
+          <span style={{ flex: 1, minWidth: 0, whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere", lineHeight: 1.35 }}>
             {address}
           </span>
         ) : (
           <span style={{ flex: 1, height: 0, borderBottom: "1px solid #000" }} />
         )}
       </div>
-      <CheckboxCell label="Exchange" checked={!!order.hasExchange} colStart={4} colSpan={1} />
-
       {/* ── ROW 4: Special Instructions | Open Parcel Allowed ── */}
       <div
         style={{
@@ -341,7 +406,21 @@ function WaybillCard({ order }: { order: Order }) {
           <span style={{ flex: 1, height: 0, borderBottom: "1px solid #000" }} />
         )}
       </div>
-      <CheckboxCell label="Open Parcel Allowed" checked={!!order.openParcelAllowed} colStart={4} colSpan={1} />
+      {/* Single spanning cell for all three checkboxes (rows 3–4, column 4):
+          `distribute` gives Exchange / Open Parcel Allowed / Fragile identical
+          vertical spacing, and border={["b"]} keeps only the closing line. */}
+      <CheckboxCell
+        items={[
+          { label: "Exchange", checked: !!order.hasExchange },
+          { label: "Open Parcel Allowed", checked: !!order.openParcelAllowed },
+          { label: "Fragile", checked: !!order.isFragile },
+        ]}
+        colStart={4}
+        colSpan={1}
+        rowStart={3}
+        rowSpan={2}
+        distribute
+      />
 
       {/* ── ROW 5: Arabic declaration + Signature (single full-width cell) ── */}
       <div
@@ -364,6 +443,21 @@ function WaybillCard({ order }: { order: Order }) {
         </span>
       </div>
       </div>
+      {/* ── Footer: print date/time (Beirut time) in the white band below the frame ── */}
+      <div
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: "0.09in",
+          textAlign: "center",
+          fontSize: "8px",
+          letterSpacing: "0.2px",
+          color: "#000",
+        }}
+      >
+        Printed: {printedAt}
+      </div>
     </div>
   );
 }
@@ -373,6 +467,10 @@ export default function PrintPage() {
   const searchParams = useSearchParams();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Computed once per render so every waybill in the batch shares the same
+  // print timestamp (the cards only render after the client-side fetch).
+  const printedAt = formatPrintTimestamp();
 
   useEffect(() => {
     const idsParam = searchParams.get("ids");
@@ -386,23 +484,33 @@ export default function PrintPage() {
 
     const ids = idsParam.split(",").filter(Boolean);
 
-    // Fetch with the maximum server-side take so selected orders are found
-    // regardless of age, and normalize both the legacy array format and the
-    // current { data, meta } response shape returned by GET /api/orders.
-    // The GET handler includes the `merchant` relation (merchantName + logoUrl)
-    // plus `notes`, `packages` and `hasExchange`, so each card renders fully.
-    fetch("/api/orders?take=5000")
+    // Ask the API for exactly the selected order IDs (?ids=…) instead of
+    // downloading the entire order table and filtering client-side. The GET
+    // handler includes the `merchant` relation (merchantName + logoUrl) plus
+    // `notes`, `packages` and `hasExchange`, so each card renders fully.
+    // Normalize both the legacy array format and the current { data, meta }
+    // response shape returned by GET /api/orders.
+    fetch(`/api/orders?ids=${encodeURIComponent(ids.join(","))}`)
       .then((res) => res.json())
       .then((result) => {
-        const allOrders: Order[] = Array.isArray(result)
+        const filtered: Order[] = Array.isArray(result)
           ? result
           : (result.data ?? []);
-        const filtered = allOrders.filter((o: Order) => ids.includes(o.id));
         setOrders(filtered);
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, [searchParams]);
+
+  // ── Auto-handle: browser print (triggered by "Save & Print" in order entry) ──
+  useEffect(() => {
+    if (orders.length > 0 && searchParams.get("auto") === "true") {
+      // Delay briefly so the QR data-URL <img>s finish rendering before the
+      // print dialog opens.
+      const timer = setTimeout(() => window.print(), 800);
+      return () => clearTimeout(timer);
+    }
+  }, [orders, searchParams]);
 
   // ── Auto-handle: PDF generation (one 6×4 in landscape page per waybill) ──
   useEffect(() => {
@@ -511,7 +619,7 @@ export default function PrintPage() {
             className="waybill-label"
             style={{ marginBottom: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.35)" }}
           >
-            <WaybillCard order={o} />
+            <WaybillCard order={o} printedAt={printedAt} />
           </div>
         ))}
       </div>

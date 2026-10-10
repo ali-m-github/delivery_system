@@ -143,6 +143,8 @@ export default async function MerchantPage() {
     address: merchant.address,
     logoUrl: merchant.logoUrl,
     isCashSeller: merchant.isCashSeller,
+    // Account creation date, taken straight from the Merchant row.
+    createdAt: merchant.createdAt.toISOString(),
     sheetImportConfig: normalizeSheetImportConfig(merchant.sheetImportConfig),
     zoneRates: merchant.zoneRates.map((zr) => ({
       id: zr.id,

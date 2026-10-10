@@ -6,15 +6,13 @@ import Image from "next/image";
 import SharedOrderTable from "@/components/SharedOrderTable";
 import CashSellerWorkspace from "@/components/merchants/CashSellerWorkspace";
 import ImportGoogleSheetsModal from "@/components/orders/ImportGoogleSheetsModal";
+import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
 
+// Day/month/year, matching the user side (SharedOrderTable, tracking).
 const formatDate = (iso: string) => {
   if (!iso) return "";
   const d = new Date(iso);
-  return d.toLocaleDateString("en-US", {
-    month: "2-digit",
-    day: "2-digit",
-    year: "numeric",
-  });
+  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
 };
 
 // Build a windowed list of page numbers (0-based) with ellipsis markers.
@@ -218,31 +216,36 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
       { header: "Amount LBP", key: "amountLbp", width: 15 },
     ];
     selected.forEach((o) => {
-      worksheet.addRow({
+      const row = worksheet.addRow({
         orderId: o.orderId,
-        date: formatDate(o.createdAt),
+        date: new Date(o.createdAt),
         customer: o.customerName || "",
         phone: o.customerPhone || "",
         address: o.customerAddress || "",
         zone: o.zone?.name || "",
         location: o.location,
         finStatus: o.financialStatus,
-        amountUsd: (o.amountUsd ?? 0).toFixed(2),
-        amountLbp: (o.amountLbp ?? 0).toString(),
+        amountUsd: o.amountUsd ?? 0,
+        amountLbp: o.amountLbp ?? 0,
       });
+
+      // Order ID: write purely-numeric IDs as real numbers and everything else
+      // as explicit text, so Excel never re-interprets it as a date.
+      const orderIdCell = row.getCell("orderId");
+      const rawId = String(o.orderId ?? "");
+      if (/^\d+$/.test(rawId)) {
+        orderIdCell.value = Number(rawId);
+        orderIdCell.numFmt = "0";
+      } else {
+        orderIdCell.value = rawId;
+        orderIdCell.numFmt = "@";
+      }
+
+      // Date: store as a real date value formatted as a date, not a string.
+      row.getCell("date").numFmt = "mm/dd/yyyy";
     });
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${merchant.merchantName}_orders.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    styleWorksheet(worksheet);
+    await downloadWorkbook(workbook, `${merchant.merchantName}_orders.xlsx`);
   }, [selectedOrders, normalizedOrders, merchant.merchantName]);
 
   // ─── Stat Card Calculations ─────────────────────────────────────────────
@@ -493,6 +496,13 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
               <p className="text-gray-400 text-sm mt-2">
                 <span className="bg-[#121824] px-2 py-1 rounded border border-white/5 mr-2 font-mono text-cyan-400">
                   ID: {merchant.merchantId}
+                </span>
+                <span
+                  className="bg-[#121824] px-2 py-1 rounded border border-white/5 mr-2 text-gray-300"
+                  title="Merchant account creation date"
+                >
+                  Member since:{" "}
+                  {merchant.createdAt ? formatDate(merchant.createdAt) : "N/A"}
                 </span>
                 Phone: {merchant.phone || "N/A"} &middot; Address:{" "}
                 {merchant.address || "N/A"}

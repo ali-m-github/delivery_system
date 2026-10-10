@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
+import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
 
 export default function StatementsPage() {
   const searchParams = useSearchParams();
@@ -173,14 +174,11 @@ export default function StatementsPage() {
       });
     });
 
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `Statement_${statement.merchant.merchantName}_#${statement.sequentialIndex}.xlsx`;
-    link.click();
+    styleWorksheet(worksheet);
+    await downloadWorkbook(
+      workbook,
+      `Statement_${statement.merchant.merchantName}_#${statement.sequentialIndex}.xlsx`,
+    );
   };
 
   return (

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
+import OrderDetailsModal from "@/components/OrderDetailsModal";
 import PermissionGuard from "@/components/PermissionGuard";
 import { hasPermission, type PermissionedUser } from "@/lib/permissions";
 
@@ -131,7 +132,7 @@ interface SharedOrderTableProps {
   availableDrivers?: any[];
   onUpdateOrder?: (id: string, payload: any) => void;
   currentUser?: PermissionedUser | null;
-  onCopyLink?: (order: any) => void;
+  onCopyLink?: (order: any) => void | Promise<boolean>;
   /** Called with a DELIVERED (WO/WD) order to return it to the warehouse. */
   onReturnDelivered?: (order: any) => void;
 }
@@ -153,6 +154,12 @@ export default function SharedOrderTable({
     history: any[];
     payoutReference: string | null;
   } | null>(null);
+
+  // Full order-details modal, opened by clicking an order ID.
+  const [detailsModalOrder, setDetailsModalOrder] = useState<any | null>(null);
+
+  // Transient inline "Copied" feedback for the copy-link button (per-row).
+  const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
 
   // Shared composite check: ADMIN bypass ∪ group permissions ∪ custom
   // permissions (single source of truth with the server-side guards).
@@ -270,7 +277,13 @@ export default function SharedOrderTable({
             >
               &#9776;
             </button>
-            <span className="font-mono text-gray-300">{order.orderId}</span>
+            <button
+              onClick={() => setDetailsModalOrder(order)}
+              title="View order details"
+              className="font-mono text-gray-300 hover:text-cyan-300 underline decoration-cyan-500/40 decoration-dashed underline-offset-4 transition-colors"
+            >
+              {order.orderId}
+            </button>
           </div>
         </td>
 
@@ -463,26 +476,46 @@ export default function SharedOrderTable({
         {onCopyLink && (
           <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
             <span className="lg:hidden font-bold text-gray-400">Link:</span>
-            <button
-              onClick={() => onCopyLink(order)}
-              className="p-1 text-gray-400 hover:text-white transition-colors flex items-center justify-center"
-              title="Copy Link"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-                stroke="currentColor"
-                className="w-4 h-4"
+            {copiedLinkId === order.id ? (
+              <span className="px-1 text-[10px] font-bold text-green-400">
+                Copied
+              </span>
+            ) : (
+              <button
+                onClick={() => {
+                  const result = onCopyLink(order);
+                  // Only show feedback when the copy handler confirms success
+                  // (it resolves to a boolean), or immediately for void handlers.
+                  if (result instanceof Promise) {
+                    result.then((ok) => {
+                      if (!ok) return;
+                      setCopiedLinkId(order.id);
+                      setTimeout(() => setCopiedLinkId(null), 1000);
+                    });
+                  } else {
+                    setCopiedLinkId(order.id);
+                    setTimeout(() => setCopiedLinkId(null), 1000);
+                  }
+                }}
+                className="p-1 text-gray-400 hover:text-white transition-colors flex items-center justify-center"
+                title="Copy Link"
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"
-                />
-              </svg>
-            </button>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                  className="w-4 h-4"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"
+                  />
+                </svg>
+              </button>
+            )}
           </td>
         )}
 
@@ -673,6 +706,13 @@ export default function SharedOrderTable({
           initialHistory={historyModalOrder.history}
           payoutReference={historyModalOrder.payoutReference}
           onClose={() => setHistoryModalOrder(null)}
+        />
+      )}
+
+      {detailsModalOrder && (
+        <OrderDetailsModal
+          order={detailsModalOrder}
+          onClose={() => setDetailsModalOrder(null)}
         />
       )}
     </>

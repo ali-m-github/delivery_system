@@ -10,9 +10,11 @@ import SharedOrderTable, {
 } from "@/components/SharedOrderTable";
 import GlobalSheetImportModal from "@/components/orders/GlobalSheetImportModal";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
+import OrderDetailsModal from "@/components/OrderDetailsModal";
 import BarcodeScannerModal from "@/components/BarcodeScannerModal";
 import PermissionGuard from "@/components/PermissionGuard";
 import { hasPermission } from "@/lib/permissions";
+import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
 
 // ─── Header Alias Mapping for Bulk Upload ─────────────────────────────────────
 const HEADER_ALIASES: Record<string, string> = {
@@ -116,6 +118,7 @@ interface Order {
   hasExchange: boolean;
   packages?: number;
   openParcelAllowed?: boolean;
+  isFragile?: boolean;
   /** True when a "<orderId>-Exchange" proof order already exists for this order. */
   exchangeExists?: boolean;
   location: string;
@@ -537,6 +540,7 @@ function OrdersPageInner() {
     price: "",
     hasExchange: false,
     openParcelAllowed: false,
+    isFragile: false,
     extraShipping: "",
     amountLbp: "",
     packages: "1",
@@ -738,6 +742,7 @@ function OrdersPageInner() {
             amountLbp: lbp !== null && !isNaN(lbp) ? String(lbp) : "0",
             hasExchange: false,
             openParcelAllowed: false,
+            isFragile: false,
             extraShipping: "0",
             packages: "1",
             importSource: "bulk-csv",
@@ -847,6 +852,9 @@ function OrdersPageInner() {
     payoutReference: string | null;
   } | null>(null);
 
+  // Full order-details modal, opened by clicking an order ID in any table.
+  const [detailsModalOrder, setDetailsModalOrder] = useState<Order | null>(null);
+
   // ── Modals ──
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [notesModal, setNotesModal] = useState<Order | null>(null);
@@ -866,7 +874,9 @@ function OrdersPageInner() {
     amountLbp: "",
     hasExchange: false,
     openParcelAllowed: false,
+    isFragile: false,
     extraShipping: "",
+    notes: "",
   });
 
   // ── Assign Driver Modal ──
@@ -1101,17 +1111,19 @@ function OrdersPageInner() {
   };
 
   // ── Copy tracking link to clipboard ────────────────────────────────────
-  const handleCopyLink = (order: Order) => {
+  // Resolves to whether the copy succeeded so the table can show inline
+  // "Copied" feedback instead of an alert popup.
+  const handleCopyLink = (order: Order): Promise<boolean> => {
     const trackingUrl = order.trackToken
       ? window.location.origin + "/track/" + order.trackToken + "/" + order.orderId
       : window.location.origin + "/track/" + order.orderId;
 
     if (navigator.clipboard && window.isSecureContext) {
       // Modern HTTPS approach
-      navigator.clipboard
-        .writeText(trackingUrl)
-        .then(() => alert(`Tracking link copied!\n${trackingUrl}`))
-        .catch(() => alert(`Failed to copy. Manual link:\n${trackingUrl}`));
+      return navigator.clipboard.writeText(trackingUrl).then(
+        () => true,
+        () => false,
+      );
     } else {
       // Legacy HTTP Fallback
       const textArea = document.createElement("textarea");
@@ -1123,11 +1135,12 @@ function OrdersPageInner() {
       textArea.select();
       try {
         document.execCommand("copy");
-        alert(`Tracking link copied!\n${trackingUrl}`);
+        return Promise.resolve(true);
       } catch (err) {
-        alert(`Failed to copy link. Manual link:\n${trackingUrl}`);
+        return Promise.resolve(false);
+      } finally {
+        textArea.remove();
       }
-      textArea.remove();
     }
   };
 
@@ -1259,6 +1272,12 @@ function OrdersPageInner() {
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    // The "Save & Print" submit button carries data-print="true"; detect it via
+    // the submitter so Enter-key submits still behave like a plain save.
+    const printWaybill =
+      (e.nativeEvent as SubmitEvent).submitter?.getAttribute("data-print") ===
+      "true";
+
     // Reverse-lookup zone name → UUID
     const matchedZone = zones.find(
       (z) => z.name.toLowerCase() === zoneInput.trim().toLowerCase(),
@@ -1296,6 +1315,7 @@ function OrdersPageInner() {
         }),
       });
       if (res.ok) {
+        const newOrder = await res.json().catch(() => null);
         setFormData({
           orderId: "",
           merchantId: "",
@@ -1306,6 +1326,7 @@ function OrdersPageInner() {
           price: "",
           hasExchange: false,
           openParcelAllowed: false,
+          isFragile: false,
           extraShipping: "",
           amountLbp: "",
           packages: "1",
@@ -1314,6 +1335,11 @@ function OrdersPageInner() {
         setZoneInput("");
         await fetchOrders();
         orderIdInputRef.current?.focus();
+
+        // "Save & Print": open the waybill print view and auto-trigger printing.
+        if (printWaybill && newOrder?.id) {
+          window.open(`/orders/print?ids=${newOrder.id}&auto=true`, "_blank");
+        }
       } else {
         const err = await res.json();
         console.error("POST error", err);
@@ -2513,7 +2539,9 @@ function OrdersPageInner() {
       amountLbp: order.amountLbp.toString(),
       hasExchange: order.hasExchange,
       openParcelAllowed: !!order.openParcelAllowed,
+      isFragile: !!order.isFragile,
       extraShipping: (order as any).extraShipping?.toString() || "0",
+      notes: order.notes || "",
     });
   };
 
@@ -2526,6 +2554,8 @@ function OrdersPageInner() {
       zoneId: editFormData.zoneId,
       hasExchange: editFormData.hasExchange,
       openParcelAllowed: editFormData.openParcelAllowed,
+      isFragile: editFormData.isFragile,
+      notes: editFormData.notes.trim(),
     };
     // Monetary fields require ORDERS_FINANCIAL (ADMIN bypasses); staff
     // without the permission submit the non-financial fields only.
@@ -3511,7 +3541,13 @@ function OrdersPageInner() {
                                       >
                                         &#9776;
                                       </button>
-                                      <span>{order.orderId}</span>
+                                      <button
+                                        onClick={() => setDetailsModalOrder(order)}
+                                        title="View order details"
+                                        className="hover:text-cyan-300 underline decoration-cyan-500/40 decoration-dashed underline-offset-4 transition-colors"
+                                      >
+                                        {order.orderId}
+                                      </button>
                                     </div>
                                   </td>
                                   <td className="px-2 py-1.5 text-xs text-gray-400 whitespace-nowrap">
@@ -4152,6 +4188,25 @@ function OrdersPageInner() {
                       />
                     </label>
                   </div>
+                  {/* Fragile */}
+                  <div className="flex flex-col gap-1 min-w-[58px] items-center">
+                    <label className="text-[10px] text-gray-500 font-mono uppercase">
+                      Fragile
+                    </label>
+                    <label className="flex items-center cursor-pointer" title="Fragile">
+                      <input
+                        type="checkbox"
+                        checked={formData.isFragile}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            isFragile: e.target.checked,
+                          })
+                        }
+                        className="w-4 h-4 rounded border-gray-600 bg-slate-950 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
+                      />
+                    </label>
+                  </div>
                   {/* Notes */}
                   <div className="flex flex-col gap-1 min-w-[120px]">
                     <label className="text-[10px] text-gray-500 font-mono uppercase">
@@ -4167,16 +4222,27 @@ function OrdersPageInner() {
                       className="px-2 py-1.5 text-xs rounded bg-slate-950 border border-gray-700 text-white placeholder-gray-600 focus:border-cyan-500 outline-none transition-colors"
                     />
                   </div>
-                  {/* Save Button */}
+                  {/* Save / Save & Print */}
                   <div className="flex flex-col gap-1 min-w-[80px]">
                     <div className="h-[10px]" />
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="w-full px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
-                    >
-                      {submitting ? "..." : "Save"}
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        className="px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {submitting ? "..." : "Save"}
+                      </button>
+                      <button
+                        type="submit"
+                        data-print="true"
+                        disabled={submitting}
+                        title="Save the order and immediately print its waybill"
+                        className="px-4 py-1.5 text-xs font-bold rounded bg-violet-600 hover:bg-violet-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {submitting ? "..." : "Save & Print"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </form>
@@ -4250,7 +4316,13 @@ function OrdersPageInner() {
                             className="border-b border-white/5 hover:bg-white/[0.02] transition-colors"
                           >
                             <td className="px-3 py-2 text-cyan-300 font-mono">
-                              {order.orderId}
+                              <button
+                                onClick={() => setDetailsModalOrder(order)}
+                                title="View order details"
+                                className="hover:text-cyan-200 underline decoration-cyan-500/40 decoration-dashed underline-offset-4 transition-colors"
+                              >
+                                {order.orderId}
+                              </button>
                             </td>
                             <td className="px-3 py-2 text-gray-300">
                               {order.merchant?.merchantName || "—"}
@@ -4690,7 +4762,13 @@ function OrdersPageInner() {
                               />
                             </td>
                             <td className="px-3 py-1.5 text-xs font-mono text-gray-300 whitespace-nowrap">
-                              {order.orderId}
+                              <button
+                                onClick={() => setDetailsModalOrder(order)}
+                                title="View order details"
+                                className="hover:text-cyan-300 underline decoration-cyan-500/40 decoration-dashed underline-offset-4 transition-colors"
+                              >
+                                {order.orderId}
+                              </button>
                             </td>
                             <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
                               {order.merchant?.merchantName ||
@@ -4982,7 +5060,13 @@ function OrdersPageInner() {
                               />
                             </td>
                             <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
-                              {order.orderId}
+                              <button
+                                onClick={() => setDetailsModalOrder(order)}
+                                title="View order details"
+                                className="hover:text-cyan-300 underline decoration-cyan-500/40 decoration-dashed underline-offset-4 transition-colors"
+                              >
+                                {order.orderId}
+                              </button>
                             </td>
                             <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
                               {shortDate(order.createdAt)}
@@ -5345,6 +5429,25 @@ function OrdersPageInner() {
                   </select>
                 </div>
 
+                {/* Notes */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">
+                    Notes
+                  </label>
+                  <textarea
+                    value={editFormData.notes}
+                    onChange={(e) =>
+                      setEditFormData((p) => ({
+                        ...p,
+                        notes: e.target.value,
+                      }))
+                    }
+                    placeholder="Optional notes..."
+                    rows={2}
+                    className="w-full px-4 py-2.5 text-sm rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500/50 transition-all duration-200"
+                  />
+                </div>
+
                 {/* Financial fields — ORDERS_FINANCIAL only (ADMIN bypasses) */}
                 {userHasPermission("ORDERS_FINANCIAL") && (
                   <>
@@ -5486,6 +5589,47 @@ function OrdersPageInner() {
                   />
                   <span className="text-sm text-gray-300 group-hover:text-white transition-colors">
                     Open Parcel Allowed
+                  </span>
+                </label>
+
+                {/* Fragile */}
+                <label className="flex items-center gap-3 cursor-pointer group">
+                  <div
+                    className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-200 ${
+                      editFormData.isFragile
+                        ? "bg-cyan-500 border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                        : "border-gray-600 group-hover:border-gray-500"
+                    }`}
+                  >
+                    {editFormData.isFragile && (
+                      <svg
+                        className="w-3 h-3 text-white"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={3}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M5 13l4 4L19 7"
+                        />
+                      </svg>
+                    )}
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={editFormData.isFragile}
+                    onChange={(e) =>
+                      setEditFormData((p) => ({
+                        ...p,
+                        isFragile: e.target.checked,
+                      }))
+                    }
+                    className="sr-only"
+                  />
+                  <span className="text-sm text-gray-300 group-hover:text-white transition-colors">
+                    Fragile
                   </span>
                 </label>
               </div>
@@ -5877,31 +6021,12 @@ function OrdersPageInner() {
                     worksheet.addRow(row);
                   });
 
-                  // Apply borders and centering to all cells
-                  worksheet.eachRow((row, rowNumber) => {
-                    row.eachCell((cell) => {
-                      cell.alignment = {
-                        vertical: "middle",
-                        horizontal: "center",
-                      };
-                      cell.border = {
-                        top: { style: "thin" },
-                        left: { style: "thin" },
-                        bottom: { style: "thin" },
-                        right: { style: "thin" },
-                      };
-                      if (rowNumber === 1) cell.font = { bold: true };
-                    });
-                  });
+                  // Center all cells and add borders (shared across every Excel export)
+                  styleWorksheet(worksheet);
 
-                  const buffer = await workbook.xlsx.writeBuffer();
-                  const blob = new Blob([buffer], {
-                    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                  });
-                  const link = document.createElement("a");
-                  link.href = URL.createObjectURL(blob);
-                  link.download = "Libanex_Orders_Export.xlsx";
-                  link.click();
+                  // downloadWorkbook also suppresses Excel's green "Number Stored
+                  // as Text" triangles on phone numbers and other numeric-looking strings.
+                  await downloadWorkbook(workbook, "Libanex_Orders_Export.xlsx");
 
                   setExcelModalOpen(false);
                 }}
@@ -5954,31 +6079,12 @@ function OrdersPageInner() {
                       worksheet.addRow(row);
                     });
 
-                    // Apply borders and centering to all cells
-                    worksheet.eachRow((row, rowNumber) => {
-                      row.eachCell((cell) => {
-                        cell.alignment = {
-                          vertical: "middle",
-                          horizontal: "center",
-                        };
-                        cell.border = {
-                          top: { style: "thin" },
-                          left: { style: "thin" },
-                          bottom: { style: "thin" },
-                          right: { style: "thin" },
-                        };
-                        if (rowNumber === 1) cell.font = { bold: true };
-                      });
-                    });
+                    // Center all cells and add borders (shared across every Excel export)
+                    styleWorksheet(worksheet);
 
-                    const buffer = await workbook.xlsx.writeBuffer();
-                    const blob = new Blob([buffer], {
-                      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    });
-                    const link = document.createElement("a");
-                    link.href = URL.createObjectURL(blob);
-                    link.download = "Orders_Export.xlsx";
-                    link.click();
+                    // downloadWorkbook also suppresses Excel's green "Number Stored
+                    // as Text" triangles on phone numbers and other numeric-looking strings.
+                    await downloadWorkbook(workbook, "Orders_Export.xlsx");
 
                     setExcelModalOpen(false);
                   }}
@@ -6321,6 +6427,49 @@ function OrdersPageInner() {
                       />
                       <span className="text-sm text-gray-300 group-hover:text-white transition-colors">
                         Open Parcel
+                      </span>
+                    </label>
+
+                    {/* Fragile (Checkbox) */}
+                    <label className="flex items-center gap-3 cursor-pointer group">
+                      <div
+                        className={`w-5 h-5 rounded-md border-2 flex items-center justify-center
+                                    transition-all duration-200
+                                    ${
+                                      formData.isFragile
+                                        ? "bg-cyan-500 border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                                        : "border-gray-600 group-hover:border-gray-500"
+                                    }`}
+                      >
+                        {formData.isFragile && (
+                          <svg
+                            className="w-3 h-3 text-white"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={3}
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M5 13l4 4L19 7"
+                            />
+                          </svg>
+                        )}
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={formData.isFragile}
+                        onChange={(e) =>
+                          setFormData((prev) => ({
+                            ...prev,
+                            isFragile: e.target.checked,
+                          }))
+                        }
+                        className="sr-only"
+                      />
+                      <span className="text-sm text-gray-300 group-hover:text-white transition-colors">
+                        Fragile
                       </span>
                     </label>
                   </div>
@@ -6867,6 +7016,16 @@ function OrdersPageInner() {
             initialHistory={historyModalOrder.history}
             payoutReference={historyModalOrder.payoutReference}
             onClose={() => setHistoryModalOrder(null)}
+          />
+        )}
+
+        {/* ════════════════════════════════════════ */}
+        {/* ORDER DETAILS MODAL                      */}
+        {/* ════════════════════════════════════════ */}
+        {detailsModalOrder && (
+          <OrderDetailsModal
+            order={detailsModalOrder}
+            onClose={() => setDetailsModalOrder(null)}
           />
         )}
 
