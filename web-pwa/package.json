@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "validate": "npx ts-node scripts/validate-config.ts"
+    "validate": "npx ts-node scripts/validate-config.ts",
+    "import-waybills": "npx ts-node --compilerOptions \"{\\\"module\\\":\\\"commonjs\\\"}\" scripts/import-waybills-from-folder.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

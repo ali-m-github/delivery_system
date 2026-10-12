@@ -313,7 +313,10 @@ export default function SharedOrderTable({
 
         <td className="flex lg:table-cell justify-between items-center px-0.5 py-2 whitespace-nowrap">
           <span className="lg:hidden font-bold text-gray-400">Address:</span>
-          <span className="text-gray-400 max-w-[200px] truncate">
+          <span
+            className="text-gray-400 max-w-[260px] whitespace-normal break-words"
+            title={order.customerAddress}
+          >
             {order.customerAddress}
           </span>
         </td>

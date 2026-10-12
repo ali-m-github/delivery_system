@@ -9,6 +9,9 @@ import SharedOrderTable, {
   compareSortValues,
 } from "@/components/SharedOrderTable";
 import GlobalSheetImportModal from "@/components/orders/GlobalSheetImportModal";
+import WaybillUploadReport, {
+  type WaybillFileResult,
+} from "@/components/orders/WaybillUploadReport";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import OrderDetailsModal from "@/components/OrderDetailsModal";
 import BarcodeScannerModal from "@/components/BarcodeScannerModal";
@@ -782,6 +785,15 @@ function OrdersPageInner() {
   // ── Waybill Upload State & Handler ──
   const [waybillUploading, setWaybillUploading] = useState(false);
   const waybillInputRef = useRef<HTMLInputElement>(null);
+  // Live progress for the button label: a 700-file batch runs for a long time
+  // and a bare "Uploading..." gives no way to tell it is still advancing.
+  const [waybillProgress, setWaybillProgress] = useState({ done: 0, total: 0 });
+  // Per-file verdicts, shown in a grouped report once the queue drains.
+  const [waybillResults, setWaybillResults] = useState<WaybillFileResult[]>([]);
+  const [waybillClientErrors, setWaybillClientErrors] = useState<
+    { fileName: string; reason: string }[]
+  >([]);
+  const [waybillReportOpen, setWaybillReportOpen] = useState(false);
 
   const handleWaybillUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
@@ -790,12 +802,18 @@ function OrdersPageInner() {
     if (!files || files.length === 0) return;
 
     setWaybillUploading(true);
-
     const fileList = Array.from(files);
-    let successCount = 0;
-    const failedFiles: string[] = [];
+    setWaybillProgress({ done: 0, total: fileList.length });
+    setWaybillResults([]);
+    setWaybillClientErrors([]);
 
-    // Sequential execution prevents CPU starvation on the backend
+    const collected: WaybillFileResult[] = [];
+    const clientErrors: { fileName: string; reason: string }[] = [];
+
+    // Files are sent one at a time on purpose: the server's OCR engines are
+    // CPU-bound, and overlapping requests would only queue behind each other
+    // while multiplying upload memory. Progress is pushed to state per file so
+    // the UI proves the queue is advancing.
     for (const file of fileList) {
       const formData = new FormData();
       formData.append("file", file);
@@ -806,36 +824,40 @@ function OrdersPageInner() {
           body: formData,
         });
 
-        if (res.ok) {
-          const data = await res.json();
-          // API returns { results: [{ fileName, success, error?, ... }] }
-          const fileResult = data.results?.[0];
-          if (fileResult?.success) {
-            successCount++;
-          } else {
-            failedFiles.push(
-              `${file.name}: ${fileResult?.error || "Unknown error"}`,
-            );
-          }
+        // The API returns { results: [{ fileName, success, code?, error?,
+        // candidates?, ... }] }. A 404 means "no file matched an order", but
+        // the body still carries the per-file diagnostics — those are exactly
+        // what the report needs, so parse it like a success.
+        const data = await res.json().catch(() => null);
+        const fileResults: WaybillFileResult[] = Array.isArray(data?.results)
+          ? data.results
+          : [];
+
+        if (fileResults.length > 0) {
+          collected.push(...fileResults);
+        } else if (res.ok) {
+          clientErrors.push({
+            fileName: file.name,
+            reason: "Server returned no result for this file",
+          });
         } else {
-          const errorData = await res.json().catch(() => null);
-          failedFiles.push(
-            `${file.name}: ${errorData?.error || res.statusText || "Request failed"}`,
-          );
+          clientErrors.push({
+            fileName: file.name,
+            reason:
+              data?.error || res.statusText || `Request failed (${res.status})`,
+          });
         }
-      } catch (error) {
-        failedFiles.push(`${file.name}: Network or Server Error`);
+      } catch {
+        clientErrors.push({ fileName: file.name, reason: "Network or Server Error" });
       }
+
+      setWaybillResults([...collected]);
+      setWaybillClientErrors([...clientErrors]);
+      setWaybillProgress((p) => ({ ...p, done: p.done + 1 }));
     }
 
-    // Handle alert rendering after the entire queue finishes
-    if (failedFiles.length > 0) {
-      alert(
-        `Uploaded ${successCount} successfully.\n${failedFiles.length} failed:\n${failedFiles.join("\n")}`,
-      );
-    } else {
-      alert(`Successfully uploaded all ${successCount} waybills.`);
-    }
+    // Show the grouped report instead of a wall of alert() text.
+    setWaybillReportOpen(true);
 
     await fetchOrders();
     setWaybillUploading(false);
@@ -3565,7 +3587,10 @@ function OrdersPageInner() {
                                   <td className="px-2 py-1.5 text-xs text-gray-400 whitespace-nowrap">
                                     {order.customerPhone}
                                   </td>
-                                  <td className="px-2 py-1.5 text-xs text-gray-400 max-w-[120px] truncate">
+                                  <td
+                                    className="px-2 py-1.5 text-xs text-gray-400 max-w-[260px] whitespace-normal break-words"
+                                    title={order.customerAddress}
+                                  >
                                     {order.customerAddress}
                                   </td>
                                   <td className="px-2 py-1.5 text-xs text-gray-300 whitespace-nowrap">
@@ -3961,12 +3986,46 @@ function OrdersPageInner() {
                            disabled:opacity-50 disabled:cursor-not-allowed
                            transition-all duration-200"
               >
-                {waybillUploading ? "Uploading..." : "📄 Upload Waybill"}
+                {waybillUploading
+                  ? `Uploading… ${waybillProgress.done}/${waybillProgress.total}`
+                  : "📄 Upload Waybill"}
               </button>
+              {/* Re-open the last batch's report without re-uploading anything. */}
+              {!waybillUploading &&
+                waybillResults.length + waybillClientErrors.length > 0 && (
+                  <button
+                    onClick={() => setWaybillReportOpen(true)}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg
+                               bg-white/5 text-gray-300 border border-white/10
+                               hover:bg-white/10 transition-all duration-200"
+                  >
+                    📋 Last Report
+                  </button>
+                )}
               <span className="text-[10px] text-gray-500 font-mono">
                 Upload waybill image(s) — order number extracted automatically
               </span>
             </div>
+            {/* Live progress bar while a batch is running */}
+            {waybillUploading && waybillProgress.total > 0 && (
+              <div className="mb-3">
+                <div className="h-1.5 w-full rounded-full bg-white/5 overflow-hidden">
+                  <div
+                    className="h-full bg-purple-500 transition-all duration-300"
+                    style={{
+                      width: `${Math.round((waybillProgress.done / waybillProgress.total) * 100)}%`,
+                    }}
+                  />
+                </div>
+                <p className="mt-1 text-[10px] text-gray-500 font-mono">
+                  {waybillProgress.done}/{waybillProgress.total} processed ·{" "}
+                  {waybillResults.filter((r) => r.success).length} matched ·{" "}
+                  {waybillResults.filter((r) => !r.success).length +
+                    waybillClientErrors.length}{" "}
+                  not matched
+                </p>
+              </div>
+            )}
             <div className="bg-[#121824] border border-white/5 rounded-xl p-4 shadow-2xl">
               <div className="flex items-center gap-3 mb-3">
                 <h2 className="text-sm font-bold text-white uppercase tracking-wider">
@@ -4333,7 +4392,10 @@ function OrdersPageInner() {
                             <td className="px-3 py-2 text-gray-300 font-mono">
                               {order.customerPhone}
                             </td>
-                            <td className="px-3 py-2 text-gray-400 max-w-[200px] truncate">
+                            <td
+                              className="px-3 py-2 text-gray-400 max-w-[260px] whitespace-normal break-words"
+                              title={order.customerAddress}
+                            >
                               {order.customerAddress}
                             </td>
                             <td className="px-3 py-2 text-gray-300">
@@ -4784,7 +4846,10 @@ function OrdersPageInner() {
                             <td className="px-3 py-1.5 text-xs text-gray-400 whitespace-nowrap">
                               {order.customerPhone}
                             </td>
-                            <td className="px-3 py-1.5 text-xs text-gray-400 max-w-[120px] truncate">
+                            <td
+                              className="px-3 py-1.5 text-xs text-gray-400 max-w-[260px] whitespace-normal break-words"
+                              title={order.customerAddress}
+                            >
                               {order.customerAddress}
                             </td>
                             <td className="px-3 py-1.5 text-xs text-gray-300 whitespace-nowrap">
@@ -7156,6 +7221,17 @@ function OrdersPageInner() {
           onScanSuccess={handleScanOrder}
           heading="Scan Order Barcode / QR"
         />
+
+        {/* ════════════════════════════════════════ */}
+        {/* WAYBILL UPLOAD REPORT                  */}
+        {/* ════════════════════════════════════════ */}
+        {waybillReportOpen && (
+          <WaybillUploadReport
+            results={waybillResults}
+            clientErrors={waybillClientErrors}
+            onClose={() => setWaybillReportOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

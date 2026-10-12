@@ -280,6 +280,12 @@ export default function MerchantClient({
   const [locationFilter, setLocationFilter] = useState("");
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
 
+  // ── Payout/statement date-range filter (statements tab) ──────────────────
+  // "all" | "day" | "week" | "month" | "3months" | "6months" | "custom"
+  const [payoutRange, setPayoutRange] = useState<string>("all");
+  const [payoutStart, setPayoutStart] = useState("");
+  const [payoutEnd, setPayoutEnd] = useState("");
+
   // ── Column sorting (click header arrows to toggle asc/desc) ────────────
   const [sortKey, setSortKey] = useState<string>("");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -495,6 +501,78 @@ export default function MerchantClient({
     };
   }, [orders, isPaidOrder, isUnpaidOrder]);
 
+  // ── Payout/statement date-range filter (statements tab) ──────────────────
+  // Presets: all | day | week | month | 3months | 6months | custom range.
+  const payoutRangeStart = useMemo(() => {
+    const now = new Date();
+    switch (payoutRange) {
+      case "day":
+        return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      case "week": {
+        const d = new Date(now);
+        d.setDate(d.getDate() - 7);
+        return d;
+      }
+      case "month": {
+        const d = new Date(now);
+        d.setMonth(d.getMonth() - 1);
+        return d;
+      }
+      case "3months": {
+        const d = new Date(now);
+        d.setMonth(d.getMonth() - 3);
+        return d;
+      }
+      case "6months": {
+        const d = new Date(now);
+        d.setMonth(d.getMonth() - 6);
+        return d;
+      }
+      case "custom":
+        return payoutStart ? new Date(`${payoutStart}T00:00:00`) : null;
+      default:
+        return null;
+    }
+  }, [payoutRange, payoutStart]);
+
+  const payoutRangeEnd = useMemo(() => {
+    if (payoutRange === "custom" && payoutEnd) {
+      return new Date(`${payoutEnd}T23:59:59.999`);
+    }
+    return null;
+  }, [payoutRange, payoutEnd]);
+
+  const inPayoutRange = useCallback(
+    (iso: string) => {
+      const t = new Date(iso).getTime();
+      if (payoutRangeStart && t < payoutRangeStart.getTime()) return false;
+      if (payoutRangeEnd && t > payoutRangeEnd.getTime()) return false;
+      return true;
+    },
+    [payoutRangeStart, payoutRangeEnd],
+  );
+
+  const filteredCashBatches = useMemo(
+    () => cashBatches.filter((b) => inPayoutRange(b.createdAt)),
+    [cashBatches, inPayoutRange],
+  );
+
+  const filteredPayouts = useMemo(
+    () => payouts.filter((p) => inPayoutRange(p.createdAt)),
+    [payouts, inPayoutRange],
+  );
+
+  // ── Total Paid ───────────────────────────────────────────────────────────
+  // Sum of every payout batch's net paid (cash sellers) or every statement's
+  // net disbursed (standard sellers). Clicking the card opens the statements
+  // tab (?tab=statements).
+  const totalPaid = useMemo(() => {
+    if (isCashSeller) {
+      return cashBatches.reduce((s, b) => s + (b.netPaid ?? 0), 0);
+    }
+    return payouts.reduce((s, p) => s + (p.netUsd ?? 0), 0);
+  }, [isCashSeller, cashBatches, payouts]);
+
   // ── Submit new order ────────────────────────────────────────────────────
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -588,6 +666,14 @@ export default function MerchantClient({
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingOrderId) return;
+
+    // The "Save & Print" submit button carries data-print="true"; detect it via
+    // the submitter so Enter-key submits still behave like a plain save.
+    const printWaybill =
+      (e.nativeEvent as SubmitEvent).submitter?.getAttribute("data-print") ===
+      "true";
+
+    const orderIdToPrint = editingOrderId;
     setEditSaving(true);
     setEditError(null);
     try {
@@ -614,6 +700,11 @@ export default function MerchantClient({
         prev.map((o) => (o.id === editingOrderId ? { ...o, ...updated } : o)),
       );
       setEditingOrderId(null);
+
+      // "Save & Print": open the waybill print view and auto-trigger printing.
+      if (printWaybill && orderIdToPrint) {
+        window.open(`/orders/print?ids=${orderIdToPrint}&auto=true`, "_blank");
+      }
     } catch (error: any) {
       setEditError(error.message || "Failed to update order");
     } finally {
@@ -1085,6 +1176,8 @@ export default function MerchantClient({
           </div>
 
           {/* ── Stat Cards ── */}
+          {/* Each card jumps to the deliveries tab and applies its filter, so
+              clicking works from any tab (not just while already on it). */}
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-4 mb-6">
             <StatCard
               label="All Orders"
@@ -1092,6 +1185,7 @@ export default function MerchantClient({
               color="slate"
               isSelected={boxFilter === null}
               onClick={() => {
+                handleTabChange("deliveries");
                 setBoxFilter(null);
                 setPage(1);
               }}
@@ -1102,6 +1196,7 @@ export default function MerchantClient({
               color="amber"
               isSelected={boxFilter === "IN_TRANSIT"}
               onClick={() => {
+                handleTabChange("deliveries");
                 setBoxFilter("IN_TRANSIT");
                 setPage(1);
               }}
@@ -1112,6 +1207,7 @@ export default function MerchantClient({
               color="green"
               isSelected={boxFilter === "DELIVERED"}
               onClick={() => {
+                handleTabChange("deliveries");
                 setBoxFilter("DELIVERED");
                 setPage(1);
               }}
@@ -1122,6 +1218,7 @@ export default function MerchantClient({
               color="purple"
               isSelected={boxFilter === "WAREHOUSE"}
               onClick={() => {
+                handleTabChange("deliveries");
                 setBoxFilter("WAREHOUSE");
                 setPage(1);
               }}
@@ -1132,6 +1229,7 @@ export default function MerchantClient({
               color="cyan"
               isSelected={boxFilter === "CP"}
               onClick={() => {
+                handleTabChange("deliveries");
                 setBoxFilter("CP");
                 setPage(1);
               }}
@@ -1142,6 +1240,7 @@ export default function MerchantClient({
               color="red"
               isSelected={boxFilter === "UNPAID"}
               onClick={() => {
+                handleTabChange("deliveries");
                 setBoxFilter("UNPAID");
                 setPage(1);
               }}
@@ -1152,13 +1251,14 @@ export default function MerchantClient({
               color="green"
               isSelected={boxFilter === "PAID"}
               onClick={() => {
+                handleTabChange("deliveries");
                 setBoxFilter("PAID");
                 setPage(1);
               }}
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
             <div className="backdrop-blur-xl bg-white/5 rounded-xl border border-white/10 p-4">
               <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">
                 Total Value (USD)
@@ -1175,6 +1275,22 @@ export default function MerchantClient({
                 {stats.totalLbp.toLocaleString()} LL
               </p>
             </div>
+            {/* Total Paid = sum of all payout batches' net paid (cash sellers)
+                or all statements' net disbursed. Clicking opens the
+                statements/payout-batches tab. */}
+            <button
+              type="button"
+              onClick={() => handleTabChange("statements")}
+              title="View payout batches"
+              className="backdrop-blur-xl bg-white/5 rounded-xl border border-green-500/30 p-4 text-left shadow-[0_0_15px_rgba(34,197,94,0.2)] hover:border-green-500/60 transition-all duration-200 cursor-pointer"
+            >
+              <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">
+                Total Paid
+              </p>
+              <p className="text-green-300 font-mono text-xl font-bold">
+                ${formatCurrency(totalPaid)}
+              </p>
+            </button>
           </div>
 
           {/* ── Tabs ── */}
@@ -1208,7 +1324,10 @@ export default function MerchantClient({
               }`}
             >
               {isCashSeller ? "My Payout Batches" : "My Statements"} (
-              {isCashSeller ? cashBatches.length : payouts.length})
+              {isCashSeller
+                ? filteredCashBatches.length
+                : filteredPayouts.length}
+              )
             </button>
           </div>
 
@@ -1482,7 +1601,7 @@ export default function MerchantClient({
                               {order.customerPhone || "—"}
                             </td>
                             <td
-                              className="px-2 py-2.5 text-xs text-gray-400 max-w-[150px] truncate"
+                              className="px-2 py-2.5 text-xs text-gray-400 max-w-[260px] whitespace-normal break-words"
                               title={order.customerAddress}
                             >
                               {order.customerAddress}
@@ -1715,6 +1834,15 @@ export default function MerchantClient({
                                           className="px-4 py-1.5 text-xs font-bold rounded bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
                                         >
                                           {editSaving ? "..." : "Save"}
+                                        </button>
+                                        <button
+                                          type="submit"
+                                          data-print="true"
+                                          disabled={editSaving}
+                                          title="Save the order and immediately print its waybill"
+                                          className="px-4 py-1.5 text-xs font-bold rounded bg-violet-600 hover:bg-violet-500 text-white shadow-lg transition-colors disabled:opacity-50 whitespace-nowrap"
+                                        >
+                                          {editSaving ? "..." : "Save & Print"}
                                         </button>
                                         <button
                                           type="button"
@@ -2122,12 +2250,66 @@ export default function MerchantClient({
           {/* ════════════════════════════════ */}
           {activeTab === "statements" && (
             <>
+              {/* ── Date-range filter toolbar ── */}
+              <div className="flex flex-wrap items-end gap-3 mb-4 p-4 rounded-xl backdrop-blur-xl bg-white/5 border border-white/10">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-gray-500 uppercase tracking-wider">
+                    Filter by period
+                  </label>
+                  <select
+                    value={payoutRange}
+                    onChange={(e) => setPayoutRange(e.target.value)}
+                    className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-xs focus:border-cyan-500 outline-none transition-colors [&>option]:bg-slate-950 [&>option]:text-white"
+                  >
+                    <option value="all">All time</option>
+                    <option value="day">Today</option>
+                    <option value="week">Last 7 days</option>
+                    <option value="month">Last month</option>
+                    <option value="3months">Last 3 months</option>
+                    <option value="6months">Last 6 months</option>
+                    <option value="custom">Custom date range</option>
+                  </select>
+                </div>
+                {payoutRange === "custom" && (
+                  <>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] text-gray-500 uppercase tracking-wider">
+                        From
+                      </label>
+                      <input
+                        type="date"
+                        value={payoutStart}
+                        onChange={(e) => setPayoutStart(e.target.value)}
+                        className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-xs focus:border-cyan-500 outline-none transition-colors [color-scheme:dark]"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] text-gray-500 uppercase tracking-wider">
+                        To
+                      </label>
+                      <input
+                        type="date"
+                        value={payoutEnd}
+                        onChange={(e) => setPayoutEnd(e.target.value)}
+                        className="bg-slate-950 border border-gray-700 text-white rounded px-3 py-2 text-xs focus:border-cyan-500 outline-none transition-colors [color-scheme:dark]"
+                      />
+                    </div>
+                  </>
+                )}
+                <div className="flex-1" />
+                <span className="text-xs text-gray-400 py-2 whitespace-nowrap">
+                  Showing {isCashSeller ? filteredCashBatches.length : filteredPayouts.length} of{" "}
+                  {isCashSeller ? cashBatches.length : payouts.length}{" "}
+                  {isCashSeller ? "batch(es)" : "statement(s)"}
+                </span>
+              </div>
+
               {isCashSeller ? (
                 /* ── CASH SELLER: PAID CASH PAYOUT BATCHES ──
                    Cash sellers are paid in advance, so instead of statements
                    they review the money they were paid. The company-only
                    profit figure is never shown here. */
-                cashBatches.length === 0 ? (
+                filteredCashBatches.length === 0 ? (
                   <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-12 text-center">
                     <p className="text-gray-500 text-sm">
                       No cash payout batches have been generated yet.
@@ -2161,7 +2343,7 @@ export default function MerchantClient({
                           </tr>
                         </thead>
                         <tbody>
-                          {cashBatches.map((batch) => {
+                          {filteredCashBatches.map((batch) => {
                             const isExpanded = expandedBatchId === batch.id;
                             return (
                               <Fragment key={batch.id}>
@@ -2388,7 +2570,7 @@ export default function MerchantClient({
                 )
               ) : (
                 <>
-                  {payouts.length === 0 ? (
+                  {filteredPayouts.length === 0 ? (
                     <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-12 text-center">
                       <p className="text-gray-500 text-sm">
                         No statements have been generated yet.
@@ -2421,7 +2603,7 @@ export default function MerchantClient({
                             </tr>
                           </thead>
                           <tbody>
-                            {payouts.map((p) => (
+                            {filteredPayouts.map((p) => (
                               <tr
                                 key={p.id}
                                 className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors"
