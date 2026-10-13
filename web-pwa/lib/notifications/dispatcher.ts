@@ -194,7 +194,7 @@ export async function dispatchDriverScanEvent(
       types.includes("PRICE_DISCREPANCY") && types.includes("DELIVERED")
         ? contents[types.indexOf("PRICE_DISCREPANCY")].whatsapp
         : contents.map((c) => c.whatsapp).join("\n\n");
-    await sendWhatsAppMessage(merchant.phone, whatsappBody);
+    await sendWhatsAppMessage({ to: merchant.phone, message: whatsappBody });
   }
 }
 

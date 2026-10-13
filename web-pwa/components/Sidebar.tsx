@@ -581,6 +581,7 @@ export default function Sidebar() {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        showNotifications={user?.role === "MERCHANT"}
       />
     </>
   );
