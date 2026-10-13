@@ -16,6 +16,7 @@ import OrderHistoryModal from "@/components/OrderHistoryModal";
 import OrderDetailsModal from "@/components/OrderDetailsModal";
 import BarcodeScannerModal from "@/components/BarcodeScannerModal";
 import PermissionGuard from "@/components/PermissionGuard";
+import WarehouseIntakeModal from "@/components/orders/WarehouseIntakeModal";
 import { hasPermission } from "@/lib/permissions";
 import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
 
@@ -471,6 +472,10 @@ function OrdersPageInner() {
   const currentTab = (searchParams.get("tab") || "all") as Tab;
 
   const handleTabChange = (tabName: string) => {
+    // Selections are scoped to a single tab: each tab fetches a different
+    // subset of orders, so carrying IDs across tabs leaks stale selections
+    // into bulk actions (e.g. 15 returns + 1 order = "16 selected").
+    setSelectedOrderIds([]);
     const params = new URLSearchParams(searchParams.toString());
     params.set("tab", tabName);
     router.push(`${pathname}?${params.toString()}`);
@@ -500,7 +505,16 @@ function OrdersPageInner() {
 
   // ── Filters ──
   const [searchTerm, setSearchTerm] = useState("");
+  // Debounced copy of searchTerm used for fetching/filtering. Without this,
+  // every keystroke fired a full refetch (and, for comma searches, a
+  // multi-MB unfiltered download), which made search feel slow.
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
   const [missingTokens, setMissingTokens] = useState<string[]>([]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearchTerm(searchTerm), 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
   const [locationFilter, setLocationFilter] = useState<string>("ALL");
   // Seed the date filter from ?dateFrom= so deep links (e.g. the statistics
   // day drill-down "View Orders" button) pre-filter to a specific day.
@@ -1009,6 +1023,9 @@ function OrdersPageInner() {
     "ASSIGNED" | "ASSIGNED_TR"
   >("ASSIGNED");
 
+  // ── Warehouse Intake (pickup batch verification) State ──
+  const [warehouseIntakeOpen, setWarehouseIntakeOpen] = useState(false);
+
   // ── Scan-to-Assign State ──
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannedOrder, setScannedOrder] = useState<any | null>(null);
@@ -1020,17 +1037,18 @@ function OrdersPageInner() {
   // When called without params on the "All" tab, reuses current pagination state
   const fetchOrders = async (params?: Record<string, string>) => {
     if (!params && currentTab === "all") {
-      // For comma-separated (multi-order) searches, fetch ALL orders (up to API max)
-      // so the client-side filter can match orders across all pages. This keeps the
-      // searched results visible after refetches (e.g. status changes) too.
-      const isCommaSearch = searchTerm.includes(",");
+      // All searches (including comma-separated multi-order lookups) are
+      // resolved server-side: the API matches every token against orderId
+      // (exact / RTS-"R" / suffix) and phone, so no match can be hidden by a
+      // client-side fetch window. Results paginate normally via skip/take;
+      // meta.total is the match count and meta.notFoundTokens lists tokens
+      // with zero matches anywhere in the database.
       params = {
-        skip: isCommaSearch ? "0" : String((allPage - 1) * allItemsPerPage),
-        take: isCommaSearch ? "5000" : String(allItemsPerPage),
+        skip: String((allPage - 1) * allItemsPerPage),
+        take: String(allItemsPerPage),
       };
-      // Skip server-side search for comma-separated queries
-      if (searchTerm.trim() && !searchTerm.includes(",")) {
-        params.search = searchTerm.trim();
+      if (debouncedSearchTerm.trim()) {
+        params.search = debouncedSearchTerm.trim();
       }
       if (locationFilter !== "ALL") params.location = locationFilter;
       // Bound the date filter to a single UTC day so the server-side window
@@ -1077,16 +1095,12 @@ function OrdersPageInner() {
 
     setLoading(true);
     try {
-      // Build query string for pagination/filters
+      // Build query string for pagination/filters. Only the order list is
+      // fetched here — zones/drivers/merchants are static reference data and
+      // are loaded once on mount (see the mount-only effect below), so search
+      // keystrokes no longer trigger five parallel requests.
       const query = params ? "?" + new URLSearchParams(params).toString() : "";
-      const [ordersRes, zonesRes, driversRes, merchantsRes, sellersRes] =
-        await Promise.all([
-          fetch(`/api/orders${query}`),
-          fetch("/api/admin/zones"),
-          fetch("/api/admin/drivers"),
-          fetch("/api/admin/merchants"),
-          fetch("/api/admin/merchants/list"),
-        ]);
+      const ordersRes = await fetch(`/api/orders${query}`);
       if (ordersRes.ok) {
         const result = await ordersRes.json();
         // Support both new { data, meta } format and legacy array format
@@ -1097,33 +1111,21 @@ function OrdersPageInner() {
           setTotalOrders(result.meta.total);
           setRwdTotal(result.meta.rwdTotal ?? orderList.length);
           setCpTotal(result.meta.cpTotal ?? orderList.length);
+          // Comma-separated searches: the server reports which tokens matched
+          // nothing, so the "Orders not found" warning needs no client-side
+          // rescan of the full order set.
+          if (debouncedSearchTerm.includes(",")) {
+            setMissingTokens(
+              Array.isArray(result.meta.notFoundTokens)
+                ? result.meta.notFoundTokens
+                : [],
+            );
+          }
         } else {
           setTotalOrders(orderList.length);
           setRwdTotal(orderList.filter((o: Order) => String(o.location).toUpperCase() === "RETURN" && ["RWD", "EWD"].includes(String(o.financialStatus).toUpperCase())).length);
           setCpTotal(orderList.filter((o: Order) => String(o.location).toUpperCase() === "CP").length);
         }
-      }
-      if (zonesRes.ok) {
-        const data = await zonesRes.json();
-        const sorted = data.sort((a: Zone, b: Zone) => {
-          const numA = parseInt(a.name, 10);
-          const numB = parseInt(b.name, 10);
-          if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
-          return a.name.localeCompare(b.name);
-        });
-        setZones(sorted);
-      }
-      if (driversRes.ok) {
-        const data = await driversRes.json();
-        setAvailableDrivers(data);
-      }
-      if (merchantsRes.ok) {
-        const data = await merchantsRes.json();
-        setMerchants(data);
-      }
-      if (sellersRes.ok) {
-        const data = await sellersRes.json();
-        setSellersList(data);
       }
     } catch (err) {
       console.error("Failed to fetch data", err);
@@ -1131,6 +1133,48 @@ function OrdersPageInner() {
       setLoading(false);
     }
   };
+
+  // ── Static reference data (zones, drivers, merchants, sellers) ──
+  // Loaded once on mount instead of on every fetchOrders call: these lists
+  // are not search-dependent, and re-fetching them per keystroke was a
+  // significant part of the search latency.
+  useEffect(() => {
+    (async () => {
+      try {
+        const [zonesRes, driversRes, merchantsRes, sellersRes] =
+          await Promise.all([
+            fetch("/api/admin/zones"),
+            fetch("/api/admin/drivers"),
+            fetch("/api/admin/merchants"),
+            fetch("/api/admin/merchants/list"),
+          ]);
+        if (zonesRes.ok) {
+          const data = await zonesRes.json();
+          const sorted = data.sort((a: Zone, b: Zone) => {
+            const numA = parseInt(a.name, 10);
+            const numB = parseInt(b.name, 10);
+            if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+            return a.name.localeCompare(b.name);
+          });
+          setZones(sorted);
+        }
+        if (driversRes.ok) {
+          const data = await driversRes.json();
+          setAvailableDrivers(data);
+        }
+        if (merchantsRes.ok) {
+          const data = await merchantsRes.json();
+          setMerchants(data);
+        }
+        if (sellersRes.ok) {
+          const data = await sellersRes.json();
+          setSellersList(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch reference data", err);
+      }
+    })();
+  }, []);
 
   // ── Copy tracking link to clipboard ────────────────────────────────────
   // Resolves to whether the copy succeeded so the table can show inline
@@ -1175,21 +1219,31 @@ function OrdersPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Clear cross-tab selections ──
+  // Every tab renders a different subset of orders, so a selection made on one
+  // tab must not leak into another tab's bulk actions (e.g. selecting 15 orders
+  // on Returns then 1 on All Orders showed "assigning 16 order(s)"). This runs
+  // on every currentTab change, including browser back/forward and deep links,
+  // which bypass handleTabChange.
+  useEffect(() => {
+    setSelectedOrderIds([]);
+  }, [currentTab]);
+
   // ── Re-fetch when "All" tab pagination changes ──
   useEffect(() => {
     if (currentTab === "all") {
-      // For comma-separated (multi-order) searches, fetch ALL orders (up to API max)
-      // so the client-side filter can match orders across all pages. Every other
-      // All-tab view is paginated server-side: the API must receive the real
-      // offset for the clicked page, otherwise it keeps returning page 1 and the
-      // client-side slice finds nothing past the fetched window ("no orders").
-      const isCommaSearch = searchTerm.includes(",");
+      // Every All-tab view — including comma-separated multi-order searches —
+      // is resolved and paginated server-side. The API must receive the real
+      // offset for the clicked page, otherwise it keeps returning page 1 and
+      // the client-side slice finds nothing past the fetched window ("no
+      // orders"). The search term is debounced upstream so typing does not
+      // fire a request per keystroke.
       const params: Record<string, string> = {
-        skip: isCommaSearch ? "0" : String((allPage - 1) * allItemsPerPage),
-        take: isCommaSearch ? "5000" : String(allItemsPerPage),
+        skip: String((allPage - 1) * allItemsPerPage),
+        take: String(allItemsPerPage),
       };
-      if (searchTerm.trim() && !isCommaSearch) {
-        params.search = searchTerm.trim();
+      if (debouncedSearchTerm.trim()) {
+        params.search = debouncedSearchTerm.trim();
       }
       if (locationFilter !== "ALL") params.location = locationFilter;
       // Bound the date filter to a single UTC day so the server-side window
@@ -1235,7 +1289,7 @@ function OrdersPageInner() {
     allPage,
     allItemsPerPage,
     currentTab,
-    searchTerm,
+    debouncedSearchTerm,
     locationFilter,
     dateFilter,
     showArchived,
@@ -1649,39 +1703,21 @@ function OrdersPageInner() {
     return !!(order.zone?.name && order.zone.name.toLowerCase().includes(term));
   };
 
-  // Helper: comma-separated multi-search token match against Order ID or phone number.
-  // Order ID: exact or suffix match (as before).
-  // Phone: numeric tokens (4+ digits) match the full number or just trailing digits
-  // (e.g. "78981891" or "981891"), ignoring spaces/+ signs in the stored phone.
-  const tokenMatchesOrderIdOrPhone = (token: string, order: Order): boolean => {
-    const displayId = String(order.orderId || order.id || "");
-    const displayIdLower = displayId.toLowerCase();
-    if (displayIdLower.endsWith(token) || displayIdLower === token) return true;
-    if (/^\d{4,}$/.test(token)) {
-      const phoneDigits = (order.customerPhone || "").replace(/\D/g, "");
-      if (phoneDigits.endsWith(token)) return true;
-    }
-    return false;
-  };
-
   // ── Filtered & sorted orders ──
   const allFiltered = useMemo(() => {
     let list = [...activeOrArchivedOrders];
 
-    // Search by comma-separated terms against multiple fields
-    if (searchTerm.trim()) {
-      const terms = searchTerm
+    // Comma-separated multi-order searches are resolved entirely server-side
+    // (the API returns the complete match set for the tokens), so no
+    // client-side token filtering is needed — and none should run, since the
+    // fetched rows are exactly the matches.
+    if (debouncedSearchTerm.trim() && !debouncedSearchTerm.includes(",")) {
+      const terms = debouncedSearchTerm
         .split(",")
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean);
       list = list.filter((order) => {
         if (terms.length === 0) return true;
-
-        // Multi-order comma-separated search: match Order ID (exact/suffix) or phone
-        // number (full or trailing digits). Return true if ANY token matches.
-        if (searchTerm.includes(",")) {
-          return terms.some((token) => tokenMatchesOrderIdOrPhone(token, order));
-        }
 
         // AND logic: Order must match ALL terms (great for parameter filtering)
         const matchesAnd = terms.every((term) => termMatchesOrder(term, order));
@@ -1719,35 +1755,17 @@ function OrdersPageInner() {
     return list;
   }, [activeOrArchivedOrders, searchTerm, locationFilter, dateFilter]);
 
-  // ── Not-found order numbers (for numeric search terms only) ──
-  // ── Not-found order numbers (for numeric search terms only) ──
-  const notFoundOrderNumbers = useMemo(() => {
-    if (!searchTerm.trim()) return [];
-    const terms = searchTerm
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
-    // Only track numeric terms (4+ digits) that look like order numbers
-    const numericTerms = terms.filter((t) => /^\d{4,}$/.test(t));
-    if (numericTerms.length === 0) return [];
-
-    const notFound: string[] = [];
-    for (const term of numericTerms) {
-      // Use the same matching logic as allFiltered for consistency
-      const found = activeOrArchivedOrders.some((order) =>
-        termMatchesOrder(term, order),
-      );
-      if (!found) {
-        notFound.push(term);
-      }
-    }
-    return notFound;
-  }, [activeOrArchivedOrders, searchTerm]);
-
-  // ── Compute missing tokens from comma-separated search ──
+  // ── Missing tokens warning ──
+  // For comma-separated searches the server reports meta.notFoundTokens (see
+  // fetchOrders), so no client-side rescan of the order set is needed. This
+  // effect only handles clearing and the single-term case.
   useEffect(() => {
     if (!searchTerm.trim()) {
       setMissingTokens([]);
+      return;
+    }
+    if (searchTerm.includes(",")) {
+      // Server-driven; fetchOrders owns this state for comma searches.
       return;
     }
     const tokens = searchTerm
@@ -1758,28 +1776,16 @@ function OrdersPageInner() {
       setMissingTokens([]);
       return;
     }
-    // Multi-order comma-separated search: a token is "found" if it matches any
-    // order ID (exact/suffix) or phone number (full or trailing digits).
-    if (tokens.length > 0 && searchTerm.includes(",")) {
-      const notFound = tokens.filter(
-        (token) =>
-          !activeOrArchivedOrders.some((order) =>
-            tokenMatchesOrderIdOrPhone(token, order),
-          ),
+    const missing: string[] = [];
+    for (const token of tokens) {
+      const found = activeOrArchivedOrders.some((order) =>
+        termMatchesOrder(token, order),
       );
-      setMissingTokens(notFound);
-    } else {
-      const missing: string[] = [];
-      for (const token of tokens) {
-        const found = activeOrArchivedOrders.some((order) =>
-          termMatchesOrder(token, order),
-        );
-        if (!found) {
-          missing.push(token);
-        }
+      if (!found) {
+        missing.push(token);
       }
-      setMissingTokens(missing);
     }
+    setMissingTokens(missing);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm, activeOrArchivedOrders]);
 
@@ -1922,18 +1928,11 @@ function OrdersPageInner() {
   // ── Paginated values (for count displays) ──
   const paginatedAll = useMemo(() => {
     // The API already returns exactly the current page window (skip/take) for
-    // the All tab, so slicing again would read past the fetched window and
-    // render an empty page. Comma-separated searches are the exception: they
-    // fetch the full set (take=5000) and are filtered client-side, so they
-    // still need client-side slicing.
-    if (searchTerm.includes(",")) {
-      return allFiltered.slice(
-        (allPage - 1) * allItemsPerPage,
-        allPage * allItemsPerPage,
-      );
-    }
+    // the All tab — including comma-separated searches, whose complete match
+    // set the server returns in one response — so slicing again would read
+    // past the fetched window and render an empty page.
     return allFiltered;
-  }, [allFiltered, allPage, allItemsPerPage, searchTerm]);
+  }, [allFiltered]);
 
   const zoneItems = useMemo(() => {
     if (!activeWarehouseZone) return [];
@@ -2791,6 +2790,18 @@ function OrdersPageInner() {
                   >
                     {movingFromCp ? "Moving..." : "Move from CP to Warehouse"}
                   </button>
+                  <PermissionGuard requires="MANAGE_ORDERS">
+                    <button
+                      onClick={() => setWarehouseIntakeOpen(true)}
+                      className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
+                                 bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/30
+                                 hover:bg-fuchsia-500/30 hover:shadow-[0_0_12px_rgba(217,70,239,0.3)]
+                                 transition-all duration-200"
+                      title="Verify merchant pickup batches at the warehouse (assign drivers, scan & reconcile)"
+                    >
+                      📦 Warehouse Intake Scan
+                    </button>
+                  </PermissionGuard>
                   <button
                     onClick={() =>
                       handleBulkAction("Deliver", {
@@ -7220,6 +7231,15 @@ function OrdersPageInner() {
           onClose={() => setScannerOpen(false)}
           onScanSuccess={handleScanOrder}
           heading="Scan Order Barcode / QR"
+        />
+
+        {/* ════════════════════════════════════════ */}
+        {/* WAREHOUSE INTAKE (PICKUP BATCHES)      */}
+        {/* ════════════════════════════════════════ */}
+        <WarehouseIntakeModal
+          isOpen={warehouseIntakeOpen}
+          onClose={() => setWarehouseIntakeOpen(false)}
+          availableDrivers={availableDrivers}
         />
 
         {/* ════════════════════════════════════════ */}

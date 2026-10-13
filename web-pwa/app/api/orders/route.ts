@@ -23,6 +23,32 @@ import {
 } from "@/lib/server-permissions";
 import { hasPermission } from "@/lib/permissions";
 
+// Mirror of the client-side comma-search matcher: does a search token match an
+// order by orderId (exact / RTS-"R" variant / suffix) or by trailing phone
+// digits? Used server-side to compute meta.notFoundTokens for comma searches.
+function tokenMatchesSearchToken(
+  token: string,
+  orderId: string,
+  customerPhone: string | null,
+): boolean {
+  const idLower = String(orderId || "").toLowerCase();
+  const tokenLower = token.toLowerCase();
+  const baseIdLower = idLower.replace(/r$/, "");
+  if (
+    idLower === tokenLower ||
+    idLower.endsWith(tokenLower) ||
+    baseIdLower === tokenLower ||
+    baseIdLower.endsWith(tokenLower)
+  ) {
+    return true;
+  }
+  if (/^\d{4,}$/.test(tokenLower)) {
+    const phoneDigits = String(customerPhone || "").replace(/\D/g, "");
+    if (phoneDigits.endsWith(tokenLower)) return true;
+  }
+  return false;
+}
+
 // ─── GET /api/orders ──────────────────────────────────────────────────────────
 export async function GET(request: NextRequest) {
   const auth = await requireAuthenticatedSession(request);
@@ -49,8 +75,6 @@ export async function GET(request: NextRequest) {
   const idFilter = idsParam
     ? idsParam.split(",").filter(Boolean).slice(0, 10000)
     : null;
-  // An explicit id selection must never be truncated by the page size.
-  const effectiveTake = idFilter ? Math.max(take, idFilter.length) : take;
 
   // Optional server-side filters
   const location = searchParams.get("location");
@@ -96,13 +120,50 @@ export async function GET(request: NextRequest) {
     if (dateTo) createdAt.lte = new Date(dateTo);
     where.createdAt = createdAt;
   }
-  if (search) {
+  // ── Search ───────────────────────────────────────────────────────────────
+  // Two modes:
+  //  • Comma-separated tokens (multi-order lookup): each token is matched in
+  //    the database against orderId (exact, the RTS "R" variant, or suffix)
+  //    and customerPhone (trailing digits). Running this server-side means
+  //    every match is returned regardless of table size — no searched order
+  //    can be hidden by a client-side fetch window.
+  //  • Single term: the original contains-match over id/name/phone.
+  const searchTokens =
+    search && search.includes(",")
+      ? search
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .slice(0, 500)
+      : [];
+  if (searchTokens.length > 0) {
+    const or: Record<string, unknown>[] = [];
+    for (const token of searchTokens) {
+      // Exact + suffix match on the order ID. A suffix match against an RTS
+      // order (stored ID ends with "R", see lib/order-id.ts) is equivalent to
+      // endsWith(token) OR endsWith(token + "R"), so the "R" variant is added
+      // explicitly — searching "5846-1061" finds "5846-1061R".
+      or.push({ orderId: { endsWith: token, mode: "insensitive" } });
+      if (!/r$/i.test(token)) {
+        or.push({ orderId: { endsWith: `${token}R`, mode: "insensitive" } });
+      }
+      if (/^\d{4,}$/.test(token)) {
+        or.push({ customerPhone: { endsWith: token, mode: "insensitive" } });
+      }
+    }
+    where.OR = or;
+  } else if (search) {
     where.OR = [
       { orderId: { contains: search, mode: "insensitive" } },
       { customerName: { contains: search, mode: "insensitive" } },
       { customerPhone: { contains: search, mode: "insensitive" } },
     ];
   }
+
+  // An explicit id selection must never be truncated by the page size.
+  // Comma-separated searches paginate like every other view (meta.total is
+  // the match count), so the client's page math stays correct.
+  const effectiveTake = idFilter ? Math.max(take, idFilter.length) : take;
   if (idFilter && idFilter.length > 0) {
     where.id = { in: idFilter };
   }
@@ -285,6 +346,25 @@ export async function GET(request: NextRequest) {
       }),
     ]);
 
+    // For comma-separated lookups, report which tokens matched nothing so the
+    // client can show an accurate "Orders not found" warning without
+    // re-scanning the whole order set in the browser. Computed from a
+    // lightweight id/phone-only pass over the full match set (the paginated
+    // rows above may be only one page of it).
+    let notFoundTokens: string[] | undefined;
+    if (searchTokens.length > 0) {
+      const matchKeys = await prisma.order.findMany({
+        where,
+        select: { orderId: true, customerPhone: true },
+      });
+      notFoundTokens = searchTokens.filter(
+        (token) =>
+          !matchKeys.some((m) =>
+            tokenMatchesSearchToken(token, m.orderId, m.customerPhone),
+          ),
+      );
+    }
+
     return NextResponse.json(
       {
         data: orders.map((o) => ({
@@ -298,6 +378,7 @@ export async function GET(request: NextRequest) {
           skip,
           take,
           hasMore: skip + effectiveTake < total,
+          ...(notFoundTokens ? { notFoundTokens } : {}),
         },
       },
       { status: 200 },

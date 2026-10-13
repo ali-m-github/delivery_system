@@ -22,3 +22,20 @@ export async function nextTreasuryReference(tx: DbClient): Promise<string> {
   }[];
   return String(rows[0].n);
 }
+
+/**
+ * Allocate the next merchant pickup-batch number in the form "PKB-1001".
+ *
+ * Mirrors `generateMerchantOrderId` in app/api/merchant/orders/route.ts: the
+ * value is derived from the highest existing batchNumber, so deletions never
+ * reuse a number. `PickupBatch.batchNumber` is @unique, so two concurrent
+ * requests that read the same max collide on insert — callers must retry
+ * (see the P2002 loop in app/api/merchant/pickup-batches/route.ts).
+ */
+export async function nextPickupBatchNumber(tx: DbClient): Promise<string> {
+  const rows = (await tx.$queryRaw`
+    SELECT COALESCE(MAX((substring("batchNumber" from '^PKB-([0-9]+)$'))::int), 1000) AS n
+    FROM "PickupBatch"
+  `) as unknown as { n: number | bigint }[];
+  return `PKB-${Number(rows[0].n) + 1}`;
+}

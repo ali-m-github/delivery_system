@@ -76,6 +76,33 @@ type WarehouseOrder = {
   merchantId?: string | null;
 };
 
+// ── Merchant Pickup Batch Types (chain-of-custody) ──────────────────────
+type PickupBatchOrderItem = {
+  id: string;
+  orderId: string;
+  customerName: string;
+  customerPhone: string;
+  packages: number;
+  location: string;
+};
+
+type PickupBatchItem = {
+  id: string;
+  batchNumber: string;
+  status: string;
+  totalOrders: number;
+  pickedUpCount: number;
+  createdAt: string;
+  merchant: {
+    id: string;
+    merchantId: number;
+    merchantName: string;
+    phone: string | null;
+    address: string | null;
+  };
+  orders: PickupBatchOrderItem[];
+};
+
 type AssignedZone = {
   id: string;
   name: string;
@@ -278,6 +305,20 @@ const DRIVER_I18N: Record<Lang, Record<string, string>> = {
     returnFailed: "Failed to mark as returned.",
     networkError: "Network error. Please try again.",
     orderHistoryTitle: "Order History",
+    tabPickups: "Merchant Pickups",
+    noPickups: "No assigned pickup batches",
+    noPickupsHint:
+      "Pickup batches appear here once the admin assigns them to you.",
+    pickItemBtn: "📦 Pick / تم الاستلام",
+    collectedBadge: "✓ Collected",
+    refreshBtn: "🔄 Refresh",
+    loadingText: "Loading…",
+    orderCollectedMsg: "Order {id} collected.",
+    alreadyCollectedMsg: "Order {id} was already collected.",
+    batchProgress: "{a}/{b} collected",
+    merchantLabel: "Merchant",
+    scanPickupsHint:
+      "Scan each waybill with the camera or tap Pick on every item.",
   },
   ar: {
     dashboard: "لوحة تحكم السائق",
@@ -377,6 +418,18 @@ const DRIVER_I18N: Record<Lang, Record<string, string>> = {
     returnFailed: "تعذر تعليم الطلب كمرتجع.",
     networkError: "خطأ في الشبكة. حاول مرة أخرى.",
     orderHistoryTitle: "سجل الطلب",
+    tabPickups: "استلامات التجار",
+    noPickups: "لا توجد دفعات استلام مسندة",
+    noPickupsHint: "تظهر دفعات الاستلام هنا بعد إسنادها لك من الإدارة.",
+    pickItemBtn: "📦 استلام / Pick",
+    collectedBadge: "✓ تم الاستلام",
+    refreshBtn: "🔄 تحديث",
+    loadingText: "جارٍ التحميل…",
+    orderCollectedMsg: "تم استلام الطلب {id}.",
+    alreadyCollectedMsg: "الطلب {id} مستلم مسبقاً.",
+    batchProgress: "{a}/{b} تم استلامه",
+    merchantLabel: "التاجر",
+    scanPickupsHint: "امسح بوليصة الشحن بالكاميرا أو اضغط استلام لكل طرد.",
   },
 };
 
@@ -492,9 +545,18 @@ export default function DriverClient({
     string | null
   >(null);
 
+  // ── Merchant Pickup Batch State (chain-of-custody) ───────────────────
+  const [pickupBatches, setPickupBatches] = useState<PickupBatchItem[]>([]);
+  const [pickupBatchesLoading, setPickupBatchesLoading] = useState(false);
+  const [pickupCollecting, setPickupCollecting] = useState<string | null>(
+    null,
+  );
+  const [pickupScanMsg, setPickupScanMsg] = useState<string | null>(null);
+  const [pickupScannerOpen, setPickupScannerOpen] = useState(false);
+
   // ── Tab State ────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<
-    "ACTIVE" | "DELIVERED" | "PAYOUTS" | "WAREHOUSE"
+    "ACTIVE" | "DELIVERED" | "PAYOUTS" | "WAREHOUSE" | "PICKUPS"
   >("ACTIVE");
 
   // ── Settings Modal State ─────────────────────────────────────────────
@@ -1359,6 +1421,98 @@ export default function DriverClient({
     openPostponeModal(scannedOrder.id);
   };
 
+  // ── Merchant Pickup Batches (chain-of-custody) ─────────────────────────
+  const fetchPickupBatches = useCallback(async () => {
+    setPickupBatchesLoading(true);
+    try {
+      const res = await fetch("/api/driver/pickup-batches");
+      if (res.ok) {
+        const data = await res.json();
+        setPickupBatches(Array.isArray(data.batches) ? data.batches : []);
+      }
+    } catch {
+      // Keep the previous list; the Refresh button can retry.
+    } finally {
+      setPickupBatchesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "PICKUPS") {
+      void fetchPickupBatches();
+    }
+  }, [activeTab, fetchPickupBatches]);
+
+  // Shared by the 1-tap Pick button and the camera scanner.
+  const collectPickupOrder = useCallback(
+    async (batchId: string, orderId: string, orderLabel: string) => {
+      setPickupCollecting(orderId);
+      setPickupScanMsg(null);
+      try {
+        const res = await fetch(
+          `/api/driver/pickup-batches/${batchId}/collect`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ orderIds: [orderId] }),
+          },
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.error || t("networkError"));
+          return;
+        }
+        setPickupScanMsg(
+          data.alreadyCollected
+            ? t("alreadyCollectedMsg", { id: orderLabel })
+            : t("orderCollectedMsg", { id: orderLabel }),
+        );
+        // Optimistically mark the item collected; a full refetch refreshes
+        // counters and drops fully-collected batches when they leave scope.
+        setPickupBatches((prev) =>
+          prev.map((b) =>
+            b.id === batchId
+              ? {
+                  ...b,
+                  pickedUpCount:
+                    data.batch?.pickedUpCount ?? b.pickedUpCount + 1,
+                  status: data.batch?.status ?? b.status,
+                  orders: b.orders.map((o) =>
+                    o.id === orderId ? { ...o, location: "PICKED_UP" } : o,
+                  ),
+                }
+              : b,
+          ),
+        );
+      } catch {
+        alert(t("networkError"));
+      } finally {
+        setPickupCollecting(null);
+      }
+    },
+    [t],
+  );
+
+  // Camera scan on the Pickups tab: match the scanned waybill against the
+  // driver's assigned batches and collect it directly.
+  const handlePickupScan = useCallback(
+    async (decodedText: string) => {
+      setPickupScannerOpen(false);
+      const scanned = decodedText.trim();
+      for (const batch of pickupBatches) {
+        const match = batch.orders.find(
+          (o) => o.orderId === scanned && o.location !== "PICKED_UP",
+        );
+        if (match) {
+          await collectPickupOrder(batch.id, match.id, match.orderId);
+          return;
+        }
+      }
+      setPickupScanMsg(t("packageNotFound", { id: scanned }));
+    },
+    [pickupBatches, collectPickupOrder, t],
+  );
+
   return (
     <div
       dir={lang === "ar" ? "rtl" : "ltr"}
@@ -1435,6 +1589,16 @@ export default function DriverClient({
             }`}
           >
             {t("tabWarehouse")} ({warehouseOrders.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("PICKUPS")}
+            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+              activeTab === "PICKUPS"
+                ? "bg-purple-500/20 text-purple-300 shadow-[0_0_12px_rgba(168,85,247,0.3)]"
+                : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+            }`}
+          >
+            {t("tabPickups")} ({pickupBatches.length})
           </button>
           <button
             onClick={() => setActiveTab("PAYOUTS")}
@@ -2127,6 +2291,146 @@ export default function DriverClient({
                   );
                 })()}
               </>
+            )}
+          </>
+        )}
+
+        {/* ═══════════════════════════════════════════════════════════════
+            MERCHANT PICKUPS TAB (chain-of-custody)
+            ════════════════════════════════════════════════════════════ */}
+        {activeTab === "PICKUPS" && (
+          <>
+            {/* ── Toolbar ── */}
+            <div className="flex flex-wrap items-center gap-3 mb-6 p-4 rounded-xl bg-[#121824] border border-white/5">
+              <h2 className="text-sm font-semibold text-white">
+                {t("tabPickups")}
+              </h2>
+              <span className="text-xs text-gray-500">
+                {t("scanPickupsHint")}
+              </span>
+              <div className="flex-1" />
+              <button
+                onClick={() => setPickupScannerOpen(true)}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 transition-colors"
+              >
+                📷 {t("scanHeading")}
+              </button>
+              <button
+                onClick={() => void fetchPickupBatches()}
+                disabled={pickupBatchesLoading}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors disabled:opacity-50"
+              >
+                {pickupBatchesLoading ? t("loadingText") : t("refreshBtn")}
+              </button>
+            </div>
+
+            {pickupScanMsg && (
+              <div className="mb-4 px-4 py-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-sm flex items-center justify-between">
+                <span>{pickupScanMsg}</span>
+                <button
+                  onClick={() => setPickupScanMsg(null)}
+                  className="text-gray-400 hover:text-white text-xs"
+                >
+                  {t("dismiss")}
+                </button>
+              </div>
+            )}
+
+            {pickupBatches.length === 0 ? (
+              <div className="bg-[#121824] border border-white/5 rounded-xl p-12 text-center">
+                <p className="text-gray-400 text-lg font-semibold mb-2">
+                  {pickupBatchesLoading ? t("loadingText") : t("noPickups")}
+                </p>
+                <p className="text-gray-600 text-sm">{t("noPickupsHint")}</p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {pickupBatches.map((batch) => (
+                  <div
+                    key={batch.id}
+                    className="bg-[#121824] border border-purple-500/20 rounded-xl overflow-hidden"
+                  >
+                    {/* Batch header */}
+                    <div className="px-4 py-3 border-b border-white/5 flex flex-wrap items-center gap-3">
+                      <span className="font-mono text-purple-300 font-bold">
+                        {batch.batchNumber}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                          batch.status === "PICKED_UP"
+                            ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30"
+                            : "bg-purple-500/10 text-purple-300 border-purple-500/30"
+                        }`}
+                      >
+                        {t("batchProgress", {
+                          a: batch.pickedUpCount,
+                          b: batch.totalOrders,
+                        })}
+                      </span>
+                      <div className="flex-1" />
+                      <div className="text-xs text-gray-400 text-right">
+                        <p className="text-white font-semibold">
+                          {t("merchantLabel")}: {batch.merchant.merchantName}
+                        </p>
+                        {batch.merchant.phone && (
+                          <a
+                            href={`tel:${batch.merchant.phone}`}
+                            className="text-cyan-400 hover:text-cyan-300"
+                          >
+                            📞 {batch.merchant.phone}
+                          </a>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Item rows: 1-tap Pick or already-collected badge */}
+                    <div className="divide-y divide-white/5">
+                      {batch.orders.map((order) => {
+                        const collected = order.location === "PICKED_UP";
+                        return (
+                          <div
+                            key={order.id}
+                            className="px-4 py-3 flex items-center gap-3"
+                          >
+                            <div className="flex-1 min-w-0">
+                              <p className="font-mono text-cyan-400 text-sm">
+                                {order.orderId}
+                              </p>
+                              <p className="text-xs text-gray-400 truncate">
+                                {order.customerName}
+                                {order.packages > 1
+                                  ? ` · ${order.packages} pkg`
+                                  : ""}
+                              </p>
+                            </div>
+                            {collected ? (
+                              <span className="px-3 py-2 rounded-lg text-xs font-bold bg-green-500/10 text-green-400 border border-green-500/30 whitespace-nowrap">
+                                {t("collectedBadge")}
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() =>
+                                  void collectPickupOrder(
+                                    batch.id,
+                                    order.id,
+                                    order.orderId,
+                                  )
+                                }
+                                disabled={pickupCollecting === order.id}
+                                className="px-4 py-2 rounded-lg text-xs font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 hover:bg-purple-500/30 transition-colors disabled:opacity-50 whitespace-nowrap"
+                              >
+                                {pickupCollecting === order.id
+                                  ? t("pickingUp")
+                                  : t("pickItemBtn")}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </>
         )}
@@ -3132,6 +3436,16 @@ export default function DriverClient({
         isOpen={scannerOpen}
         onClose={() => setScannerOpen(false)}
         onScanSuccess={handleScanPackage}
+        heading={t("scanHeading")}
+      />
+
+      {/* ════════════════════════════════════════ */}
+      {/* PICKUPS TAB SCANNER MODAL               */}
+      {/* ════════════════════════════════════════ */}
+      <BarcodeScannerModal
+        isOpen={pickupScannerOpen}
+        onClose={() => setPickupScannerOpen(false)}
+        onScanSuccess={handlePickupScan}
         heading={t("scanHeading")}
       />
     </div>

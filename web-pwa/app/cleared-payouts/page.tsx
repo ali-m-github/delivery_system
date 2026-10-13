@@ -110,6 +110,11 @@ export default function ClearedPayoutsPage() {
   const [endDate, setEndDate] = useState("");
   const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
 
+  // ── Cleared archive pagination state ──
+  const [clearedPage, setClearedPage] = useState(1);
+  const [clearedPageSize, setClearedPageSize] = useState(20);
+  const [clearedTotal, setClearedTotal] = useState(0);
+
   // ── Expand / approve state ──
   const [expandedPayoutIds, setExpandedPayoutIds] = useState<string[]>([]);
   const [approvingId, setApprovingId] = useState<string | null>(null);
@@ -129,37 +134,67 @@ export default function ClearedPayoutsPage() {
       if (endDate) params.set("endDate", endDate);
       params.set("sortBy", "createdAt");
       params.set("sortDir", sortOrder);
-      return params.toString();
+      return params;
     };
+
+    // The archive is paginated server-side: only the current page of payouts
+    // is fetched, and meta=true makes the API return { data, meta } so the
+    // page controls know the total record count matching the filters.
+    const archiveParams = buildParams(["SETTLED", "CLEARED"]);
+    archiveParams.set("skip", String((clearedPage - 1) * clearedPageSize));
+    archiveParams.set("take", String(clearedPageSize));
+    archiveParams.set("meta", "true");
 
     setLoading(true);
 
     Promise.all([
-      fetch(`/api/drivers/payouts?${buildParams("PENDING_APPROVAL")}`),
+      fetch(
+        `/api/drivers/payouts?${buildParams("PENDING_APPROVAL").toString()}`,
+      ),
       // The archive is read-only, so it combines both terminal states:
       // SETTLED (settle → approve) and CLEARED (cleared directly with the
       // office, orders already WO). Both are historical, non-approvable.
-      fetch(`/api/drivers/payouts?${buildParams(["SETTLED", "CLEARED"])}`),
+      fetch(`/api/drivers/payouts?${archiveParams.toString()}`),
     ])
       .then(async ([pendingRes, clearedRes]) => {
-        const [pendingData, clearedData] = await Promise.all([
+        const [pendingData, clearedPayload] = await Promise.all([
           pendingRes.json(),
           clearedRes.json(),
         ]);
         setPendingApproval(Array.isArray(pendingData) ? pendingData : []);
-        setCleared(Array.isArray(clearedData) ? clearedData : []);
+        if (clearedPayload && Array.isArray(clearedPayload.data)) {
+          setCleared(clearedPayload.data);
+          setClearedTotal(Number(clearedPayload.meta?.total ?? 0));
+        } else {
+          // Defensive fallback: bare-array shape (older API response).
+          setCleared(Array.isArray(clearedPayload) ? clearedPayload : []);
+          setClearedTotal(0);
+        }
         setLoading(false);
       })
       .catch(() => {
         setPendingApproval([]);
         setCleared([]);
+        setClearedTotal(0);
         setLoading(false);
       });
-  }, [search, startDate, endDate, sortOrder]);
+  }, [search, startDate, endDate, sortOrder, clearedPage, clearedPageSize]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Reset the archive to the first page whenever the filters change, and clamp
+  // the current page if the result set shrinks (new search / larger page size).
+  useEffect(() => {
+    setClearedPage(1);
+  }, [search, startDate, endDate, sortOrder]);
+
+  useEffect(() => {
+    setClearedPage((prev) =>
+      Math.min(prev, Math.max(1, Math.ceil(clearedTotal / clearedPageSize))),
+    );
+  }, [clearedTotal, clearedPageSize]);
 
   // ── Approve payout (Phase 2) ──
   const handleApprove = async (id: string) => {
@@ -301,6 +336,125 @@ export default function ClearedPayoutsPage() {
         </Fragment>
       );
     });
+  };
+
+  // ── Cleared archive pagination (server-side) ──
+  // `cleared` already holds only the current page fetched from the API;
+  // `clearedTotal` is the full count matching the filters, from meta.total.
+  const clearedTotalPages = Math.max(
+    1,
+    Math.ceil(clearedTotal / clearedPageSize),
+  );
+  const clearedStart = (clearedPage - 1) * clearedPageSize;
+
+  // Compact numbered page list, e.g. 1 … 4 5 [6] 7 8 … 20
+  const getClearedPageNumbers = (): (number | "ellipsis")[] => {
+    const maxVisible = 7;
+    if (clearedTotalPages <= maxVisible) {
+      return Array.from({ length: clearedTotalPages }, (_, i) => i + 1);
+    }
+    const half = Math.floor(maxVisible / 2);
+    let start = clearedPage - half;
+    let end = clearedPage + half;
+    if (start <= 2) {
+      start = 2;
+      end = maxVisible - 1;
+    } else if (end >= clearedTotalPages - 1) {
+      start = clearedTotalPages - (maxVisible - 2);
+      end = clearedTotalPages - 1;
+    }
+    const pages: (number | "ellipsis")[] = [1];
+    if (start > 2) pages.push("ellipsis");
+    for (let p = start; p <= end; p++) pages.push(p);
+    if (end < clearedTotalPages - 1) pages.push("ellipsis");
+    pages.push(clearedTotalPages);
+    return pages;
+  };
+
+  const renderClearedPagination = () => {
+    if (loading || clearedTotal === 0) return null;
+
+    const navButtonClass =
+      "px-2.5 py-1.5 text-xs font-bold rounded transition-colors border bg-[#0B0F17] text-gray-400 border-white/10 hover:border-cyan-500/40 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:border-white/10 disabled:hover:text-gray-400";
+    const pageButtonClass = (active: boolean) =>
+      `min-w-[32px] px-2.5 py-1.5 text-xs font-bold rounded transition-colors border ${
+        active
+          ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"
+          : "bg-[#0B0F17] text-gray-400 border-white/10 hover:border-cyan-500/40 hover:text-white"
+      }`;
+
+    return (
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-white/10 bg-white/[0.02]">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-gray-400">
+          <span>
+            Showing{" "}
+            <span className="text-white font-semibold">
+              {clearedStart + 1}–
+              {Math.min(clearedStart + clearedPageSize, clearedTotal)}
+            </span>{" "}
+            of{" "}
+            <span className="text-white font-semibold">{clearedTotal}</span>{" "}
+            records
+          </span>
+          <label className="flex items-center gap-1.5">
+            <span className="text-gray-500 uppercase tracking-wider text-[10px] font-bold">
+              Rows per page
+            </span>
+            <select
+              value={clearedPageSize}
+              onChange={(e) => {
+                setClearedPageSize(Number(e.target.value));
+                setClearedPage(1);
+              }}
+              className="bg-[#0B0F17] border border-white/10 rounded px-2 py-1 text-white text-xs focus:outline-none focus:border-cyan-500/50 [color-scheme:dark]"
+            >
+              {[10, 20, 50, 100].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setClearedPage((p) => Math.max(1, p - 1))}
+            disabled={clearedPage === 1}
+            className={navButtonClass}
+          >
+            ‹ Prev
+          </button>
+          {getClearedPageNumbers().map((page, idx) =>
+            page === "ellipsis" ? (
+              <span
+                key={`ellipsis-${idx}`}
+                className="px-1.5 text-gray-600 text-xs select-none"
+              >
+                …
+              </span>
+            ) : (
+              <button
+                key={page}
+                onClick={() => setClearedPage(page)}
+                className={pageButtonClass(page === clearedPage)}
+              >
+                {page}
+              </button>
+            ),
+          )}
+          <button
+            onClick={() =>
+              setClearedPage((p) => Math.min(clearedTotalPages, p + 1))
+            }
+            disabled={clearedPage === clearedTotalPages}
+            className={navButtonClass}
+          >
+            Next ›
+          </button>
+        </div>
+      </div>
+    );
   };
 
   // ── Render Cleared Archive table rows ──
@@ -908,6 +1062,8 @@ export default function ClearedPayoutsPage() {
                 <tbody>{renderClearedRows()}</tbody>
               </table>
             </div>
+
+            {renderClearedPagination()}
           </div>
         </section>
       </div>

@@ -108,6 +108,7 @@ model Merchant {
   driverRates           DriverCashSellerRate[]
   driverSellerRates     DriverSellerRate[]
   cashPayoutBatches     CashPayoutBatch[]
+  pickupBatches         PickupBatch[]
 
   // Saved Google Sheets import template mapping
   sheetImportConfig Json?
@@ -267,6 +268,7 @@ model DriverProfile {
   payouts           DriverPayout[]
   deliveries        Order[]          @relation("DriverOrders")
   assignedZones     DriverZoneAssignment[]
+  pickupBatches     PickupBatch[]
 
   // Rolling debt carried over from partial settlements
   carriedDebtUsd Float @default(0)
@@ -336,6 +338,13 @@ model Order {
 
   returnDeductionBatchId Int?
   returnDeductionBatch   CashPayoutBatch? @relation("OrderReturnDeductionBatch", fields: [returnDeductionBatchId], references: [id], onDelete: SetNull)
+
+  // Two-Point Chain-of-Custody: the merchant→warehouse pickup batch this order
+  // was collected under (see PickupBatch). SetNull keeps the order if the batch
+  // record is ever removed.
+  pickupBatchId   String?
+  pickupBatch     PickupBatch? @relation(fields: [pickupBatchId], references: [id], onDelete: SetNull)
+  @@index([pickupBatchId])
 
   waybillUrl       String?
   trackToken       String?        @unique // 8-digit random token for public tracking link: /track/<token>/<orderId>
@@ -446,6 +455,40 @@ model DriverPayout {
   // A driver cannot have two payouts with the same sequence number
   // (guards against max+1 / count+1 races under concurrent creation and voids).
   @@unique([driverId, sequentialIndex])
+
+  // Archive queries filter by status and sort by createdAt (e.g. the
+  // /cleared-payouts page fetching SETTLED+CLEARED newest-first). Without
+  // this index the query is a sequential scan + sort over the whole table.
+  @@index([status, createdAt])
+}
+
+// ==========================================
+// Two-Point Chain-of-Custody: Merchant Pickup Batches
+// ==========================================
+// A PickupBatch groups a merchant's CP-staged orders into a single physical
+// handoff: the merchant requests a pickup, an admin assigns a driver, the
+// driver collects (scan or 1-tap manual pick), and the warehouse performs
+// intake reconciliation. Status flow:
+//   PENDING -> PICKED_UP -> COMPLETED | DISCREPANCY
+model PickupBatch {
+  id              String    @id @default(uuid())
+  batchNumber     String    @unique // e.g., "PKB-1001"
+  merchantId      String
+  merchant        Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  driverId        String?
+  driver          DriverProfile? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  status          String    @default("PENDING") // 'PENDING' | 'PICKED_UP' | 'COMPLETED' | 'DISCREPANCY'
+  totalOrders     Int       @default(0)
+  pickedUpCount   Int       @default(0)
+  receivedCount   Int       @default(0)
+  discrepancyNote String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  orders          Order[]
+
+  @@index([merchantId])
+  @@index([status])
+  @@index([driverId])
 }
 
 model OrderHistory {

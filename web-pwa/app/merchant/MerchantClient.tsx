@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback, Fragment } from "react";
+import { useState, useMemo, useCallback, useEffect, Fragment } from "react";
 import Image from "next/image";
 import { useSearchParams, useRouter } from "next/navigation";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
@@ -36,7 +36,31 @@ interface Order {
   cashPayoutBatchId: number | null;
   returnDeductionBatchId: number | null;
   cashPayoutExcluded: boolean;
+  // Chain-of-custody pickup batch linkage (null when not in a batch).
+  pickupBatchId: string | null;
   createdAt: string;
+}
+
+// ─── Pickup batch (chain-of-custody) types ──────────────────────────────────
+interface PickupBatchOrderItem {
+  id: string;
+  orderId: string;
+  customerName: string;
+  location: string;
+  financialStatus: string;
+}
+
+interface PickupBatchRecord {
+  id: string;
+  batchNumber: string;
+  status: string;
+  totalOrders: number;
+  pickedUpCount: number;
+  receivedCount: number;
+  discrepancyNote: string | null;
+  createdAt: string;
+  driver: { id: string; firstName: string; lastName: string } | null;
+  orders: PickupBatchOrderItem[];
 }
 
 interface MerchantPayout {
@@ -111,7 +135,45 @@ interface MerchantClientProps {
   cashBatches: CashPayoutBatch[];
 }
 
-type TabKey = "deliveries" | "newOrder" | "statements";
+type TabKey = "deliveries" | "newOrder" | "statements" | "pickupBatches";
+
+// Status badge styling for pickup batches (merchant history tab).
+const PICKUP_STATUS_META: Record<string, { label: string; cls: string }> = {
+  PENDING: {
+    label: "Pending Pickup",
+    cls: "bg-purple-500/10 text-purple-300 border-purple-500/30",
+  },
+  PICKED_UP: {
+    label: "Picked Up",
+    cls: "bg-cyan-500/10 text-cyan-300 border-cyan-500/30",
+  },
+  COMPLETED: {
+    label: "At Warehouse",
+    cls: "bg-green-500/10 text-green-400 border-green-500/30",
+  },
+  DISCREPANCY: {
+    label: "Discrepancy",
+    cls: "bg-red-500/10 text-red-300 border-red-500/30",
+  },
+};
+
+// Human-readable per-item custody stage shown in the reconciliation log.
+function pickupItemStatusLabel(location: string): string {
+  switch (location) {
+    case "CP":
+      return "At Seller";
+    case "PICKED_UP":
+      return "With Driver";
+    case "WAREHOUSE":
+      return "At Warehouse";
+    case "DELIVERED":
+      return "Delivered";
+    case "RETURNED":
+      return "Returned";
+    default:
+      return location;
+  }
+}
 
 // Merchants whose auto-generated Order ID preview in the Order Entry form is
 // click-to-copy (their staff paste IDs straight into their own sheets).
@@ -246,7 +308,12 @@ export default function MerchantClient({
   // The active tab is reflected in the URL (?tab=deliveries|newOrder|statements)
   // so each tab has its own shareable URL.
   const urlTab = searchParams.get("tab");
-  const validTabs: TabKey[] = ["deliveries", "newOrder", "statements"];
+  const validTabs: TabKey[] = [
+    "deliveries",
+    "newOrder",
+    "statements",
+    "pickupBatches",
+  ];
   const initialTab: TabKey = validTabs.includes(urlTab as TabKey)
     ? (urlTab as TabKey)
     : "deliveries";
@@ -313,6 +380,14 @@ export default function MerchantClient({
   const [dateFilter, setDateFilter] = useState("");
   const [locationFilter, setLocationFilter] = useState("");
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
+
+  // ── Pickup batches (chain-of-custody) states ─────────────────────────────
+  const [pickupBatches, setPickupBatches] = useState<PickupBatchRecord[]>([]);
+  const [pickupBatchesLoading, setPickupBatchesLoading] = useState(false);
+  const [requestingPickup, setRequestingPickup] = useState(false);
+  const [expandedPickupBatchId, setExpandedPickupBatchId] = useState<
+    string | null
+  >(null);
 
   // ── Payout/statement date-range filter (statements tab) ──────────────────
   // "all" | "day" | "week" | "month" | "3months" | "6months" | "custom"
@@ -920,6 +995,75 @@ export default function MerchantClient({
     );
   };
 
+  // ── Pickup batch requests (chain-of-custody) ─────────────────────────────
+  // Selected orders that may legally join a new pickup batch: staged at CP
+  // and not already linked to another batch.
+  const pickupEligibleSelected = useMemo(
+    () =>
+      orders.filter(
+        (o) =>
+          selectedOrders.includes(o.id) &&
+          o.location === "CP" &&
+          !o.pickupBatchId,
+      ),
+    [orders, selectedOrders],
+  );
+
+  const fetchPickupBatches = useCallback(async () => {
+    setPickupBatchesLoading(true);
+    try {
+      const res = await fetch("/api/merchant/pickup-batches");
+      if (res.ok) {
+        const data = await res.json();
+        setPickupBatches(data.batches ?? []);
+      }
+    } catch {
+      // Keep whatever is already loaded; the Refresh button can retry.
+    } finally {
+      setPickupBatchesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "pickupBatches") {
+      void fetchPickupBatches();
+    }
+  }, [activeTab, fetchPickupBatches]);
+
+  const handleRequestPickup = async () => {
+    if (pickupEligibleSelected.length === 0 || requestingPickup) return;
+    setRequestingPickup(true);
+    try {
+      const res = await fetch("/api/merchant/pickup-batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderIds: pickupEligibleSelected.map((o) => o.id),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Could not request the pickup, please retry.");
+        return;
+      }
+      // Reflect the batch linkage locally, clear the selection, and jump to
+      // the history tab so the merchant sees the newly created batch.
+      const pickedIds = new Set(pickupEligibleSelected.map((o) => o.id));
+      setOrders((prev) =>
+        prev.map((o) =>
+          pickedIds.has(o.id) ? { ...o, pickupBatchId: data.batch.id } : o,
+        ),
+      );
+      setSelectedOrders((prev) => prev.filter((id) => !pickedIds.has(id)));
+      await fetchPickupBatches();
+      handleTabChange("pickupBatches");
+    } catch {
+      alert("Could not request the pickup, please retry.");
+    } finally {
+      setRequestingPickup(false);
+    }
+  };
+
   // ── Copy tracking link to clipboard ────────────────────────────────────
   // Resolves to whether the copy succeeded so the row can show inline
   // "Copied" feedback instead of an alert popup.
@@ -1366,6 +1510,17 @@ export default function MerchantClient({
                 : filteredPayouts.length}
               )
             </button>
+            <button
+              onClick={() => handleTabChange("pickupBatches")}
+              title="Pickup batch history and reconciliation"
+              className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+                activeTab === "pickupBatches"
+                  ? "bg-cyan-500/20 text-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.3)]"
+                  : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+              }`}
+            >
+              Pickup Batches
+            </button>
           </div>
 
           {/* ════════════════════════════════ */}
@@ -1410,6 +1565,26 @@ export default function MerchantClient({
                       title="Download as PDF"
                     >
                       📑 PDF
+                    </button>
+                    <button
+                      onClick={handleRequestPickup}
+                      disabled={
+                        pickupEligibleSelected.length === 0 || requestingPickup
+                      }
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                        pickupEligibleSelected.length === 0
+                          ? "text-gray-600 bg-white/5 border-white/10 cursor-not-allowed"
+                          : "text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 border-purple-500/30"
+                      }`}
+                      title={
+                        pickupEligibleSelected.length === 0
+                          ? "Select CP (Pickup) orders that are not already in a batch"
+                          : "Create a pickup batch for the selected CP orders"
+                      }
+                    >
+                      {requestingPickup
+                        ? "⏳ Requesting…"
+                        : `📦 Request Pickup (${pickupEligibleSelected.length})`}
                     </button>
                   </div>
                 )}
@@ -1691,7 +1866,9 @@ export default function MerchantClient({
                                         : order.location === "RETURNED"
                                           ? "Returned"
                                           : order.location === "CP"
-                                            ? "CP (Pickup)"
+                                            ? order.pickupBatchId
+                                              ? "CP (Batched)"
+                                              : "CP (Pickup)"
                                             : order.location}
                              </span>
                            </td>
@@ -2276,6 +2453,204 @@ export default function MerchantClient({
                         </span>
                       </div>
                     ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ════════════════════════════════ */}
+          {/* PICKUP BATCHES TAB               */}
+          {/* ════════════════════════════════ */}
+          {activeTab === "pickupBatches" && (
+            <>
+              {/* ── Toolbar ── */}
+              <div className="flex flex-wrap items-center gap-3 mb-4 p-4 rounded-xl backdrop-blur-xl bg-white/5 border border-white/10">
+                <h2 className="text-sm font-semibold text-white">
+                  Pickup Batches{" "}
+                  <span className="text-gray-500 font-normal">
+                    (سجلات الاستلام)
+                  </span>
+                </h2>
+                <div className="flex-1" />
+                <span className="text-xs text-gray-400 py-2 whitespace-nowrap">
+                  {pickupBatches.length} batch(es)
+                </span>
+                <button
+                  onClick={() => void fetchPickupBatches()}
+                  disabled={pickupBatchesLoading}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors disabled:opacity-50"
+                >
+                  {pickupBatchesLoading ? "⏳ Loading…" : "🔄 Refresh"}
+                </button>
+              </div>
+
+              {pickupBatches.length === 0 ? (
+                <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-12 text-center">
+                  <p className="text-gray-500 text-sm">
+                    {pickupBatchesLoading
+                      ? "Loading pickup batches…"
+                      : "No pickup batches yet. Select your CP (Pickup) orders under All Orders and press “📦 Request Pickup”."}
+                  </p>
+                </div>
+              ) : (
+                <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[11px] uppercase tracking-wider">
+                          <th className="px-4 py-3 text-left font-medium">
+                            Batch
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Created
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Driver
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Status
+                          </th>
+                          <th className="px-4 py-3 text-right font-medium">
+                            Items
+                          </th>
+                          <th className="px-4 py-3 text-right font-medium">
+                            Action
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pickupBatches.map((batch) => {
+                          const meta =
+                            PICKUP_STATUS_META[batch.status] ?? {
+                              label: batch.status,
+                              cls: "bg-white/5 text-gray-400 border-white/10",
+                            };
+                          const isExpanded =
+                            expandedPickupBatchId === batch.id;
+                          return (
+                            <Fragment key={batch.id}>
+                              <tr
+                                onClick={() =>
+                                  setExpandedPickupBatchId(
+                                    isExpanded ? null : batch.id,
+                                  )
+                                }
+                                className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors cursor-pointer"
+                              >
+                                <td className="px-4 py-3">
+                                  <span className="font-mono text-purple-300">
+                                    {batch.batchNumber}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-xs text-gray-500">
+                                  {formatDateTime(batch.createdAt)}
+                                </td>
+                                <td className="px-4 py-3 text-xs text-gray-300">
+                                  {batch.driver
+                                    ? `${batch.driver.firstName} ${batch.driver.lastName}`
+                                    : "—"}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span
+                                    className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold border ${meta.cls}`}
+                                  >
+                                    {meta.label}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-xs text-right">
+                                  <span className="text-gray-300">
+                                    {batch.receivedCount}/{batch.totalOrders}{" "}
+                                    received
+                                  </span>
+                                  <br />
+                                  <span className="text-gray-500">
+                                    {batch.pickedUpCount} picked up
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  <span className="text-xs text-cyan-400">
+                                    {isExpanded ? "▲ Hide" : "▼ Details"}
+                                  </span>
+                                </td>
+                              </tr>
+                              {isExpanded && (
+                                <tr className="bg-[#121824] border-b border-white/10">
+                                  <td colSpan={6} className="px-4 py-3">
+                                    {batch.discrepancyNote && (
+                                      <div className="mb-3 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-xs">
+                                        ⚠️ {batch.discrepancyNote}
+                                      </div>
+                                    )}
+                                    {batch.orders.length === 0 ? (
+                                      <p className="text-gray-500 text-xs">
+                                        No items in this batch.
+                                      </p>
+                                    ) : (
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="text-gray-500 text-[10px] uppercase tracking-wider border-b border-white/10">
+                                            <th className="py-2 pr-4 text-left font-medium">
+                                              Order ID
+                                            </th>
+                                            <th className="py-2 pr-4 text-left font-medium">
+                                              Customer
+                                            </th>
+                                            <th className="py-2 pr-4 text-left font-medium">
+                                              Custody Stage
+                                            </th>
+                                            <th className="py-2 text-right font-medium">
+                                              Financial
+                                            </th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {batch.orders.map((o) => (
+                                            <tr
+                                              key={o.id}
+                                              className="border-b border-white/5"
+                                            >
+                                              <td className="py-2 pr-4 font-mono text-cyan-400">
+                                                {o.orderId}
+                                              </td>
+                                              <td className="py-2 pr-4 text-gray-300">
+                                                {o.customerName}
+                                              </td>
+                                              <td className="py-2 pr-4">
+                                                <span
+                                                  className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                                                    o.location === "WAREHOUSE" ||
+                                                    o.location === "DELIVERED"
+                                                      ? "bg-green-500/10 text-green-400 border-green-500/30"
+                                                      : o.location ===
+                                                          "PICKED_UP"
+                                                        ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30"
+                                                        : o.location === "CP"
+                                                          ? "bg-purple-500/10 text-purple-300 border-purple-500/30"
+                                                          : "bg-yellow-500/10 text-yellow-400 border-yellow-500/30"
+                                                  }`}
+                                                >
+                                                  {pickupItemStatusLabel(
+                                                    o.location,
+                                                  )}
+                                                </span>
+                                              </td>
+                                              <td className="py-2 text-right text-gray-400">
+                                                {o.financialStatus}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    )}
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
