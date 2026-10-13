@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { getReasonLabel } from "@/lib/driver-reasons";
 
 interface HistoryDriver {
   id: string;
@@ -10,11 +11,28 @@ interface HistoryDriver {
   driverId: string;
 }
 
+/**
+ * Structured audit payload written by the driver exception modals
+ * (see buildDriverAuditMeta in app/api/orders/route.ts). Absent on legacy
+ * rows and non-driver actions.
+ */
+interface DriverAuditMeta {
+  action?: string;
+  timestamp?: string;
+  performedBy?: string;
+  reasonCode?: string | null;
+  notes?: string | null;
+  expectedCod?: number | null;
+  actualCodCollected?: number | null;
+  discrepancy?: number | null;
+}
+
 interface HistoryEntry {
   id: string;
   action: string;
   location: string | null;
   driverId: string | null;
+  meta?: DriverAuditMeta | null;
   user?: { id: string; username: string; role?: string } | null;
   driver?: HistoryDriver | null;
   createdAt: string;
@@ -99,6 +117,23 @@ function formatAction(action: string) {
     .replace(/Price\$/g, "Price $")
     .replace(/PriceLL/g, "Price LL")
     .replace(/Collected:/g, "Collected:");
+}
+
+function formatUsd(value: number) {
+  return `$${value.toFixed(2)}`;
+}
+
+/**
+ * Human-readable label for a structured driver-scan audit action, e.g.
+ * "DELIVERED_WITH_PRICE_ADJUSTMENT" → "Delivered with price adjustment".
+ */
+function formatAuditAction(action: string | undefined): string | null {
+  if (!action) return null;
+  const words = action
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return words;
 }
 
 export default function OrderHistoryModal({
@@ -274,6 +309,15 @@ export default function OrderHistoryModal({
                     ? ROLE_BADGES[entry.user.role] ||
                       "text-gray-300 bg-gray-500/10 border-gray-500/30"
                     : null;
+                  const meta = entry.meta ?? null;
+                  const reasonLabel = meta?.reasonCode
+                    ? getReasonLabel(meta.reasonCode)
+                    : null;
+                  const discrepancy =
+                    typeof meta?.discrepancy === "number"
+                      ? meta.discrepancy
+                      : 0;
+                  const auditActionLabel = formatAuditAction(meta?.action);
 
                   return (
                     <div
@@ -341,6 +385,27 @@ export default function OrderHistoryModal({
                               </span>
                             </span>
                           )}
+                          {meta && (
+                            <span
+                              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-sky-500/10 border border-sky-500/30 text-[10px] font-semibold uppercase tracking-wide text-sky-300"
+                              title={meta.performedBy || "Driver scan"}
+                            >
+                              <svg
+                                className="w-3 h-3"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M3 5a2 2 0 012-2h2m10 0h2a2 2 0 012 2v14a2 2 0 01-2 2h-2M3 19a2 2 0 002 2h2M7 8v8m4-8v8m4-8v8"
+                                />
+                              </svg>
+                              Driver Scan
+                            </span>
+                          )}
                           <span className="text-[11px] text-gray-500">
                             {formatTimestamp(entry.createdAt)}
                           </span>
@@ -348,8 +413,34 @@ export default function OrderHistoryModal({
 
                         {/* Action description */}
                         <p className="text-sm text-gray-200 leading-relaxed">
-                          {formatAction(entry.action)}
+                          {auditActionLabel
+                            ? `${auditActionLabel} — ${formatAction(entry.action)}`
+                            : formatAction(entry.action)}
                         </p>
+
+                        {/* Reason tag (driver scan) */}
+                        {reasonLabel && (
+                          <span className="inline-block mt-1.5 px-2 py-0.5 rounded border text-[10px] font-semibold text-rose-300 bg-rose-500/10 border-rose-500/25">
+                            Reason: {reasonLabel}
+                          </span>
+                        )}
+
+                        {/* Custom note quote bubble */}
+                        {meta?.notes && (
+                          <blockquote className="mt-2 ml-3 border-l-2 border-white/15 pl-3 text-[13px] text-gray-400 italic">
+                            {meta.notes}
+                          </blockquote>
+                        )}
+
+                        {/* COD financial discrepancy badge */}
+                        {discrepancy !== 0 && (
+                          <span className="inline-block mt-1.5 px-2 py-1 rounded border text-[11px] font-semibold text-amber-300 bg-amber-500/10 border-amber-500/30">
+                            COD Adjusted: Expected{" "}
+                            {formatUsd(meta?.expectedCod ?? 0)} → Collected{" "}
+                            {formatUsd(meta?.actualCodCollected ?? 0)} (Diff:{" "}
+                            {formatUsd(discrepancy)})
+                          </span>
+                        )}
 
                         {/* Location badge */}
                         {entry.location && (

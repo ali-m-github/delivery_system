@@ -719,11 +719,12 @@ export default function DriverProfilePage() {
     );
   };
 
-  // Opens the orders export page in a new tab and auto-downloads it as a PDF.
+  // Opens the orders export page in a new tab. The PDF is downloaded from the
+  // "Download PDF" button on that page; ?filename only presets its name.
   const downloadOrdersPdf = (orders: any[], filename: string) => {
     const orderIds = orders.map((o) => o.id).join(",");
     window.open(
-      `/print/orders?ids=${orderIds}&driverId=${driverId}&pdf=true&filename=${encodeURIComponent(filename)}`,
+      `/print/orders?ids=${orderIds}&driverId=${driverId}&filename=${encodeURIComponent(filename)}`,
       "_blank",
     );
   };

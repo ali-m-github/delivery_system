@@ -7,6 +7,7 @@ import OrderHistoryModal from "@/components/OrderHistoryModal";
 import OrderDetailsModal from "@/components/OrderDetailsModal";
 import CopyOrderId from "@/components/CopyOrderId";
 import ImportGoogleSheetsModal from "@/components/orders/ImportGoogleSheetsModal";
+import NotificationBell from "@/components/merchant/NotificationBell";
 import {
   SortableTh,
   getOrderSortValue,
@@ -272,6 +273,39 @@ export default function MerchantClient({
   // Orders created during this browser session (shown under the New Order
   // Request form so merchants can quickly copy their IDs to their own sheets).
   const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
+
+  // ── Notification bell toasts ─────────────────────────────────────────────
+  // Transient pop-ups raised when the bell's poll finds brand-new unread
+  // notifications (driver delivered/postponed/rejected a scan).
+  interface NotificationToast {
+    id: string;
+    title: string;
+    message: string;
+  }
+  const [notificationToasts, setNotificationToasts] = useState<
+    NotificationToast[]
+  >([]);
+
+  const dismissNotificationToast = useCallback((id: string) => {
+    setNotificationToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const handleNewNotifications = useCallback(
+    (fresh: Array<{ id: string; title: string; message: string }>) => {
+      const toasts: NotificationToast[] = fresh.slice(0, 3).map((n) => ({
+        id: n.id,
+        title: n.title,
+        message: n.message,
+      }));
+      if (toasts.length === 0) return;
+      setNotificationToasts((prev) => [...prev, ...toasts]);
+      // Auto-dismiss after 8s.
+      toasts.forEach((t) =>
+        setTimeout(() => dismissNotificationToast(t.id), 8000),
+      );
+    },
+    [dismissNotificationToast],
+  );
 
   // ── Interactive Data Grid states ─────────────────────────────────────────
   const [boxFilter, setBoxFilter] = useState<string | null>(null);
@@ -1131,6 +1165,9 @@ export default function MerchantClient({
                 <span className="px-2 py-1 text-xs font-bold bg-cyan-500/10 text-cyan-500 rounded border border-cyan-500/20">
                   Seller #{merchant.merchantId}
                 </span>
+              </div>
+              <div className="ml-auto flex items-center gap-2">
+                <NotificationBell onNewNotifications={handleNewNotifications} />
               </div>
             </div>
 
@@ -3052,6 +3089,47 @@ export default function MerchantClient({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── Notification toasts (new driver-scan alerts) ── */}
+      {notificationToasts.length > 0 && (
+        <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 w-[340px] max-w-[calc(100vw-2rem)]">
+          {notificationToasts.map((toast) => (
+            <div
+              key={toast.id}
+              className="bg-[#121824] border border-cyan-500/30 rounded-xl shadow-2xl p-4 flex items-start gap-3"
+            >
+              <span className="text-lg leading-5 shrink-0" aria-hidden>
+                🔔
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-white">{toast.title}</p>
+                <p className="text-xs text-gray-400 mt-0.5 break-words">
+                  {toast.message}
+                </p>
+              </div>
+              <button
+                onClick={() => dismissNotificationToast(toast.id)}
+                className="p-1 rounded text-gray-500 hover:text-white transition-colors shrink-0"
+                aria-label="Dismiss notification"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+          ))}
         </div>
       )}
     </>

@@ -48,7 +48,7 @@ export default async function PrintOrdersPage({
     pdf?: string;
   }>;
 }) {
-  const { ids, driverId, payoutId, simple, pdf } = await searchParams;
+  const { ids, driverId, payoutId, simple } = await searchParams;
 
   if (!ids) {
     return (
@@ -241,7 +241,6 @@ export default async function PrintOrdersPage({
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <>
-      {pdf === "true" && <PdfDownloadTrigger />}
       <style
         dangerouslySetInnerHTML={{
           __html: `
@@ -252,6 +251,9 @@ export default async function PrintOrdersPage({
            the browser pin/repeat the Totals row at the bottom of every page,
            which overlaps the last data row when the table ends at the page edge. */
         tfoot { display: table-row-group; }
+        /* The on-screen download button is styled with Tailwind; it only
+           needs to disappear whenever the page itself is printed. */
+        @media print { .no-print { display: none !important; } }
       `,
         }}
       />
@@ -291,6 +293,11 @@ export default async function PrintOrdersPage({
           override).
         </div>
       )}
+
+      {/* On-screen only: sits just above the table but is excluded from the
+          generated PDF (ignoreElements in PdfDownloadTrigger) and from
+          browser printing (.no-print rule above). */}
+      <PdfDownloadTrigger />
 
       <table className="w-full border-collapse border-2 border-gray-800 text-xs">
         <thead>

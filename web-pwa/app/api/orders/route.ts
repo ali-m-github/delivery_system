@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { notifyCustomerStatusChange } from "@/lib/notifications";
+import { fireAndForgetDriverScanNotification } from "@/lib/notifications/dispatcher";
 import { generateTrackToken } from "@/lib/tracking";
 import { createExchangeOrderFromDelivered } from "@/lib/exchange";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
+import { getReasonLabel } from "@/lib/driver-reasons";
 import {
   loadDriverRateTable,
   recalcPayoutTotals,
@@ -535,6 +537,45 @@ const DRIVER_ALLOWED_LOCATIONS = new Set<string>([
   "ASSIGNED_TR",
 ]);
 
+// Reason codes accepted from the driver exception modals (see lib/driver-reasons).
+// "price_adjustment" is the free-text note attached to a COD discrepancy on
+// delivery; it is not a standalone reason.
+const DRIVER_REASON_CATEGORIES = new Set<string>([
+  "postponement",
+  "rejection",
+  "price_adjustment",
+]);
+
+// Build the structured audit payload stored in OrderHistory.meta for driver
+// scan actions. Mirrors the shape documented in prisma/schema.prisma.
+function buildDriverAuditMeta(params: {
+  status: string;
+  reasonCode: string | null;
+  reasonText: string | null;
+  expectedCod: number | null;
+  actualCodCollected: number | null;
+  driverName: string | null;
+}): Prisma.InputJsonObject {
+  const expected = params.expectedCod ?? 0;
+  const actual = params.actualCodCollected ?? 0;
+  const codDiscrepancy =
+    params.actualCodCollected !== null ? actual - expected : 0;
+  const statusUpper = params.status.toUpperCase();
+  return {
+    action:
+      statusUpper === "DELIVERED" && codDiscrepancy !== 0
+        ? "DELIVERED_WITH_PRICE_ADJUSTMENT"
+        : `STATUS_CHANGE_${statusUpper}`,
+    timestamp: new Date().toISOString(),
+    performedBy: `Driver: ${params.driverName || "Driver"}`,
+    reasonCode: params.reasonCode || null,
+    notes: params.reasonText || null,
+    expectedCod: params.expectedCod ?? null,
+    actualCodCollected: params.actualCodCollected ?? null,
+    discrepancy: codDiscrepancy !== 0 ? codDiscrepancy : 0,
+  };
+}
+
 const MERCHANT_UPDATABLE_FIELDS = new Set<string>([
   "customerName",
   "customerPhone",
@@ -593,6 +634,66 @@ export async function PATCH(request: Request) {
     // NOTE: `status` and `currentUserActionId` may arrive in the body for
     // legacy/compat reasons; they are intentionally never read or written.
 
+    // ── Driver exception audit fields (scan modals) ──────────────────────
+    // reasonCode/reasonText/actualCodCollected/expectedCod are NOT order
+    // columns — they are validated here and persisted as a structured
+    // OrderHistory.meta entry. `status` here is the semantic driver action
+    // (delivered | postponed | rejected), distinct from the legacy `status`
+    // compat field above.
+    const reasonCode =
+      typeof body.reasonCode === "string" && body.reasonCode.trim() !== ""
+        ? body.reasonCode.trim()
+        : null;
+    const reasonText =
+      typeof body.reasonText === "string" && body.reasonText.trim() !== ""
+        ? body.reasonText.trim()
+        : null;
+    const reasonCategory =
+      typeof body.reasonCategory === "string" &&
+      DRIVER_REASON_CATEGORIES.has(body.reasonCategory)
+        ? (body.reasonCategory as string)
+        : null;
+    const actualCodCollected = parseFiniteNumber(body.actualCodCollected);
+    const expectedCod = parseFiniteNumber(body.expectedCod);
+    if (
+      body.actualCodCollected !== undefined &&
+      actualCodCollected === null
+    ) {
+      return NextResponse.json(
+        { error: "Invalid value for actualCodCollected" },
+        { status: 400 },
+      );
+    }
+    if (body.expectedCod !== undefined && expectedCod === null) {
+      return NextResponse.json(
+        { error: "Invalid value for expectedCod" },
+        { status: 400 },
+      );
+    }
+    if (reasonCode !== null && getReasonLabel(reasonCode) === null) {
+      return NextResponse.json(
+        { error: `Unknown reasonCode: ${reasonCode}` },
+        { status: 400 },
+      );
+    }
+    // A price-adjustment note is mandatory whenever the collected COD differs
+    // from the expected COD (mirrors the Delivered modal requirement).
+    if (
+      actualCodCollected !== null &&
+      expectedCod !== null &&
+      actualCodCollected !== expectedCod &&
+      reasonCategory !== "price_adjustment" &&
+      (!reasonText || reasonCode === null)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "A price adjustment reason is required when the collected COD differs from the expected COD",
+        },
+        { status: 400 },
+      );
+    }
+
     // Legacy `price` alias → amountUsd, normalized BEFORE whitelist and
     // permission evaluation so it is authorized exactly like amountUsd
     // itself: a role that may not write amountUsd can no longer smuggle it
@@ -618,10 +719,11 @@ export async function PATCH(request: Request) {
     let allowedFields: Set<string>;
     let actionDriverId: string | null = null;
 
+    let actorDriverName: string | null = null;
     if (actor.role === "DRIVER") {
       const driverProfile = await prisma.driverProfile.findUnique({
         where: { userId: actor.id },
-        select: { id: true },
+        select: { id: true, firstName: true, lastName: true },
       });
       if (!driverProfile) {
         return NextResponse.json(
@@ -630,6 +732,8 @@ export async function PATCH(request: Request) {
         );
       }
       actionDriverId = driverProfile.id;
+      actorDriverName =
+        `${driverProfile.firstName} ${driverProfile.lastName}`.trim() || null;
       const isOwnOrder = existing.driverId === driverProfile.id;
       const isSelfPickup =
         existing.driverId === null && body.driverId === driverProfile.id;
@@ -1071,6 +1175,46 @@ export async function PATCH(request: Request) {
         ? (data.driverId as string | null)
         : existing.driverId;
 
+    // ── Structured driver-scan audit entry (OrderHistory.meta) ────────────
+    // Built only for driver exception flows (delivered / postponed /
+    // rejected with reason codes or COD adjustments). The semantic status
+    // is derived from the resulting location + reason category.
+    let driverAuditMeta: Prisma.InputJsonObject | null = null;
+    // Hoisted so the merchant notification dispatcher below can reuse it.
+    let scanSemanticStatus: "delivered" | "postponed" | "rejected" | null =
+      null;
+    const effectiveExpectedCod = expectedCod ?? existing.amountUsd ?? null;
+    if (
+      actor.role === "DRIVER" &&
+      (reasonCode !== null ||
+        reasonCategory !== null ||
+        actualCodCollected !== null)
+    ) {
+      const semanticStatus =
+        newLocation === "DELIVERED"
+          ? "delivered"
+          : newLocation === "RETURN"
+            ? "rejected"
+            : reasonCategory === "postponement"
+              ? "postponed"
+              : null;
+      if (semanticStatus) {
+        scanSemanticStatus = semanticStatus;
+        driverAuditMeta = buildDriverAuditMeta({
+          status: semanticStatus,
+          reasonCode,
+          reasonText,
+          expectedCod: effectiveExpectedCod,
+          actualCodCollected,
+          driverName: actorDriverName,
+        });
+        const reasonLabel = getReasonLabel(reasonCode);
+        if (reasonLabel) {
+          changes.push(`Reason: ${reasonLabel}`);
+        }
+      }
+    }
+
     // ── Atomic order update + payout reconciliation (fix A) ────────────────
     // Detach + payout recalculation + order update are ONE transaction so a
     // failure can never leave the order unlinked while the payout still carries
@@ -1235,6 +1379,7 @@ export async function PATCH(request: Request) {
                 location: newLocation,
                 driverId: historyDriverId,
                 userId: actor.id,
+                ...(driverAuditMeta ? { meta: driverAuditMeta } : {}),
               },
             },
           },
@@ -1256,6 +1401,28 @@ export async function PATCH(request: Request) {
       updatedOrder.customerPhone,
       updatedOrder.trackToken,
     ).catch(console.error);
+
+    // ── Merchant notification pipeline (in-app bell + WhatsApp) ────────────
+    // Fires only for driver scan exception flows (the same condition that
+    // produced driverAuditMeta). Fire-and-forget: never affects the response.
+    if (driverAuditMeta && scanSemanticStatus && existing.merchantId) {
+      const codDiscrepancy =
+        actualCodCollected !== null
+          ? actualCodCollected - (effectiveExpectedCod ?? 0)
+          : 0;
+      fireAndForgetDriverScanNotification({
+        merchantId: existing.merchantId,
+        orderId: updatedOrder.id,
+        orderRef: updatedOrder.orderId,
+        semanticStatus: scanSemanticStatus,
+        reasonCode,
+        reasonText,
+        expectedCod: effectiveExpectedCod,
+        actualCodCollected,
+        discrepancy: codDiscrepancy,
+        driverName: actorDriverName,
+      });
+    }
 
     return NextResponse.json(updatedOrder, { status: 200 });
   } catch (error: any) {
