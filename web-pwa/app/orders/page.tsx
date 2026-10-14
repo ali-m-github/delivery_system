@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, Suspense } from "react";
+import {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  Suspense,
+  Fragment,
+} from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import SharedOrderTable, {
   formatDDMMYYYY,
@@ -17,8 +24,10 @@ import OrderDetailsModal from "@/components/OrderDetailsModal";
 import BarcodeScannerModal from "@/components/BarcodeScannerModal";
 import PermissionGuard from "@/components/PermissionGuard";
 import WarehouseIntakeModal from "@/components/orders/WarehouseIntakeModal";
+import UniversalStaffScannerModal from "@/components/orders/UniversalStaffScannerModal";
 import { hasPermission } from "@/lib/permissions";
 import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
+import { getReasonLabel } from "@/lib/driver-reasons";
 
 // ─── Header Alias Mapping for Bulk Upload ─────────────────────────────────────
 const HEADER_ALIASES: Record<string, string> = {
@@ -165,6 +174,40 @@ interface Order {
   driverPayout: {
     payoutReference: string | null;
   } | null;
+}
+
+// ─── Return Batches (Returns tab → "Return Batches" sub-view) ────────────────
+interface ReturnBatchOrderRow {
+  id: string;
+  orderId: string;
+  customerName: string;
+  customerPhone: string;
+  amountUsd: number | null;
+  location: string;
+  financialStatus: string;
+  createdAt: string;
+  reasonCode: string | null;
+}
+
+interface ReturnBatchRecord {
+  id: string;
+  batchNumber: string;
+  status: string;
+  totalOrders: number;
+  createdAt: string;
+  updatedAt: string;
+  merchant: {
+    id: string;
+    merchantId: string;
+    merchantName: string;
+  } | null;
+  settlement: {
+    cashPayoutBatchId: number;
+    batchReference: string;
+    settledAt: string;
+  } | null;
+  handedOverBy: string | null;
+  orders: ReturnBatchOrderRow[];
 }
 
 type Tab =
@@ -528,6 +571,11 @@ function OrdersPageInner() {
   const [returnStatus, setReturnStatus] = useState("ALL");
   const [returnsSearchTerm, setReturnsSearchTerm] = useState("");
   const [rwdSearchTerm, setRwdSearchTerm] = useState("");
+
+  // Returns tab sub-view: individual return orders vs Return-Batch handoffs
+  const [returnsSubView, setReturnsSubView] = useState<"orders" | "batches">(
+    "orders",
+  );
 
   // ── Multi-select state ──
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
@@ -1025,6 +1073,9 @@ function OrdersPageInner() {
 
   // ── Warehouse Intake (pickup batch verification) State ──
   const [warehouseIntakeOpen, setWarehouseIntakeOpen] = useState(false);
+
+  // ── Universal Staff Scanner (multi-parcel tray) State ──
+  const [universalScannerOpen, setUniversalScannerOpen] = useState(false);
 
   // ── Scan-to-Assign State ──
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -2802,6 +2853,18 @@ function OrdersPageInner() {
                       📦 Warehouse Intake Scan
                     </button>
                   </PermissionGuard>
+                  <PermissionGuard requires="MANAGE_ORDERS">
+                    <button
+                      onClick={() => setUniversalScannerOpen(true)}
+                      className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
+                                 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30
+                                 hover:bg-indigo-500/30 hover:shadow-[0_0_12px_rgba(99,102,241,0.3)]
+                                 transition-all duration-200"
+                      title="Universal staff scanner: scan parcels from any merchant, then receive, assign, return, or deliver them"
+                    >
+                      📷 Staff Scanner
+                    </button>
+                  </PermissionGuard>
                   <button
                     onClick={() =>
                       handleBulkAction("Deliver", {
@@ -4510,6 +4573,34 @@ function OrdersPageInner() {
         {/* ════════════════════════════════════ */}
         {currentTab === "returns" && (
           <>
+            {/* Sub-view toggle: individual return orders vs Return Batches */}
+            <div className="flex items-center gap-1 mb-5 w-fit rounded-xl border border-white/10 bg-white/5 p-1">
+              <button
+                onClick={() => setReturnsSubView("orders")}
+                className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors ${
+                  returnsSubView === "orders"
+                    ? "bg-cyan-500/20 text-cyan-300"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                Return Orders
+              </button>
+              <button
+                onClick={() => setReturnsSubView("batches")}
+                className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors ${
+                  returnsSubView === "batches"
+                    ? "bg-orange-500/20 text-orange-300"
+                    : "text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                Return Batches
+              </button>
+            </div>
+
+            {returnsSubView === "batches" ? (
+              <ReturnBatchesPanel merchants={merchants} />
+            ) : (
+              <>
             {/* Filter row */}
             <div className="flex flex-col sm:flex-row gap-3 mb-6">
               {/* Search */}
@@ -4973,6 +5064,8 @@ function OrdersPageInner() {
                   );
                 })()}
               </div>
+            )}
+              </>
             )}
           </>
         )}
@@ -7243,6 +7336,15 @@ function OrdersPageInner() {
         />
 
         {/* ════════════════════════════════════════ */}
+        {/* UNIVERSAL STAFF SCANNER (TRAY)          */}
+        {/* ════════════════════════════════════════ */}
+        <UniversalStaffScannerModal
+          isOpen={universalScannerOpen}
+          onClose={() => setUniversalScannerOpen(false)}
+          onRefresh={fetchOrders}
+        />
+
+        {/* ════════════════════════════════════════ */}
         {/* WAYBILL UPLOAD REPORT                  */}
         {/* ════════════════════════════════════════ */}
         {waybillReportOpen && (
@@ -7313,5 +7415,337 @@ function SummaryCard({
         className={`mt-3 h-0.5 rounded-full bg-gradient-to-r ${accentMap[color]} opacity-60 group-hover:opacity-100 transition-opacity duration-300`}
       />
     </div>
+  );
+}
+
+// ─── Return Batches Sub-Panel (Returns tab → "Return Batches") ───────────────
+// Lists Return-to-Seller handoff batches created by the Universal Staff
+// Scanner: batch number, creation date, package count, the staff member who
+// physically handed the packages over, per-order breakdown (recipient, phone,
+// COD, return reason) and settlement status (CashPayoutBatch reference).
+interface ReturnBatchSellerOption {
+  id: string;
+  merchantName?: string;
+  ownerFirstName?: string;
+  ownerLastName?: string;
+}
+
+function ReturnBatchesPanel({
+  merchants,
+}: {
+  merchants: ReturnBatchSellerOption[];
+}) {
+  const [batches, setBatches] = useState<ReturnBatchRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [date, setDate] = useState("");
+  const [sellerId, setSellerId] = useState("ALL");
+  const [status, setStatus] = useState("ALL");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (status !== "ALL") params.set("status", status);
+        if (sellerId !== "ALL") params.set("merchantId", sellerId);
+        if (date) {
+          params.set("from", date);
+          params.set("to", date);
+        }
+        if (search.trim()) params.set("search", search.trim());
+        const res = await fetch(
+          `/api/admin/return-batches?${params.toString()}`,
+        );
+        const data = await res.json();
+        if (!cancelled) setBatches(res.ok ? data.batches || [] : []);
+      } catch (err) {
+        console.error("Failed to fetch return batches", err);
+        if (!cancelled) setBatches([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [search, date, sellerId, status]);
+
+  const badgeClass = (s: string): string => {
+    if (s === "SETTLED")
+      return "bg-green-500/15 text-green-300 border-green-500/30";
+    if (s === "COMPLETED")
+      return "bg-cyan-500/15 text-cyan-300 border-cyan-500/30";
+    return "bg-orange-500/15 text-orange-300 border-orange-500/30";
+  };
+
+  const fmtDateTime = (iso: string): string =>
+    new Date(iso).toLocaleString("en-US", {
+      month: "2-digit",
+      day: "2-digit",
+      year: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  return (
+    <>
+      {/* Batch filters */}
+      <div className="flex flex-col sm:flex-row gap-3 mb-6">
+        <div className="relative flex-1">
+          <svg
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+            />
+          </svg>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search order IDs inside batches (comma-separated)…"
+            className="w-full pl-10 pr-4 py-2.5 text-sm rounded-xl
+                       backdrop-blur-xl bg-white/5 border border-white/10
+                       text-gray-300 placeholder-gray-600
+                       focus:outline-none focus:border-cyan-500/50
+                       transition-all duration-200"
+          />
+        </div>
+
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="px-4 py-2.5 text-sm rounded-xl
+                     backdrop-blur-xl bg-white/5 border border-white/10
+                     text-gray-300 [color-scheme:dark]
+                     focus:outline-none focus:border-cyan-500/50
+                     focus:shadow-[0_0_12px_rgba(6,182,212,0.15)]
+                     transition-all duration-200"
+        />
+
+        <select
+          value={sellerId}
+          onChange={(e) => setSellerId(e.target.value)}
+          className="px-4 py-2.5 text-sm rounded-xl
+                     backdrop-blur-xl bg-slate-950 text-white border border-gray-700
+                     outline-none focus:border-cyan-500
+                     focus:shadow-[0_0_12px_rgba(6,182,212,0.15)]
+                     transition-all duration-200"
+        >
+          <option value="ALL" className="bg-slate-950 text-white">
+            All Sellers
+          </option>
+          {merchants.map((m) => (
+            <option
+              key={m.id}
+              value={m.id}
+              className="bg-slate-950 text-white"
+            >
+              {m.merchantName ||
+                `${m.ownerFirstName ?? ""} ${m.ownerLastName ?? ""}`.trim() ||
+                m.id}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          className="px-4 py-2.5 text-sm rounded-xl
+                     backdrop-blur-xl bg-slate-950 text-white border border-gray-700
+                     outline-none focus:border-cyan-500
+                     focus:shadow-[0_0_12px_rgba(6,182,212,0.15)]
+                     transition-all duration-200"
+        >
+          <option value="ALL" className="bg-slate-950 text-white">
+            All Batch Statuses
+          </option>
+          <option value="PENDING" className="bg-slate-950 text-white">
+            Pending (awaiting settlement)
+          </option>
+          <option value="COMPLETED" className="bg-slate-950 text-white">
+            Completed
+          </option>
+          <option value="SETTLED" className="bg-slate-950 text-white">
+            Settled (paid out)
+          </option>
+        </select>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <svg
+            className="animate-spin h-8 w-8 text-cyan-400"
+            viewBox="0 0 24 24"
+            fill="none"
+          >
+            <circle
+              className="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              strokeWidth="4"
+            />
+            <path
+              className="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            />
+          </svg>
+        </div>
+      ) : batches.length === 0 ? (
+        <div className="text-center py-16">
+          <p className="text-gray-500 text-sm">
+            No return batches found. Batches are created when staff scan
+            returned packages to the seller using the Universal Scanner.
+          </p>
+        </div>
+      ) : (
+        <div className="w-full overflow-x-auto">
+          <table className="w-full min-w-max whitespace-nowrap text-sm">
+            <thead>
+              <tr className="border-b border-white/5 text-gray-500 text-[11px] uppercase tracking-wider">
+                <th className="px-3 py-2 w-8" />
+                <th className="px-3 py-2 text-left font-medium">Batch #</th>
+                <th className="px-3 py-2 text-left font-medium">Seller</th>
+                <th className="px-3 py-2 text-left font-medium">Created</th>
+                <th className="px-3 py-2 text-center font-medium">Packages</th>
+                <th className="px-3 py-2 text-left font-medium">
+                  Handed Over By
+                </th>
+                <th className="px-3 py-2 text-center font-medium">Status</th>
+                <th className="px-3 py-2 text-left font-medium">
+                  Settlement
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {batches.map((b) => {
+                const isExpanded = expandedId === b.id;
+                return (
+                  <Fragment key={b.id}>
+                    <tr
+                      onClick={() =>
+                        setExpandedId(isExpanded ? null : b.id)
+                      }
+                      className="border-b border-white/5 hover:bg-white/[0.03] cursor-pointer transition-colors"
+                    >
+                      <td className="px-3 py-2 text-gray-500">
+                        {isExpanded ? "▾" : "▸"}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs text-cyan-300">
+                        {b.batchNumber}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-300">
+                        {b.merchant ? (
+                          <a
+                            href={`/merchants/${b.merchant.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-cyan-400 hover:underline"
+                          >
+                            {b.merchant.merchantName || b.merchant.merchantId}
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-400">
+                        {fmtDateTime(b.createdAt)}
+                      </td>
+                      <td className="px-3 py-2 text-center text-xs text-gray-300">
+                        {b.orders.length || b.totalOrders}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-300">
+                        {b.handedOverBy ?? "—"}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded-full border text-[10px] font-bold ${badgeClass(
+                            b.status,
+                          )}`}
+                        >
+                          {b.status}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        {b.settlement ? (
+                          <span className="text-green-300 font-mono">
+                            {b.settlement.batchReference}
+                          </span>
+                        ) : (
+                          <span className="text-gray-600">Not settled</span>
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="bg-[#121824] border-b border-white/5">
+                        <td colSpan={8} className="px-6 py-3">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="text-gray-500 border-b border-white/5">
+                                <th className="py-1.5 text-left">Order ID</th>
+                                <th className="py-1.5 text-left">
+                                  Recipient
+                                </th>
+                                <th className="py-1.5 text-left">Phone</th>
+                                <th className="py-1.5 text-right">COD $</th>
+                                <th className="py-1.5 text-center">
+                                  Fin Status
+                                </th>
+                                <th className="py-1.5 text-left">
+                                  Return Reason
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/5">
+                              {b.orders.map((o) => (
+                                <tr key={o.id}>
+                                  <td className="py-1.5 font-mono text-gray-300">
+                                    {o.orderId}
+                                  </td>
+                                  <td className="py-1.5 text-gray-300">
+                                    {o.customerName}
+                                  </td>
+                                  <td className="py-1.5 text-gray-400">
+                                    {o.customerPhone}
+                                  </td>
+                                  <td className="py-1.5 text-right font-mono text-gray-300">
+                                    {o.amountUsd != null
+                                      ? o.amountUsd.toFixed(2)
+                                      : "—"}
+                                  </td>
+                                  <td className="py-1.5 text-center text-gray-400">
+                                    {o.financialStatus}
+                                  </td>
+                                  <td className="py-1.5 text-gray-400">
+                                    {getReasonLabel(o.reasonCode) ?? "—"}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
   );
 }

@@ -76,13 +76,15 @@ export async function GET(
       sellerRate: defaultFee,
     }));
 
-    // 2. Pending Unresolved Returns/Exchanges (not yet deducted, location RETURN,
-    //    fin status Re for returns and EX for exchanges).
-    //    Exclude RTS (Returned to Seller) — those are already resolved.
+    // 2. Pending Unresolved Returns/Exchanges that were NOT handed over through
+    //    a Return Batch (legacy/manual returns only — location RETURN, fin
+    //    status Re for returns and EX for exchanges). Batched returns are
+    //    served as ReturnBatch cards below (section 2b).
     const pendingReturns = await prisma.order.findMany({
       where: {
         merchantId,
         returnDeductionBatchId: null,
+        returnBatchId: null,
         location: "RETURN",
         financialStatus: { in: ["Re", "EX"] },
       },
@@ -107,6 +109,51 @@ export async function GET(
       amountUsd: order.orderId.endsWith("-Exchange") ? null : order.amountUsd,
       sellerRate: defaultFee,
     }));
+
+    // 2b. Pending Return Batches (Universal Staff Scanner → Return to Seller).
+    //     Unsettled batches are offered as single selectable cards; selecting a
+    //     batch settles ALL of its orders at once. The per-batch deduction
+    //     total is computed here with the exact same formula the POST uses
+    //     (amountUsd - fee, $0 for "-Exchange" proof orders) so the UI total
+    //     and the settled amount can never diverge.
+    const returnBatches = await prisma.returnBatch.findMany({
+      where: { merchantId, status: { not: "SETTLED" } },
+      select: {
+        id: true,
+        batchNumber: true,
+        status: true,
+        totalOrders: true,
+        createdAt: true,
+        orders: {
+          select: {
+            id: true,
+            orderId: true,
+            amountUsd: true,
+            financialStatus: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: "desc" },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const pendingReturnBatches = returnBatches.map((batch) => {
+      let totalDeduction = 0;
+      for (const o of batch.orders) {
+        if (o.orderId.endsWith("-Exchange")) continue;
+        totalDeduction += (o.amountUsd ?? 0) - defaultFee;
+      }
+      return {
+        ...batch,
+        orders: batch.orders.map((o) => ({
+          ...o,
+          amountUsd: o.orderId.endsWith("-Exchange") ? null : o.amountUsd,
+        })),
+        totalDeduction,
+        sellerRate: defaultFee,
+      };
+    });
 
     // 3. Historical Batches (all CashPayoutBatch records for this merchant)
     const batches = await prisma.cashPayoutBatch.findMany({
@@ -148,6 +195,7 @@ export async function GET(
       {
         unpaidOrders: unpaidOrdersWithRate,
         pendingReturns: pendingReturnsWithRate,
+        pendingReturnBatches,
         batches,
       },
       { status: 200 },
@@ -186,11 +234,13 @@ export async function POST(
     const {
       orderIds = [],
       returnIds = [],
+      returnBatchIds = [],
       sellerRateOverride,
       adjustments = [],
     }: {
       orderIds?: string[];
       returnIds?: string[];
+      returnBatchIds?: string[];
       sellerRateOverride?: number;
       adjustments?: { description: string; amountUsd: number }[];
     } = body;
@@ -252,23 +302,41 @@ export async function POST(
         );
       }
 
-      // 3. Fetch return orders and calculate deductedReturns (same per-order fee)
-      const returnOrders = returnIds.length
-        ? await tx.order.findMany({
+      // 3. Fetch return orders and calculate deductedReturns (same per-order
+      //    fee). Returns arrive either as individual IDs (legacy unbatched
+      //    returns) or via Return Batch IDs (Universal Staff Scanner handoffs —
+      //    selecting a batch settles ALL of its orders at once).
+      const selectedBatches = returnBatchIds.length
+        ? await tx.returnBatch.findMany({
             where: {
-              id: { in: returnIds },
+              id: { in: returnBatchIds },
               merchantId,
-              returnDeductionBatchId: null,
+              status: { not: "SETTLED" },
             },
-            select: {
-              id: true,
-              orderId: true,
-              amountUsd: true,
-              driverId: true,
-              createdAt: true,
-            },
+            select: { id: true, orders: { select: { id: true } } },
           })
         : [];
+      const batchOrderIds = selectedBatches.flatMap((b) =>
+        b.orders.map((o) => o.id),
+      );
+
+      const returnOrders =
+        returnIds.length || batchOrderIds.length
+          ? await tx.order.findMany({
+              where: {
+                id: { in: Array.from(new Set([...returnIds, ...batchOrderIds])) },
+                merchantId,
+                returnDeductionBatchId: null,
+              },
+              select: {
+                id: true,
+                orderId: true,
+                amountUsd: true,
+                driverId: true,
+                createdAt: true,
+              },
+            })
+          : [];
 
       let deductedReturns = 0;
 
@@ -356,7 +424,7 @@ export async function POST(
       }
 
       // 10. Update all return orders — link to batch + mark RTS (Returned to Seller)
-      if (returnIds.length) {
+      if (returnOrders.length) {
         await Promise.all(
           returnOrders.map((o) =>
             tx.order.update({
@@ -369,6 +437,15 @@ export async function POST(
             }),
           ),
         );
+      }
+
+      // 11. Settle the selected Return Batches — link them to this payout so
+      //     the merchant/admin views can show settlement status.
+      if (selectedBatches.length) {
+        await tx.returnBatch.updateMany({
+          where: { id: { in: selectedBatches.map((b) => b.id) } },
+          data: { status: "SETTLED", cashPayoutBatchId: cashPayoutBatch.id },
+        });
       }
 
       return cashPayoutBatch;

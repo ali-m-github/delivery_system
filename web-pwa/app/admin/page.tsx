@@ -8,6 +8,7 @@ import ProfitTab from "@/components/admin/ProfitTab";
 import EmployeesTab from "@/components/admin/EmployeesTab";
 import MerchantsTab from "@/components/admin/MerchantsTab";
 import PermissionGroupsTab from "@/components/admin/PermissionGroupsTab";
+import UniversalStaffScannerModal from "@/components/orders/UniversalStaffScannerModal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Zone {
@@ -65,6 +66,9 @@ function AdminContent() {
 
   const [currentUser, setCurrentUser] = useState<{ id: string; role: string } | null>(null);
 
+  // Universal Staff Scanner — quick access for admins away from /orders
+  const [staffScannerOpen, setStaffScannerOpen] = useState(false);
+
   useEffect(() => {
     fetch("/api/auth/me")
       .then((r) => r.ok && r.json())
@@ -113,13 +117,25 @@ function AdminContent() {
 
       <div className="relative z-10 max-w-[1600px] mx-auto px-4 sm:px-6 py-8">
         {/* ── Header ── */}
-        <div className="mb-8">
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-500">
-            Admin Panel
-          </h1>
-          <p className="mt-1 text-sm text-gray-400">
-            Manage employees, zones, and system settings.
-          </p>
+        <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-500">
+              Admin Panel
+            </h1>
+            <p className="mt-1 text-sm text-gray-400">
+              Manage employees, zones, and system settings.
+            </p>
+          </div>
+          <button
+            onClick={() => setStaffScannerOpen(true)}
+            className="px-4 py-2 text-sm font-semibold rounded-lg
+                       bg-indigo-500/20 text-indigo-300 border border-indigo-500/30
+                       hover:bg-indigo-500/30 hover:shadow-[0_0_12px_rgba(99,102,241,0.3)]
+                       transition-all duration-200"
+            title="Universal staff scanner: scan parcels from any merchant, then receive, assign, return, or deliver them"
+          >
+            📷 Staff Scanner
+          </button>
         </div>
 
         {/* ── Tabs ── */}
@@ -155,6 +171,12 @@ function AdminContent() {
           <ProfitTab />
         ) : null}
       </div>
+
+      {/* ═══ Universal Staff Scanner (admin quick access) ═══ */}
+      <UniversalStaffScannerModal
+        isOpen={staffScannerOpen}
+        onClose={() => setStaffScannerOpen(false)}
+      />
     </div>
   );
 }

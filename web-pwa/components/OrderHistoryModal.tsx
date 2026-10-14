@@ -25,6 +25,16 @@ interface DriverAuditMeta {
   expectedCod?: number | null;
   actualCodCollected?: number | null;
   discrepancy?: number | null;
+  // ── Universal Staff Scanner audit fields (written by
+  //    app/api/admin/orders/universal-scan/route.ts) ──
+  isScannerAction?: boolean;
+  staffName?: string;
+  batchNumber?: string;
+  merchantName?: string;
+  driverName?: string;
+  driverCode?: string;
+  assignmentType?: string;
+  previousLocation?: string;
 }
 
 interface HistoryEntry {
@@ -134,6 +144,30 @@ function formatAuditAction(action: string | undefined): string | null {
     .toLowerCase()
     .replace(/\b\w/g, (c) => c.toUpperCase());
   return words;
+}
+
+/**
+ * Clean labels for Universal Staff Scanner actions (SC_-prefixed, written by
+ * app/api/admin/orders/universal-scan/route.ts). Unknown SC_ actions fall back
+ * to stripping the prefix and humanizing the remainder.
+ */
+const SCANNER_ACTION_LABELS: Record<string, string> = {
+  SC_RECEIVED_AT_WAREHOUSE: "Received at warehouse",
+  SC_ASSIGNED_DRIVER_DR: "Assigned driver — Dr run",
+  SC_ASSIGNED_DRIVER_TR: "Assigned driver — Tr run",
+  SC_MOVED_TO_RETURNS_WAREHOUSE: "Moved to returns warehouse",
+  SC_RETURNED_TO_SELLER_RTS: "Returned to seller (RTS)",
+  SC_DELIVERED: "Marked delivered",
+};
+
+function formatScannerAction(action: string): string {
+  if (!action) return "";
+  if (SCANNER_ACTION_LABELS[action]) return SCANNER_ACTION_LABELS[action];
+  return action
+    .replace(/^SC_/, "")
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 export default function OrderHistoryModal({
@@ -318,6 +352,11 @@ export default function OrderHistoryModal({
                       ? meta.discrepancy
                       : 0;
                   const auditActionLabel = formatAuditAction(meta?.action);
+                  // Scanner rows are checked FIRST so they never render the
+                  // driver-scan "Driver Scan" badge below.
+                  const isScannerAction =
+                    entry.action.startsWith("SC_") ||
+                    meta?.isScannerAction === true;
 
                   return (
                     <div
@@ -385,7 +424,27 @@ export default function OrderHistoryModal({
                               </span>
                             </span>
                           )}
-                          {meta && (
+                          {isScannerAction ? (
+                            <span
+                              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/40 text-[10px] font-bold uppercase tracking-wide text-indigo-300"
+                              title={`Scanner action${meta?.staffName ? ` by ${meta.staffName}` : ""}`}
+                            >
+                              <svg
+                                className="w-3 h-3"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M3 5a2 2 0 012-2h2m10 0h2a2 2 0 012 2v14a2 2 0 01-2 2h-2M3 19a2 2 0 002 2h2M7 8v8m4-8v8m4-8v8"
+                                />
+                              </svg>
+                              [SC] Scanner
+                            </span>
+                          ) : meta ? (
                             <span
                               className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-sky-500/10 border border-sky-500/30 text-[10px] font-semibold uppercase tracking-wide text-sky-300"
                               title={meta.performedBy || "Driver scan"}
@@ -405,7 +464,7 @@ export default function OrderHistoryModal({
                               </svg>
                               Driver Scan
                             </span>
-                          )}
+                          ) : null}
                           <span className="text-[11px] text-gray-500">
                             {formatTimestamp(entry.createdAt)}
                           </span>
@@ -413,10 +472,22 @@ export default function OrderHistoryModal({
 
                         {/* Action description */}
                         <p className="text-sm text-gray-200 leading-relaxed">
-                          {auditActionLabel
-                            ? `${auditActionLabel} — ${formatAction(entry.action)}`
-                            : formatAction(entry.action)}
+                          {isScannerAction
+                            ? formatScannerAction(entry.action)
+                            : auditActionLabel
+                              ? `${auditActionLabel} — ${formatAction(entry.action)}`
+                              : formatAction(entry.action)}
                         </p>
+
+                        {/* Scanner staff attribution + return batch reference */}
+                        {isScannerAction && (meta?.staffName || meta?.batchNumber) && (
+                          <p className="mt-1 text-[11px] text-indigo-300/80">
+                            By: {meta?.staffName || "staff"}
+                            {meta?.batchNumber
+                              ? ` · Batch ${meta.batchNumber}`
+                              : ""}
+                          </p>
+                        )}
 
                         {/* Reason tag (driver scan) */}
                         {reasonLabel && (

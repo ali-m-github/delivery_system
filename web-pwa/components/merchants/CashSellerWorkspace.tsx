@@ -27,6 +27,27 @@ interface PendingReturn {
   createdAt: string;
 }
 
+interface ReturnBatchOrderItem {
+  id: string;
+  orderId: string;
+  amountUsd: number | null;
+  financialStatus?: string;
+  createdAt: string;
+}
+
+interface ReturnBatchRecord {
+  id: string;
+  batchNumber: string;
+  status: string;
+  totalOrders: number;
+  createdAt: string;
+  orders: ReturnBatchOrderItem[];
+  // Server-computed total deduction for the whole batch (same formula the POST
+  // applies: amountUsd - fee per order, $0 for "-Exchange" proof orders).
+  totalDeduction: number;
+  sellerRate?: number;
+}
+
 interface BatchOrder {
   id: string;
   orderId: string;
@@ -100,6 +121,9 @@ export default function CashSellerWorkspace({
   // ── Data State ──
   const [unpaidOrders, setUnpaidOrders] = useState<UnpaidOrder[]>([]);
   const [pendingReturns, setPendingReturns] = useState<PendingReturn[]>([]);
+  const [pendingReturnBatches, setPendingReturnBatches] = useState<
+    ReturnBatchRecord[]
+  >([]);
   const [batches, setBatches] = useState<CashPayoutBatch[]>([]);
 
   // ── Selection State ──
@@ -109,6 +133,14 @@ export default function CashSellerWorkspace({
   const [selectedReturnIds, setSelectedReturnIds] = useState<Set<string>>(
     new Set(),
   );
+  const [selectedReturnBatchIds, setSelectedReturnBatchIds] = useState<
+    Set<string>
+  >(new Set());
+
+  // ── Expanded return-batch card state ──
+  const [expandedReturnBatchId, setExpandedReturnBatchId] = useState<
+    string | null
+  >(null);
 
   // ── UI State ──
   const [isLoading, setIsLoading] = useState(true);
@@ -149,6 +181,7 @@ export default function CashSellerWorkspace({
         const data = await res.json();
         setUnpaidOrders(data.unpaidOrders || []);
         setPendingReturns(data.pendingReturns || []);
+        setPendingReturnBatches(data.pendingReturnBatches || []);
         setBatches(data.batches || []);
       } catch (e: any) {
         setError(e.message || "Failed to load workspace data");
@@ -258,12 +291,32 @@ export default function CashSellerWorkspace({
     return sum + computeAdvance(ret.amountUsd, rate);
   }, 0);
 
+  // Batched returns: the server already computed each batch's total deduction
+  // with the exact POST formula, so the summary can never diverge from what
+  // actually gets settled.
+  const batchDeductions = Array.from(selectedReturnBatchIds).reduce(
+    (sum, id) => {
+      const batch = pendingReturnBatches.find((b) => b.id === id);
+      return sum + (batch ? batch.totalDeduction : 0);
+    },
+    0,
+  );
+
+  const totalReturnDeductions = returnDeductions + batchDeductions;
+  const selectedReturnCount =
+    selectedReturnIds.size +
+    Array.from(selectedReturnBatchIds).reduce((sum, id) => {
+      const batch = pendingReturnBatches.find((b) => b.id === id);
+      return sum + (batch ? batch.orders.length : 0);
+    }, 0);
+
   const adjustmentsTotal = adjustments.reduce(
     (sum, adj) => sum + (adj.amountUsd ?? 0),
     0,
   );
 
-  const netCashPayable = selectedAdvance - returnDeductions + adjustmentsTotal;
+  const netCashPayable =
+    selectedAdvance - totalReturnDeductions + adjustmentsTotal;
 
   // ── Select All Toggles ──
   const allOrdersSelected =
@@ -272,6 +325,10 @@ export default function CashSellerWorkspace({
   const allReturnsSelected =
     pendingReturns.length > 0 &&
     selectedReturnIds.size === pendingReturns.length;
+
+  const allReturnBatchesSelected =
+    pendingReturnBatches.length > 0 &&
+    selectedReturnBatchIds.size === pendingReturnBatches.length;
 
   const toggleSelectAllOrders = () => {
     if (allOrdersSelected) {
@@ -307,11 +364,30 @@ export default function CashSellerWorkspace({
     });
   };
 
+  const toggleSelectAllReturnBatches = () => {
+    if (allReturnBatchesSelected) {
+      setSelectedReturnBatchIds(new Set());
+    } else {
+      setSelectedReturnBatchIds(new Set(pendingReturnBatches.map((b) => b.id)));
+    }
+  };
+
+  const toggleReturnBatch = (id: string) => {
+    setSelectedReturnBatchIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   // ── Submission Handler ──
   const handleSubmit = async () => {
     // Allow a batch with only returned orders selected (net will be negative).
     if (
-      (selectedOrderIds.size === 0 && selectedReturnIds.size === 0) ||
+      (selectedOrderIds.size === 0 &&
+        selectedReturnIds.size === 0 &&
+        selectedReturnBatchIds.size === 0) ||
       isSubmitting
     ) {
       return;
@@ -337,6 +413,7 @@ export default function CashSellerWorkspace({
           body: JSON.stringify({
             orderIds: Array.from(selectedOrderIds),
             returnIds: Array.from(selectedReturnIds),
+            returnBatchIds: Array.from(selectedReturnBatchIds),
             adjustments: validAdjustments,
           }),
         },
@@ -357,6 +434,7 @@ export default function CashSellerWorkspace({
       );
       setSelectedOrderIds(new Set());
       setSelectedReturnIds(new Set());
+      setSelectedReturnBatchIds(new Set());
       setAdjustments([]);
       await applyDateFilter(filterFromDate, filterToDate);
     } catch (e: any) {
@@ -434,11 +512,11 @@ export default function CashSellerWorkspace({
             Return Deductions
           </p>
           <p className="text-orange-400 font-mono text-xl font-bold">
-            −${returnDeductions.toFixed(2)}
+            −${totalReturnDeductions.toFixed(2)}
           </p>
           <p className="text-gray-600 text-[10px] mt-1">
-            {selectedReturnIds.size} return
-            {selectedReturnIds.size !== 1 ? "s" : ""} selected
+            {selectedReturnCount} return
+            {selectedReturnCount !== 1 ? "s" : ""} selected
           </p>
         </div>
 
@@ -474,7 +552,9 @@ export default function CashSellerWorkspace({
           <button
             onClick={handleSubmit}
             disabled={
-              (selectedOrderIds.size === 0 && selectedReturnIds.size === 0) ||
+              (selectedOrderIds.size === 0 &&
+                selectedReturnIds.size === 0 &&
+                selectedReturnBatchIds.size === 0) ||
               isSubmitting
             }
             className="w-full bg-cyan-500 hover:bg-cyan-400 text-[#0B0F17] font-bold py-2.5 px-4 rounded-lg transition-all shadow-[0_0_15px_rgba(6,182,212,0.3)] disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none text-sm"
@@ -488,11 +568,13 @@ export default function CashSellerWorkspace({
               "Generate & Save Payout Batch"
             )}
           </button>
-          {selectedOrderIds.size === 0 && selectedReturnIds.size === 0 && (
-            <p className="text-gray-600 text-[10px] text-center mt-2">
-              Select at least one order or return to enable
-            </p>
-          )}
+          {selectedOrderIds.size === 0 &&
+            selectedReturnIds.size === 0 &&
+            selectedReturnBatchIds.size === 0 && (
+              <p className="text-gray-600 text-[10px] text-center mt-2">
+                Select at least one order or return to enable
+              </p>
+            )}
         </div>
       </div>
 
@@ -641,7 +723,7 @@ export default function CashSellerWorkspace({
           </div>
         </div>
 
-        {/* Column 2: Unresolved Returns */}
+        {/* Column 2: Unresolved Returns (Return Batches first, then legacy) */}
         <div className="bg-[#121824] border border-white/5 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-white/5">
             <div className="flex items-center justify-between">
@@ -650,7 +732,9 @@ export default function CashSellerWorkspace({
               </h3>
               <div className="flex items-center gap-2">
                 <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded">
-                  {pendingReturns.length} returns/exchanges
+                  {pendingReturnBatches.length} batch
+                  {pendingReturnBatches.length !== 1 ? "es" : ""} ·{" "}
+                  {pendingReturns.length} unbatched
                 </span>
                 <button
                   onClick={() => applyDateFilter(filterFromDate, filterToDate)}
@@ -665,10 +749,119 @@ export default function CashSellerWorkspace({
               </div>
             </div>
             <p className="text-gray-600 text-[10px] mt-1 leading-tight">
-              Checking these will subtract their original advance from today's
-              payout.
+              Checking a batch settles every order in it and subtracts its
+              original advance from today&rsquo;s payout.
             </p>
           </div>
+
+          {/* ── Return Batch cards (Universal Staff Scanner handoffs) ── */}
+          {pendingReturnBatches.length > 0 && (
+            <div className="px-3 py-3 space-y-2 border-b border-white/5">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[10px] uppercase tracking-wider font-bold text-gray-500">
+                  Return Batches
+                </span>
+                <label className="flex items-center gap-2 text-[10px] text-gray-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={allReturnBatchesSelected}
+                    onChange={toggleSelectAllReturnBatches}
+                    className="rounded border-white/20 bg-white/5 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer"
+                  />
+                  Select all batches
+                </label>
+              </div>
+
+              {pendingReturnBatches.map((batch) => {
+                const isSelected = selectedReturnBatchIds.has(batch.id);
+                const isExpanded = expandedReturnBatchId === batch.id;
+                return (
+                  <div
+                    key={batch.id}
+                    className={`rounded-lg border transition-colors ${
+                      isSelected
+                        ? "border-orange-500/40 bg-orange-500/5"
+                        : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 px-3 py-2.5">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleReturnBatch(batch.id)}
+                        className="rounded border-white/20 bg-white/5 text-orange-500 focus:ring-orange-500/50 cursor-pointer"
+                        title="Settle this entire return batch"
+                      />
+                      <button
+                        onClick={() =>
+                          setExpandedReturnBatchId(isExpanded ? null : batch.id)
+                        }
+                        className="flex flex-1 items-center gap-3 text-left min-w-0"
+                      >
+                        <span className="font-mono text-xs text-gray-200 truncate">
+                          {batch.batchNumber}
+                        </span>
+                        <span className="text-[10px] text-gray-500 whitespace-nowrap">
+                          {formatDateTime(batch.createdAt)}
+                        </span>
+                        <span className="text-[10px] text-gray-400 bg-white/5 px-1.5 py-0.5 rounded whitespace-nowrap">
+                          {batch.orders.length} package
+                          {batch.orders.length !== 1 ? "s" : ""}
+                        </span>
+                        <span className="ml-auto font-mono text-xs text-orange-400 whitespace-nowrap">
+                          −${batch.totalDeduction.toFixed(2)}
+                        </span>
+                        <span className="text-gray-500 text-xs">
+                          {isExpanded ? "▲" : "▼"}
+                        </span>
+                      </button>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="px-3 pb-3">
+                        <table className="w-full text-[11px]">
+                          <thead className="text-gray-500 border-b border-white/5">
+                            <tr>
+                              <th className="py-1.5 text-left font-medium">
+                                Order ID
+                              </th>
+                              <th className="py-1.5 text-center font-medium">
+                                Fin Status
+                              </th>
+                              <th className="py-1.5 text-right font-medium">
+                                COD Amount
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5">
+                            {batch.orders.map((o) => (
+                              <tr key={o.id}>
+                                <td className="py-1.5 font-mono text-gray-300">
+                                  {o.orderId}
+                                </td>
+                                <td className="py-1.5 text-center">
+                                  <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded-full border text-red-400 bg-red-500/10 border-red-500/30">
+                                    {o.financialStatus ?? "Re"}
+                                  </span>
+                                </td>
+                                <td className="py-1.5 text-right font-mono text-gray-400">
+                                  {o.amountUsd == null
+                                    ? "—"
+                                    : `$${o.amountUsd.toFixed(2)}`}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ── Legacy unbatched returns (pre-scanner / manual returns) ── */}
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="border-b border-white/5 text-gray-500">
@@ -700,7 +893,9 @@ export default function CashSellerWorkspace({
                       colSpan={5}
                       className="px-4 py-8 text-center text-gray-600"
                     >
-                      No unresolved returns
+                      {pendingReturnBatches.length > 0
+                        ? "No unbatched returns"
+                        : "No unresolved returns"}
                     </td>
                   </tr>
                 ) : (

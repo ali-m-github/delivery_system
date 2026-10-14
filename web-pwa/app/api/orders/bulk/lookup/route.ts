@@ -104,6 +104,15 @@ export async function POST(request: NextRequest) {
         financialStatus: true,
         location: true,
         driverId: true,
+        // Recipient + merchant columns for the Universal Staff Scanner tray
+        customerName: true,
+        merchant: {
+          select: {
+            id: true,
+            merchantName: true,
+            merchantId: true,
+          },
+        },
         driver: {
           select: {
             id: true,

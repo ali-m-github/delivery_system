@@ -14,6 +14,7 @@ import {
   compareSortValues,
 } from "@/components/SharedOrderTable";
 import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
+import { getReasonLabel } from "@/lib/driver-reasons";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Order {
@@ -61,6 +62,36 @@ interface PickupBatchRecord {
   createdAt: string;
   driver: { id: string; firstName: string; lastName: string } | null;
   orders: PickupBatchOrderItem[];
+}
+
+// ─── Return batch (Phase 2 return pipeline) types ───────────────────────────
+// Mirrors the GET /api/merchant/return-batches response shape.
+interface ReturnBatchOrderItem {
+  id: string;
+  orderId: string;
+  customerName: string;
+  customerPhone: string;
+  amountUsd: number | null;
+  location: string;
+  financialStatus: string;
+  createdAt: string;
+  reasonCode: string | null;
+}
+
+interface ReturnBatchRecord {
+  id: string;
+  batchNumber: string;
+  status: string;
+  totalOrders: number;
+  createdAt: string;
+  updatedAt: string;
+  settlement: {
+    cashPayoutBatchId: number;
+    batchReference: string;
+    settledAt: string;
+  } | null;
+  handedOverBy: string | null;
+  orders: ReturnBatchOrderItem[];
 }
 
 interface MerchantPayout {
@@ -135,7 +166,12 @@ interface MerchantClientProps {
   cashBatches: CashPayoutBatch[];
 }
 
-type TabKey = "deliveries" | "newOrder" | "statements" | "pickupBatches";
+type TabKey =
+  | "deliveries"
+  | "newOrder"
+  | "statements"
+  | "pickupBatches"
+  | "returnBatches";
 
 // Status badge styling for pickup batches (merchant history tab).
 const PICKUP_STATUS_META: Record<string, { label: string; cls: string }> = {
@@ -156,6 +192,23 @@ const PICKUP_STATUS_META: Record<string, { label: string; cls: string }> = {
     cls: "bg-red-500/10 text-red-300 border-red-500/30",
   },
 };
+
+// Status badge styling for return batches (merchant return-batches tab).
+const RETURN_BATCH_STATUS_META: Record<string, { label: string; cls: string }> =
+  {
+    PENDING: {
+      label: "Pending Settlement",
+      cls: "bg-orange-500/10 text-orange-300 border-orange-500/30",
+    },
+    COMPLETED: {
+      label: "Completed",
+      cls: "bg-cyan-500/10 text-cyan-300 border-cyan-500/30",
+    },
+    SETTLED: {
+      label: "Settled",
+      cls: "bg-green-500/10 text-green-400 border-green-500/30",
+    },
+  };
 
 // Human-readable per-item custody stage shown in the reconciliation log.
 function pickupItemStatusLabel(location: string): string {
@@ -313,6 +366,7 @@ export default function MerchantClient({
     "newOrder",
     "statements",
     "pickupBatches",
+    "returnBatches",
   ];
   const initialTab: TabKey = validTabs.includes(urlTab as TabKey)
     ? (urlTab as TabKey)
@@ -386,6 +440,15 @@ export default function MerchantClient({
   const [pickupBatchesLoading, setPickupBatchesLoading] = useState(false);
   const [requestingPickup, setRequestingPickup] = useState(false);
   const [expandedPickupBatchId, setExpandedPickupBatchId] = useState<
+    string | null
+  >(null);
+
+  // ── Return batches (Phase 2 return pipeline) states ────────────────────────
+  const [returnBatches, setReturnBatches] = useState<ReturnBatchRecord[]>([]);
+  const [returnBatchesLoading, setReturnBatchesLoading] = useState(false);
+  const [returnBatchSearch, setReturnBatchSearch] = useState("");
+  const [returnBatchStatus, setReturnBatchStatus] = useState("");
+  const [expandedReturnBatchId, setExpandedReturnBatchId] = useState<
     string | null
   >(null);
 
@@ -1030,6 +1093,95 @@ export default function MerchantClient({
     }
   }, [activeTab, fetchPickupBatches]);
 
+  // ── Return batches: fetch (debounced while filtering) + exports ───────────
+  const fetchReturnBatches = useCallback(async () => {
+    setReturnBatchesLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (returnBatchStatus) params.set("status", returnBatchStatus);
+      if (returnBatchSearch.trim())
+        params.set("search", returnBatchSearch.trim());
+      const res = await fetch(
+        `/api/merchant/return-batches?${params.toString()}`,
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setReturnBatches(data.batches ?? []);
+      }
+    } catch {
+      // Keep whatever is already loaded; the Refresh button can retry.
+    } finally {
+      setReturnBatchesLoading(false);
+    }
+  }, [returnBatchStatus, returnBatchSearch]);
+
+  useEffect(() => {
+    if (activeTab !== "returnBatches") return;
+    // Debounce so typing in the search box doesn't hammer the API.
+    const timer = setTimeout(() => void fetchReturnBatches(), 300);
+    return () => clearTimeout(timer);
+  }, [activeTab, fetchReturnBatches]);
+
+  // Open the merchant-safe printable bilingual manifest for a return batch.
+  const openReturnBatchManifest = (batch: ReturnBatchRecord) => {
+    window.open(`/print/merchant/returns/${batch.id}`, "_blank");
+  };
+
+  // Same print page, but with the PDF file name pre-set for the embedded
+  // 📥 PDF button (PdfDownloadTrigger honors ?filename=).
+  const openReturnBatchPdf = (batch: ReturnBatchRecord) => {
+    window.open(
+      `/print/merchant/returns/${batch.id}?filename=${encodeURIComponent(
+        `Returns-${batch.batchNumber}`,
+      )}`,
+      "_blank",
+    );
+  };
+
+  const exportReturnBatchExcel = async (batch: ReturnBatchRecord) => {
+    const ExcelJS = (await import("exceljs")).default;
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Return_Batch");
+
+    worksheet.columns = [
+      { header: "#", key: "idx", width: 6 },
+      { header: "Order ID", key: "orderId", width: 16 },
+      { header: "Recipient", key: "customer", width: 25 },
+      { header: "Phone", key: "phone", width: 15 },
+      { header: "Original COD USD", key: "cod", width: 18 },
+      { header: "Return Reason", key: "reason", width: 40 },
+    ];
+
+    batch.orders.forEach((o, idx) => {
+      const row = worksheet.addRow({
+        idx: idx + 1,
+        orderId: o.orderId,
+        customer: o.customerName,
+        phone: o.customerPhone || "—",
+        cod: o.amountUsd ?? 0,
+        reason: getReasonLabel(o.reasonCode) ?? "—",
+      });
+
+      // Order ID: numeric IDs as real numbers, everything else as text, so
+      // Excel never re-interprets it as a date.
+      const orderIdCell = row.getCell("orderId");
+      const rawId = String(o.orderId ?? "");
+      if (/^\d+$/.test(rawId)) {
+        orderIdCell.value = Number(rawId);
+        orderIdCell.numFmt = "0";
+      } else {
+        orderIdCell.value = rawId;
+        orderIdCell.numFmt = "@";
+      }
+    });
+
+    styleWorksheet(worksheet);
+    await downloadWorkbook(
+      workbook,
+      `Return_Batch_${batch.batchNumber}_${new Date().toISOString().split("T")[0]}.xlsx`,
+    );
+  };
+
   const handleRequestPickup = async () => {
     if (pickupEligibleSelected.length === 0 || requestingPickup) return;
     setRequestingPickup(true);
@@ -1520,6 +1672,20 @@ export default function MerchantClient({
               }`}
             >
               Pickup Batches
+            </button>
+            <button
+              onClick={() => handleTabChange("returnBatches")}
+              title="Return handoff batches, manifests and settlement status"
+              className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+                activeTab === "returnBatches"
+                  ? "bg-cyan-500/20 text-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.3)]"
+                  : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+              }`}
+            >
+              Return Batches{" "}
+              <span className="text-gray-500 font-normal">
+                (سجلات المرتجعات)
+              </span>
             </button>
           </div>
 
@@ -2637,6 +2803,257 @@ export default function MerchantClient({
                                               </td>
                                               <td className="py-2 text-right text-gray-400">
                                                 {o.financialStatus}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    )}
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ════════════════════════════════ */}
+          {/* RETURN BATCHES TAB               */}
+          {/* ════════════════════════════════ */}
+          {activeTab === "returnBatches" && (
+            <>
+              {/* ── Toolbar ── */}
+              <div className="flex flex-wrap items-center gap-3 mb-4 p-4 rounded-xl backdrop-blur-xl bg-white/5 border border-white/10">
+                <h2 className="text-sm font-semibold text-white">
+                  Return Batches{" "}
+                  <span className="text-gray-500 font-normal">
+                    (سجلات المرتجعات)
+                  </span>
+                </h2>
+                <input
+                  value={returnBatchSearch}
+                  onChange={(e) => setReturnBatchSearch(e.target.value)}
+                  placeholder="Search order ID…"
+                  className="bg-black/30 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/50"
+                />
+                <select
+                  value={returnBatchStatus}
+                  onChange={(e) => setReturnBatchStatus(e.target.value)}
+                  className="bg-black/30 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-cyan-500/50"
+                >
+                  <option value="">All statuses</option>
+                  <option value="PENDING">Pending Settlement</option>
+                  <option value="COMPLETED">Completed</option>
+                  <option value="SETTLED">Settled</option>
+                </select>
+                <div className="flex-1" />
+                <span className="text-xs text-gray-400 py-2 whitespace-nowrap">
+                  {returnBatches.length} batch(es)
+                </span>
+                <button
+                  onClick={() => void fetchReturnBatches()}
+                  disabled={returnBatchesLoading}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors disabled:opacity-50"
+                >
+                  {returnBatchesLoading ? "⏳ Loading…" : "🔄 Refresh"}
+                </button>
+              </div>
+
+              {returnBatches.length === 0 ? (
+                <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-12 text-center">
+                  <p className="text-gray-500 text-sm">
+                    {returnBatchesLoading
+                      ? "Loading return batches…"
+                      : "No return batches yet. Returned orders are grouped into batches when our staff hands them back to you."}
+                  </p>
+                </div>
+              ) : (
+                <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-white/10 bg-white/[0.03] text-gray-500 text-[11px] uppercase tracking-wider">
+                          <th className="px-4 py-3 text-left font-medium">
+                            Batch
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Created
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Handed Over By
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Status
+                          </th>
+                          <th className="px-4 py-3 text-right font-medium">
+                            Packages
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Settlement
+                          </th>
+                          <th className="px-4 py-3 text-right font-medium">
+                            Documents
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {returnBatches.map((batch) => {
+                          const meta =
+                            RETURN_BATCH_STATUS_META[batch.status] ?? {
+                              label: batch.status,
+                              cls: "bg-white/5 text-gray-400 border-white/10",
+                            };
+                          const isExpanded =
+                            expandedReturnBatchId === batch.id;
+                          return (
+                            <Fragment key={batch.id}>
+                              <tr
+                                onClick={() =>
+                                  setExpandedReturnBatchId(
+                                    isExpanded ? null : batch.id,
+                                  )
+                                }
+                                className="border-b border-white/5 hover:bg-cyan-500/[0.03] transition-colors cursor-pointer"
+                              >
+                                <td className="px-4 py-3">
+                                  <span className="font-mono text-orange-300">
+                                    {batch.batchNumber}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-xs text-gray-500">
+                                  {formatDateTime(batch.createdAt)}
+                                </td>
+                                <td className="px-4 py-3 text-xs text-gray-300">
+                                  {batch.handedOverBy ?? "—"}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span
+                                    className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold border ${meta.cls}`}
+                                  >
+                                    {meta.label}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-xs text-right">
+                                  <span className="text-gray-300">
+                                    {batch.orders.length || batch.totalOrders}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-xs">
+                                  {batch.settlement ? (
+                                    <span className="font-mono text-green-400">
+                                      {batch.settlement.batchReference}
+                                    </span>
+                                  ) : (
+                                    <span className="text-gray-500">
+                                      Not settled
+                                    </span>
+                                  )}
+                                </td>
+                                <td
+                                  className="px-4 py-3 text-right whitespace-nowrap"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <div className="inline-flex items-center gap-1.5">
+                                    <button
+                                      onClick={() =>
+                                        openReturnBatchManifest(batch)
+                                      }
+                                      title="Print the bilingual return manifest"
+                                      className="px-2 py-1 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+                                    >
+                                      🖨️ Manifest
+                                    </button>
+                                    <button
+                                      onClick={() => openReturnBatchPdf(batch)}
+                                      title="Open the manifest with a pre-set PDF file name"
+                                      className="px-2 py-1 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+                                    >
+                                      📥 PDF
+                                    </button>
+                                    <button
+                                      onClick={() =>
+                                        void exportReturnBatchExcel(batch)
+                                      }
+                                      title="Export the batch breakdown to Excel"
+                                      className="px-2 py-1 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors"
+                                    >
+                                      📊 Excel
+                                    </button>
+                                    <span className="text-xs text-cyan-400 ml-1">
+                                      {isExpanded ? "▲" : "▼"}
+                                    </span>
+                                  </div>
+                                </td>
+                              </tr>
+                              {isExpanded && (
+                                <tr className="bg-[#121824] border-b border-white/10">
+                                  <td colSpan={7} className="px-4 py-3">
+                                    {batch.settlement && (
+                                      <div className="mb-3 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-300 text-xs">
+                                        ✅ Deductions settled in payout batch{" "}
+                                        <span className="font-mono">
+                                          {batch.settlement.batchReference}
+                                        </span>{" "}
+                                        on{" "}
+                                        {formatDateTime(
+                                          batch.settlement.settledAt,
+                                        )}
+                                      </div>
+                                    )}
+                                    {batch.orders.length === 0 ? (
+                                      <p className="text-gray-500 text-xs">
+                                        No items in this batch.
+                                      </p>
+                                    ) : (
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="text-gray-500 text-[10px] uppercase tracking-wider border-b border-white/10">
+                                            <th className="py-2 pr-4 text-left font-medium">
+                                              Order ID
+                                            </th>
+                                            <th className="py-2 pr-4 text-left font-medium">
+                                              Recipient
+                                            </th>
+                                            <th className="py-2 pr-4 text-left font-medium">
+                                              Phone
+                                            </th>
+                                            <th className="py-2 pr-4 text-right font-medium">
+                                              Original COD $
+                                            </th>
+                                            <th className="py-2 text-left font-medium">
+                                              Return Reason
+                                            </th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {batch.orders.map((o) => (
+                                            <tr
+                                              key={o.id}
+                                              className="border-b border-white/5"
+                                            >
+                                              <td className="py-2 pr-4 font-mono text-cyan-400">
+                                                {o.orderId}
+                                              </td>
+                                              <td className="py-2 pr-4 text-gray-300">
+                                                {o.customerName}
+                                              </td>
+                                              <td className="py-2 pr-4 text-gray-400">
+                                                {o.customerPhone || "—"}
+                                              </td>
+                                              <td className="py-2 pr-4 text-right text-gray-300">
+                                                {o.amountUsd != null
+                                                  ? `$${o.amountUsd.toFixed(2)}`
+                                                  : "—"}
+                                              </td>
+                                              <td className="py-2 text-gray-400">
+                                                {getReasonLabel(o.reasonCode) ??
+                                                  "—"}
                                               </td>
                                             </tr>
                                           ))}

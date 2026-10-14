@@ -109,6 +109,7 @@ model Merchant {
   driverSellerRates     DriverSellerRate[]
   cashPayoutBatches     CashPayoutBatch[]
   pickupBatches         PickupBatch[]
+  returnBatches         ReturnBatch[]
 
   // Saved Google Sheets import template mapping
   sheetImportConfig Json?
@@ -226,6 +227,7 @@ model CashPayoutBatch {
   orders          Order[]           @relation("OrderCashBatch")
   resolvedReturns Order[]           @relation("OrderReturnDeductionBatch")
   adjustments     PayoutAdjustment[]
+  settledReturnBatches ReturnBatch[] @relation("ReturnBatchSettlement")
 }
 
 model PayoutAdjustment {
@@ -345,6 +347,11 @@ model Order {
   pickupBatchId   String?
   pickupBatch     PickupBatch? @relation(fields: [pickupBatchId], references: [id], onDelete: SetNull)
   @@index([pickupBatchId])
+
+  // Return-to-Seller batch this order was returned under (see ReturnBatch).
+  returnBatchId   String?
+  returnBatch     ReturnBatch? @relation(fields: [returnBatchId], references: [id], onDelete: SetNull)
+  @@index([returnBatchId])
 
   waybillUrl       String?
   trackToken       String?        @unique // 8-digit random token for public tracking link: /track/<token>/<orderId>
@@ -489,6 +496,31 @@ model PickupBatch {
   @@index([merchantId])
   @@index([status])
   @@index([driverId])
+}
+
+// ==========================================
+// Return-to-Seller Batches
+// ==========================================
+// Groups orders returned to the SAME merchant into one physical handoff
+// (Universal Staff Scanner → Returns → Return to Seller). Batch numbers are
+// formatted "Returns-M<merchantId>-<YYYYMMDD-HHmm>" in Beirut time.
+model ReturnBatch {
+  id          String    @id @default(uuid())
+  batchNumber String    @unique // e.g. "Returns-M102-20261013-1830"
+  merchantId  String
+  merchant    Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  status      String    @default("PENDING") // 'PENDING' | 'COMPLETED' | 'SETTLED'
+  totalOrders Int       @default(0)
+  // Set when the batch's return deductions are settled through a cash payout.
+  cashPayoutBatchId Int?
+  cashPayoutBatch   CashPayoutBatch? @relation("ReturnBatchSettlement", fields: [cashPayoutBatchId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  orders      Order[]
+
+  @@index([merchantId])
+  @@index([batchNumber])
+  @@index([status])
 }
 
 model OrderHistory {
