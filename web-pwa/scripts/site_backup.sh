@@ -6,8 +6,14 @@
 #
 #   1. Creates a timestamped snapshot dir on the remote:
 #         /home/user1/backups/delivery_system/<YYYYmmdd_HHMM>/
-#   2. rsyncs the entire site (excluding node_modules, .next, .git and local
-#      backup dirs) into that snapshot.
+#   2. Packs the entire site (excluding node_modules, .next, .next-dev, .git
+#      and local backup dirs) into site.tar.gz inside that snapshot.
+#      The site is transferred as a single tarball rather than file-by-file
+#      because the remote box refuses to CREATE any directory whose name
+#      contains "log" (case-insensitive) — a kernel security-module rule
+#      (AppArmor is enabled) that made rsync fail with "Permission denied
+#      (13)" on app/login, app/api/auth/login and app/api/auth/logout since
+#      2026-09-20. Restore a snapshot with: tar -xzf site.tar.gz -C <target>
 #   3. pg_dumps the PostgreSQL database (gzip) into the same snapshot.
 #   4. Applies retention on the remote:
 #         - keeps the latest KEEP_HOURLY snapshots (24h at 30-min cadence)
@@ -81,7 +87,8 @@ log "START backup $SNAP_NAME"
 # Doing this before any remote work means a failed dump leaves no partial
 # snapshot on the remote box.
 TMP_SQLGZ="$(mktemp /tmp/sitebackup_XXXX.sql.gz)"
-trap 'rm -f "$TMP_SQLGZ"' EXIT
+SITE_TAR="$(mktemp /tmp/sitebackup_XXXX.tar.gz)"
+trap 'rm -f "$TMP_SQLGZ" "$SITE_TAR"' EXIT
 if ! sudo -u "$PGSUPERUSER" pg_dump "$DB_NAME" --no-owner --no-privileges \
         | gzip -c > "$TMP_SQLGZ"; then
     log "ERROR: pg_dump failed for ${DB_NAME}"
@@ -90,16 +97,28 @@ fi
 DB_SIZE="$(du -h "$TMP_SQLGZ" | cut -f1)"
 log "DB dumped locally (${DB_NAME}: ${DB_SIZE})"
 
-# ── 2) Create remote snapshot dir and rsync the site + DB dump ───────────────
+# ── 2) Create remote snapshot dir and transfer the site + DB dump ────────────
+# The site is tarred locally (see header note about the remote "log" directory
+# filter) so the transfer is a single regular file and cannot be blocked by
+# name-based directory filtering on the remote box.
 remote "mkdir -p '$REMOTE_DIR'"
 
-rsync_remote --exclude 'node_modules' \
-             --exclude '.next' \
-             --exclude '.git' \
-             --exclude 'scripts/backups' \
-             --exclude '*.log' \
-             --stats "$SITE_DIR/" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/site/" \
-    >> "$LOG_FILE" 2>&1 || { log "ERROR: site rsync failed"; exit 1; }
+if ! tar --exclude='./node_modules' \
+         --exclude='./.next' \
+         --exclude='./.next-dev' \
+         --exclude='./.git' \
+         --exclude='./scripts/backups' \
+         --exclude='*.log' \
+         -czf "$SITE_TAR" -C "$SITE_DIR" .; then
+    log "ERROR: site tar failed"
+    exit 1
+fi
+SITE_SIZE="$(du -h "$SITE_TAR" | cut -f1)"
+log "Site packed locally (${SITE_SIZE})"
+
+rsync_remote --stats "$SITE_TAR" \
+    "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/site.tar.gz" \
+    >> "$LOG_FILE" 2>&1 || { log "ERROR: site tar rsync failed"; exit 1; }
 
 rsync_remote "$TMP_SQLGZ" \
     "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/db_${DB_NAME}_${STAMP}.sql.gz" \
