@@ -1387,8 +1387,23 @@ function OrdersPageInner() {
       body: JSON.stringify({ id, ...payload }),
     });
     if (!res.ok) {
-      const err = await res.json();
-      console.error("PATCH error", err);
+      // Defensive parse: guards can answer with a non-JSON body, which would
+      // otherwise throw a SyntaxError and hide the real failure.
+      const err = await res
+        .json()
+        .catch(() => ({ error: `Request failed (HTTP ${res.status})` }));
+      console.error(
+        `[patchOrder] order ${id} rejected with HTTP ${res.status}:`,
+        err,
+      );
+      // An expired session (24h JWT) silently failed every request before this,
+      // so the user saw a "dead" Save button. Tell them and send them to login.
+      if (res.status === 401) {
+        alert("Your session has expired. Please log in again to continue.");
+        window.location.href = "/login";
+      } else {
+        alert(err.error || `Could not update the order (HTTP ${res.status}).`);
+      }
       return false;
     }
     await fetchOrders();
@@ -2636,6 +2651,8 @@ function OrdersPageInner() {
       payload.amountLbp = parseFloat(editFormData.amountLbp) || 0;
       payload.extraShipping = parseFloat(editFormData.extraShipping) || 0;
     }
+    // patchOrder surfaces the server error (and handles an expired session),
+    // so the modal only closes on a real success.
     const success = await patchOrder(editModal.id, payload);
     if (success) setEditModal(null);
   };
