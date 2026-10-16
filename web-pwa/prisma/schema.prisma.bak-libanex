@@ -1,0 +1,591 @@
+generator client {
+  provider      = "prisma-client-js"
+  engineType    = "library"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// Enums
+// ==========================================
+
+enum Role {
+  ADMIN
+  MERCHANT
+  DRIVER
+}
+
+enum VehicleType {
+  MOTORCYCLE
+  CAR
+  VAN
+}
+
+enum OrderStatus {
+  WAREHOUSE
+  WITH_DRIVER
+  DELIVERED
+  RETURNED
+  PAID_TO_MERCHANT
+}
+
+enum FinancialStatus {
+  UD
+  PAID
+  PENDING
+  WD
+  WO
+  PS
+  PP
+}
+
+// ==========================================
+// Models
+// ==========================================
+
+model PermissionGroup {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  permissions String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
+}
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  username      String         @unique
+  password      String
+  role          String         @default("USER")
+  permissions   String[]
+  actionHistory OrderHistory[]
+  driverProfile DriverProfile?
+  merchant      Merchant?
+
+  permissionGroupId String?          @map("permission_group_id")
+  permissionGroup   PermissionGroup? @relation(fields: [permissionGroupId], references: [id])
+  customPermissions String[]         @default([])
+
+  ordersCreated          Order[]                  @relation("EmployeeOrders")
+  driverCashSellerRates  DriverCashSellerRate[]
+  treasuryTransactions   TreasuryTransaction[]
+  treasuryApproved       TreasuryTransaction[]    @relation("TreasuryApprovedBy")
+  treasuryRejected       TreasuryTransaction[]    @relation("TreasuryRejectedBy")
+  createdPayouts         DriverPayout[]           @relation("DriverPayoutCreatedBy")
+}
+
+model Merchant {
+  id           String  @id @default(uuid())
+  merchantId   Int     @unique @default(autoincrement())
+  sellerNumber Int     @unique @default(autoincrement())
+  merchantName String
+  contactName  String?
+  phone        String?
+  address      String?
+  socialMedia  String?
+  logoUrl      String?
+  isActive     Boolean @default(true)
+
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id])
+
+  orders    Order[]
+  zoneRates MerchantZoneRate[]
+
+  // --- NEW SETTLEMENT FIELDS ---
+  balance Float            @default(0)
+  payouts MerchantPayout[]
+
+  isCashSeller          Boolean                @default(false)
+  defaultSellerRate     Float?                 // e.g., 3.00 (Base fee charged to seller per order)
+  defaultProfitRate     Float?                 // e.g., 1.00 (Company profit per order; fee = sellerRate + profitRate)
+  driverRates           DriverCashSellerRate[]
+  driverSellerRates     DriverSellerRate[]
+  cashPayoutBatches     CashPayoutBatch[]
+  pickupBatches         PickupBatch[]
+  returnBatches         ReturnBatch[]
+
+  // Saved Google Sheets import template mapping
+  sheetImportConfig Json?
+
+  // Merchant notification channel & event preferences (see lib/notifications/dispatcher.ts).
+  // Null = defaults (all channels + all events enabled).
+  notificationPreferences Json?
+  notifications           Notification[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// In-app notification feed for merchants (driver scan events: delivered,
+// postponed, price discrepancies, rejections). WhatsApp delivery is handled
+// out-of-band by lib/notifications/whatsapp.ts and is not tracked here.
+model Notification {
+  id         String   @id @default(uuid())
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  orderId    String? // Order.id (cuid) — nullable so rows survive order deletion
+  type       String // 'DELIVERED' | 'POSTPONED' | 'PRICE_DISCREPANCY' | 'REJECTED'
+  title      String
+  message    String
+  meta       Json? // driverName, reasonCode, discrepancy, expectedCod, etc.
+  isRead     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([merchantId, isRead])
+  @@index([createdAt])
+}
+
+model DriverSellerRate {
+  id         Int      @id @default(autoincrement())
+  driverId   String
+  merchantId String
+  rateUsd    Float    @default(0)
+  rateLbp    Float    @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  driver   DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  merchant Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, merchantId])
+}
+
+model MerchantPayout {
+  id              String @id @default(uuid())
+  sequentialIndex Int    @unique @default(1)
+
+  // Relation to Merchant
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+
+  // Dual-Currency Tracking (Matches our frontend calculator)
+  totalUsd    Float @default(0) // Gross USD Collected
+  totalLbp    Float @default(0) // Gross LBP Collected
+  shippingUsd Float @default(0) // Total Shipping Fee Deducted
+  shippingLbp Float @default(0) // Total Shipping Fee Deducted (if any)
+  netUsd      Float @default(0) // Final Net USD Paid
+  netLbp      Float @default(0) // Final Net LBP Paid
+
+  // Company profit realized on this statement (only delivered orders with
+  // fin status PS; zero for orders where the driver's seller exception
+  // equals the cash seller rate + profit rate).
+  profitUsd Float @default(0)
+
+  status String @default("PAID")
+
+  // The orders included in this payout statement
+  orders Order[]
+
+  // ── Statement Payment / Cashbox Approval Flow ──────────────────────────
+  // paymentStatus: UNPAID | PENDING_APPROVAL | PAID | REJECTED
+  paymentStatus     String @default("UNPAID")
+  amountPaidUsd     Float  @default(0) // Amount settled to cashbox (or paid by driver)
+  amountPaidLbp     Float  @default(0)
+  treasuryBoxId     String? // Cashbox the statement was paid into
+  treasuryBox       TreasuryBox? @relation("StatementTreasuryBox", fields: [treasuryBoxId], references: [id])
+  // The treasury transaction created when the statement is paid (pending approval)
+  treasuryTransactionId String? @unique
+  treasuryTransaction   TreasuryTransaction? @relation("StatementTreasuryTx", fields: [treasuryTransactionId], references: [id])
+  // When the driver paid the statement from his own money, it is deducted from
+  // his payout and linked here so it can't be paid twice.
+  paidByDriverPayoutId String?
+  paidByDriverPayout   DriverPayout? @relation("DriverPaidStatements", fields: [paidByDriverPayoutId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+model DriverCashSellerRate {
+  id         Int      @id @default(autoincrement())
+  driverId   String
+  driver     User     @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  rateUsd    Float
+
+  @@unique([driverId, merchantId])
+}
+
+model CashPayoutBatch {
+  id              Int      @id @default(autoincrement())
+  merchantId      String
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  batchReference  String   @unique
+  grossAdvance    Float    // Total COD minus seller shipping fees advanced
+  deductedReturns Float    @default(0) // Value of past returned orders subtracted from this payout
+  netPaid         Float    // grossAdvance minus deductedReturns
+  profit          Float    @default(0) // Realized company profit (profit rate per order, 0 where driver exception = sellerRate + profitRate)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  orders          Order[]           @relation("OrderCashBatch")
+  resolvedReturns Order[]           @relation("OrderReturnDeductionBatch")
+  adjustments     PayoutAdjustment[]
+  settledReturnBatches ReturnBatch[] @relation("ReturnBatchSettlement")
+}
+
+model PayoutAdjustment {
+  id          Int      @id @default(autoincrement())
+  batchId     Int
+  description String
+  amountUsd   Float    @default(0)
+  amountLbp   Float    @default(0)
+  createdAt   DateTime @default(now())
+
+  batch       CashPayoutBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+}
+
+model MerchantZoneRate {
+  id         String   @id @default(uuid())
+  merchantId String
+  zoneId     String
+  rate       Float    @default(0) // Custom shipping cost USD for this merchant in this zone
+  rateLbp    Float    @default(0) // Custom shipping cost LBP for this merchant in this zone
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+  zone       Zone     @relation(fields: [zoneId], references: [id])
+
+  @@unique([merchantId, zoneId])
+}
+
+model DriverProfile {
+  id            String        @id @default(cuid())
+  userId        String        @unique
+  driverId      String        @unique
+  user          User          @relation(fields: [userId], references: [id])
+  firstName     String
+  lastName      String
+  vehicles      VehicleType[]
+  licenseNumber String?
+  isAvailable   Boolean       @default(false)
+  photoUrl      String?
+
+  zoneRates         DriverZoneRate[]
+  driverSellerRates DriverSellerRate[]
+  payouts           DriverPayout[]
+  deliveries        Order[]          @relation("DriverOrders")
+  assignedZones     DriverZoneAssignment[]
+  pickupBatches     PickupBatch[]
+
+  // Rolling debt carried over from partial settlements
+  carriedDebtUsd Float @default(0)
+  carriedDebtLbp Float @default(0)
+}
+
+model Order {
+  id              String         @id @default(cuid())
+  orderId         String         @unique
+  customerName    String
+  customerPhone   String
+  customerAddress String
+  hasExchange     Boolean        @default(false)
+  openParcelAllowed Boolean      @default(false)
+  isFragile       Boolean        @default(false)
+  notes           String?
+  packages        Int            @default(1)
+  extraShipping   Float          @default(0)
+  history         OrderHistory[]
+  isArchived      Boolean        @default(false)
+  isCorrection    Boolean        @default(false)
+
+  // --- Dual Currency Financials ---
+  amountUsd    Float @default(0)
+  amountLbp    Float @default(0)
+  collectedUsd Float @default(0)
+  collectedLbp Float @default(0)
+
+  // --- Decoupled Tracking ---
+  location        String @default("WAREHOUSE")
+  financialStatus String @default("UD")
+
+  @@index([location])
+  @@index([financialStatus])
+  @@index([createdAt])
+  @@index([merchantId])
+  @@index([driverId])
+  @@index([isArchived])
+
+  // --- Relations ---
+  zoneId String
+  zone   Zone   @relation(fields: [zoneId], references: [id])
+
+  // FIX 1: Matches @relation("DriverOrders") in DriverProfile
+  driverId String?
+  driver   DriverProfile? @relation("DriverOrders", fields: [driverId], references: [id])
+
+  // FIX 2: Points to MerchantProfile instead of User
+  merchantId String?
+  merchant   Merchant? @relation(fields: [merchantId], references: [id])
+
+  // FIX 3: Matches @relation("EmployeeOrders") in User
+  creatorId String
+  creator   User   @relation("EmployeeOrders", fields: [creatorId], references: [id])
+
+  // FIX 4: Adds missing opposite relation for DriverPayout
+  driverPayoutId   String?
+  driverPayout     DriverPayout?   @relation(fields: [driverPayoutId], references: [id])
+  // FIX 5: Locks the order to a specific Merchant Payout Statement
+  merchantPayoutId String?
+  merchantPayout   MerchantPayout? @relation(fields: [merchantPayoutId], references: [id])
+
+  cashPayoutBatchId      Int?
+  cashPayoutBatch        CashPayoutBatch? @relation("OrderCashBatch", fields: [cashPayoutBatchId], references: [id], onDelete: SetNull)
+
+  cashPayoutExcluded     Boolean @default(false) // When true, order is excluded from advance payout eligibility
+
+  returnDeductionBatchId Int?
+  returnDeductionBatch   CashPayoutBatch? @relation("OrderReturnDeductionBatch", fields: [returnDeductionBatchId], references: [id], onDelete: SetNull)
+
+  // Two-Point Chain-of-Custody: the merchant→warehouse pickup batch this order
+  // was collected under (see PickupBatch). SetNull keeps the order if the batch
+  // record is ever removed.
+  pickupBatchId   String?
+  pickupBatch     PickupBatch? @relation(fields: [pickupBatchId], references: [id], onDelete: SetNull)
+  @@index([pickupBatchId])
+
+  // Return-to-Seller batch this order was returned under (see ReturnBatch).
+  returnBatchId   String?
+  returnBatch     ReturnBatch? @relation(fields: [returnBatchId], references: [id], onDelete: SetNull)
+  @@index([returnBatchId])
+
+  waybillUrl       String?
+  trackToken       String?        @unique // 8-digit random token for public tracking link: /track/<token>/<orderId>
+
+  // --- Customer delivery actions (set from the public tracking link) ---
+  // Only the holder of the tracking token may update these, and never
+  // once the order is DELIVERED/CANCELLED (enforced in the API layer).
+  latitude           Float?
+  longitude          Float?
+  deliveryPreference String? // e.g. "Leave with concierge", "Call before arrival", "Doorstep"
+  deliveryNotes      String? // Entrance details, gate codes, etc.
+
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  dispatchedAt     DateTime?
+  deliveredAt      DateTime?
+}
+
+model Zone {
+  id            String             @id @default(cuid())
+  name          String             @unique
+  basePriceUsd  Float              @default(0)
+  basePriceLbp  Float              @default(0)
+  orders          Order[]
+  driverRates     DriverZoneRate[]
+  merchantRates   MerchantZoneRate[]
+  driverAssignments DriverZoneAssignment[]
+}
+
+model ZoneMapping {
+  id                String   @id @default(cuid())
+  rawAddress        String
+  normalizedAddress String   @unique
+  zoneId            String
+  occurrenceCount   Int      @default(1)
+  isVerified        Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model DriverZoneRate {
+  id       String @id @default(cuid())
+  driverId String
+  zoneId   String
+  rate     Float
+
+  driver DriverProfile @relation(fields: [driverId], references: [id])
+  zone   Zone          @relation(fields: [zoneId], references: [id])
+
+  @@unique([driverId, zoneId])
+}
+
+model DriverZoneAssignment {
+  id        String        @id @default(cuid())
+  driverId  String
+  zoneId    String
+  driver    DriverProfile @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  zone      Zone          @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+
+  @@unique([driverId, zoneId])
+}
+
+model DriverPayout {
+  id       String        @id @default(cuid())
+  driverId String
+  driver   DriverProfile @relation(fields: [driverId], references: [id])
+
+  status          String @default("PENDING")
+  sequentialIndex Int    @default(1)
+  payoutReference String? @unique // Human-readable ID like D001-001
+  totalUsd        Float  @default(0)
+  totalLbp        Float  @default(0)
+  commissionUsd   Float  @default(0)
+  netUsd          Float  @default(0)
+  totalCollected  Float  @default(0)
+
+  // Partial settlement / debt carryover
+  previousDebtUsd Float @default(0)
+  previousDebtLbp Float @default(0)
+  amountPaidUsd   Float @default(0)
+  amountPaidLbp   Float @default(0)
+  remainingUsd    Float @default(0)
+  remainingLbp    Float @default(0)
+
+  // Treasury box selected at settle time; the IN transaction is only created
+  // (and the box credited) when the payout is approved in Phase 2.
+  treasuryBoxId String?
+
+  // Total value of statements the driver paid from his own money (deducted
+  // from the cash he hands over). On approval the FULL payout (amountPaidUsd +
+  // statementsDeductedUsd) is posted to the main cashbox so the payout shows in
+  // full, while each statement posts its own full amount to its chosen cashbox.
+  statementsDeductedUsd Float @default(0)
+  statementsDeductedLbp Float @default(0)
+
+  orders    Order[]
+  createdAt DateTime  @default(now())
+  clearedAt DateTime?
+
+  // Statements the driver paid from his own money (deducted from this payout)
+  paidStatements MerchantPayout[] @relation("DriverPaidStatements")
+
+  // The authenticated user who created this payout batch (admin or driver)
+  createdById String?
+  createdBy   User?   @relation("DriverPayoutCreatedBy", fields: [createdById], references: [id])
+
+  // A driver cannot have two payouts with the same sequence number
+  // (guards against max+1 / count+1 races under concurrent creation and voids).
+  @@unique([driverId, sequentialIndex])
+
+  // Archive queries filter by status and sort by createdAt (e.g. the
+  // /cleared-payouts page fetching SETTLED+CLEARED newest-first). Without
+  // this index the query is a sequential scan + sort over the whole table.
+  @@index([status, createdAt])
+}
+
+// ==========================================
+// Two-Point Chain-of-Custody: Merchant Pickup Batches
+// ==========================================
+// A PickupBatch groups a merchant's CP-staged orders into a single physical
+// handoff: the merchant requests a pickup, an admin assigns a driver, the
+// driver collects (scan or 1-tap manual pick), and the warehouse performs
+// intake reconciliation. Status flow:
+//   PENDING -> PICKED_UP -> COMPLETED | DISCREPANCY
+model PickupBatch {
+  id              String    @id @default(uuid())
+  batchNumber     String    @unique // e.g., "PKB-1001"
+  merchantId      String
+  merchant        Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  driverId        String?
+  driver          DriverProfile? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  status          String    @default("PENDING") // 'PENDING' | 'PICKED_UP' | 'COMPLETED' | 'DISCREPANCY'
+  totalOrders     Int       @default(0)
+  pickedUpCount   Int       @default(0)
+  receivedCount   Int       @default(0)
+  discrepancyNote String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  orders          Order[]
+
+  @@index([merchantId])
+  @@index([status])
+  @@index([driverId])
+}
+
+// ==========================================
+// Return-to-Seller Batches
+// ==========================================
+// Groups orders returned to the SAME merchant into one physical handoff
+// (Universal Staff Scanner → Returns → Return to Seller). Batch numbers are
+// formatted "Returns-M<merchantId>-<YYYYMMDD-HHmm>" in Beirut time.
+model ReturnBatch {
+  id          String    @id @default(uuid())
+  batchNumber String    @unique // e.g. "Returns-M102-20261013-1830"
+  merchantId  String
+  merchant    Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  status      String    @default("PENDING") // 'PENDING' | 'COMPLETED' | 'SETTLED'
+  totalOrders Int       @default(0)
+  // Set when the batch's return deductions are settled through a cash payout.
+  cashPayoutBatchId Int?
+  cashPayoutBatch   CashPayoutBatch? @relation("ReturnBatchSettlement", fields: [cashPayoutBatchId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  orders      Order[]
+
+  @@index([merchantId])
+  @@index([batchNumber])
+  @@index([status])
+}
+
+model OrderHistory {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  action   String // e.g., "Created", "Assigned Driver", "Status: DELIVERED"
+  location String?
+  driverId String?
+
+  // Structured audit payload for driver exception flows (scan modals):
+  // { action, performedBy, reasonCode, notes, expectedCod,
+  //   actualCodCollected, discrepancy, timestamp }
+  // Nullable — legacy rows and non-driver actions leave this empty.
+  meta Json?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+// ==========================================
+// Treasury / Cash Management
+// ==========================================
+
+model TreasuryBox {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  isPositive  Boolean  @default(true) // true = Asset/Income (Main), false = Liability/Expense (Sellers)
+  balanceUsd  Float    @default(0)
+  balanceLbp  Float    @default(0)
+  transactions TreasuryTransaction[]
+  // Statements paid into this box
+  statements  MerchantPayout[] @relation("StatementTreasuryBox")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model TreasuryTransaction {
+  id          String   @id @default(cuid())
+  boxId       String
+  box         TreasuryBox @relation(fields: [boxId], references: [id], onDelete: Cascade)
+  type        String   // "IN" or "OUT"
+  amountUsd   Float    @default(0)
+  amountLbp   Float    @default(0)
+  description String?
+  reference   String?  @unique // Human-readable transaction ID like TX-0001
+  referenceId String?  // ID of the DriverPayout or MerchantPayout (statement)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+
+  // ── Approval Flow (applies to every cash box) ──
+  // status: APPROVED | PENDING_APPROVAL | REJECTED
+  status       String   @default("APPROVED")
+  approvedById String?
+  approvedBy   User?    @relation("TreasuryApprovedBy", fields: [approvedById], references: [id])
+  approvedAt   DateTime?
+  rejectedById String?
+  rejectedBy   User?    @relation("TreasuryRejectedBy", fields: [rejectedById], references: [id])
+  rejectedAt   DateTime?
+
+  // Statement this transaction pays (if any)
+  statement MerchantPayout? @relation("StatementTreasuryTx")
+
+  createdAt DateTime @default(now())
+}

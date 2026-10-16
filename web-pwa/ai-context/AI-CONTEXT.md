@@ -1,7 +1,7 @@
 # Project map — delivery_system / web-pwa
 
-Generated: 2026-10-14T18:40:31.754Z
-Source files scanned: 202
+Generated: 2026-10-15T19:27:52.522Z
+Source files scanned: 212
 
 ## How to use this file
 
@@ -30,6 +30,7 @@ Every file that makes up the site, with its size. Sizes matter: files over
 ~1,000 lines are risky to change and should be edited one section at a time.
 
 ```
+.env.bak-libanex  (12 lines) — .env.bak-libanex
 .gitignore  (58 lines) — .gitignore
 AGENTS.md  (42 lines) — AGENTS.md
 CLAUDE.md  (2 lines) — CLAUDE.md
@@ -39,6 +40,7 @@ app/403/page.tsx  (27 lines) — Page /403
 app/actions/driverRates.ts  (33 lines) — Server-side authorization: driver rate changes mirror the already-guarded
 app/actions/treasury.ts  (37 lines) — Server-side authorization: creating treasury boxes is a financial action.
 app/admin/drivers/[id]/page.tsx  (726 lines) — ─── Types ────────────────────────────────────────────────────────────────────
+app/admin/libanex/page.tsx  (753 lines) — Mirrors the codes accepted by the Libanex create_order endpoint.
 app/admin/page.tsx  (1572 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/admin/treasury/page.tsx  (737 lines) — ── Pending approvals (across every cash box) ──
 app/api/admin/dashboard/approvals/route.ts  (47 lines) — GET — fetch pending merchant approvals data for admin dashboard
@@ -53,6 +55,12 @@ app/api/admin/drivers/route.ts  (306 lines) — GET /api/admin/drivers — Fetch
 app/api/admin/drivers/settlements/route.ts  (423 lines) — GET /api/admin/drivers/settlements — Fetch PENDING DriverPayouts only.
 app/api/admin/employees/[id]/route.ts  (451 lines) — PUT /api/admin/employees/[id] — Update an employee (user)
 app/api/admin/fix-orders/route.ts  (65 lines) — API endpoint /api/admin/fix-orders
+app/api/admin/libanex/export/route.ts  (66 lines) — POST /api/admin/libanex/export — export selected PWA orders into Libanex.
+app/api/admin/libanex/import/route.ts  (42 lines) — POST /api/admin/libanex/import — import one seller's Libanex orders.
+app/api/admin/libanex/orders/route.ts  (30 lines) — GET /api/admin/libanex/orders?sellerId=556 — list a seller's Libanex orders
+app/api/admin/libanex/pwa-orders/route.ts  (28 lines) — GET /api/admin/libanex/pwa-orders — list PWA orders that have never been
+app/api/admin/libanex/sellers/route.ts  (62 lines) — GET /api/admin/libanexsellers — list Libanex sellers for the import picker.
+app/api/admin/libanex/sync/route.ts  (33 lines) — POST /api/admin/libanex/sync — run the incremental Libanex→PWA sync now
 app/api/admin/merchants/[id]/billing/route.ts  (90 lines) — API endpoint /api/admin/merchants/[id]/billing
 app/api/admin/merchants/[id]/cash-payouts/exclude/route.ts  (59 lines) — PATCH /api/admin/merchants/[id]/cash-payouts/exclude
 app/api/admin/merchants/[id]/cash-payouts/route.ts  (463 lines) — GET /api/admin/merchants/[id]/cash-payouts
@@ -175,7 +183,7 @@ components/RouteGuard.tsx  (160 lines) — ─── Route → Required Permissi
 components/ServiceWorkerRegister.tsx  (26 lines) — Registers the PWA service worker once per session. Registration is
 components/SettingsModal.tsx  (360 lines) — Merchants get an extra "Notifications" tab for their alert preferences.
 components/SharedOrderTable.tsx  (724 lines) — ─── Column sorting helpers (shared by SharedOrderTable and orders page) ──────
-components/Sidebar.tsx  (589 lines) — ─── Types ────────────────────────────────────────────────────────────────────
+components/Sidebar.tsx  (613 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 components/ThemeToggle.tsx  (112 lines) — localStorage unavailable (private mode, etc.) — theme still applies for this session
 components/WaybillQRCode.tsx  (77 lines) — The string encoded inside the QR matrix (e.g. the order ID).
 components/admin/EmployeesTab.tsx  (892 lines) — ─── Types ────────────────────────────────────────────────────────────────────
@@ -205,6 +213,7 @@ lib/driver-reasons.ts  (132 lines) — Shared driver exception reason codes (pos
 lib/excel-export.ts  (100 lines) — ─── Shared Excel export helpers ─────────────────────────────────────────────
 lib/exchange.ts  (86 lines) — Shared fields of an Order needed to build the "-Exchange" proof order.
 lib/jwt.ts  (150 lines) — ─── Canonical session-JWT primitives ─────────────────────────────────────────
+lib/libanexSync.ts  (879 lines) — One-way sync: Libanex (partner delivery system) → this PWA.
 lib/logoUpload.ts  (48 lines) — Directory (relative to the project root) where merchant logo files are stored.
 lib/notifications.ts  (102 lines) — Notification base-URL resolution.
 lib/notifications/dispatcher.ts  (216 lines) — Merchant notification dispatcher.
@@ -230,13 +239,14 @@ next-env.d.ts  (7 lines) — <reference types="next" />
 next.config.ts  (25 lines) — @type {import('next').NextConfig}
 plans/barcode-scanner-feature.md  (319 lines) — Feature plan document
 plans/bulk-upload-excel-support.md  (197 lines) — Feature plan document
+plans/libanex-sync.md  (87 lines) — Feature plan document
 postcss.config.mjs  (8 lines) — postcss.config.mjs
-prisma/schema.prisma  (592 lines) — ==========================================
+prisma/schema.prisma  (623 lines) — ==========================================
 ```
 
 ## 2. API endpoints
 
-79 route handlers. Reuse one of these before proposing a new endpoint.
+85 route handlers. Reuse one of these before proposing a new endpoint.
 
 - **GET /api/admin/dashboard/approvals** — GET — fetch pending merchant approvals data for admin dashboard  
   file: `app/api/admin/dashboard/approvals/route.ts` (47 lines)
@@ -262,6 +272,18 @@ prisma/schema.prisma  (592 lines) — ==========================================
   file: `app/api/admin/employees/[id]/route.ts` (451 lines)
 - **GET /api/admin/fix-orders** — API endpoint /api/admin/fix-orders  
   file: `app/api/admin/fix-orders/route.ts` (65 lines)
+- **POST /api/admin/libanex/export** — POST /api/admin/libanex/export — export selected PWA orders into Libanex.  
+  file: `app/api/admin/libanex/export/route.ts` (66 lines)
+- **POST /api/admin/libanex/import** — POST /api/admin/libanex/import — import one seller's Libanex orders.  
+  file: `app/api/admin/libanex/import/route.ts` (42 lines)
+- **GET /api/admin/libanex/orders** — GET /api/admin/libanex/orders?sellerId=556 — list a seller's Libanex orders  
+  file: `app/api/admin/libanex/orders/route.ts` (30 lines)
+- **GET /api/admin/libanex/pwa-orders** — GET /api/admin/libanex/pwa-orders — list PWA orders that have never been  
+  file: `app/api/admin/libanex/pwa-orders/route.ts` (28 lines)
+- **GET /api/admin/libanex/sellers** — GET /api/admin/libanexsellers — list Libanex sellers for the import picker.  
+  file: `app/api/admin/libanex/sellers/route.ts` (62 lines)
+- **POST /api/admin/libanex/sync** — POST /api/admin/libanex/sync — run the incremental Libanex→PWA sync now  
+  file: `app/api/admin/libanex/sync/route.ts` (33 lines)
 - **GET, POST /api/admin/merchants/[id]/billing** — API endpoint /api/admin/merchants/[id]/billing  
   file: `app/api/admin/merchants/[id]/billing/route.ts` (90 lines)
 - **PATCH /api/admin/merchants/[id]/cash-payouts/exclude** — PATCH /api/admin/merchants/[id]/cash-payouts/exclude  
@@ -506,7 +528,7 @@ interface SharedOrderTableProps {
 }
 ```
 
-### `components/Sidebar.tsx` (589 lines)
+### `components/Sidebar.tsx` (613 lines)
 > ─── Types ────────────────────────────────────────────────────────────────────
 
 ### `components/ThemeToggle.tsx` (112 lines)
@@ -969,6 +991,64 @@ export function getSessionToken(request: {
 
 // Cookie options for the session cookie. `maxAge` mirrors the token's own
 export function getSessionCookieOptions(requestedSecure: boolean): {
+
+```
+
+### `lib/libanexSync.ts` (879 lines)
+> One-way sync: Libanex (partner delivery system) → this PWA.
+
+```ts
+// One-way sync: Libanex (partner delivery system) → this PWA.
+export const LIBANEX_LOCATION_CODES = [ "W", "WH", "W9", "OP", "CP", "CP1", "Dr", "DrD", "DrR", "Tr", "De", "Re", "Ba", "Rc", ] as const;
+
+export const LIBANEX_FIN_CODES = [ "DC", "DP", "PS", "RD", "RM", "RS", "RW", "UD", "UP", "UR", "WC", "WD", "WO", "XD", "XS", "XW", ] as const;
+
+export interface LibanexOrder {
+
+export interface LibanexHistoryRow {
+
+export interface ImportSummary {
+
+export interface SyncResult {
+
+// Date → "YYYY-MM-DD HH:MM:SS" in local time (what the Libanex API expects).
+export async function libanexGet(
+  endpoint: string,
+  params: Record<string, string>,
+): Promise<{ data: any[]; pagination: { total: number; returned: number } }> {
+
+// Preview list of a seller's Libanex orders, annotated with what we already
+export interface LibanexOrderPreview extends LibanexOrder {
+
+export async function previewSellerOrders(
+  sellerId: string,
+): Promise<LibanexOrderPreview[]> {
+
+// Import a seller's Libanex orders. Pass `orderIds` to import only the
+export async function importSellerOrders(
+  sellerId: string,
+  orderIds?: string[],
+): Promise<ImportSummary> {
+
+export interface ExportSummary {
+
+export interface PwaOrderPreview {
+
+// PWA orders that have never been exported to Libanex (no LibanexLink),
+export async function listExportableOrders(
+  search: string,
+  limit = 100,
+): Promise<PwaOrderPreview[]> {
+
+// Export selected PWA orders into Libanex under `sellerId` with the chosen
+export async function exportOrdersToLibanex(
+  orderIds: string[], // internal PWA Order.id values
+  sellerId: string,
+  location: string,
+  finStatus: string,
+): Promise<ExportSummary> {
+
+export async function runSyncForLinkedSellers(): Promise<SyncResult[]> {
 
 ```
 
@@ -2049,6 +2129,9 @@ model Order {
   deliveryPreference String? // e.g. "Leave with concierge", "Call before arrival", "Doorstep"
   deliveryNotes      String? // Entrance details, gate codes, etc.
 
+  // --- Libanex sync link (see LibanexLink) ---
+  libanexLink LibanexLink?
+
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   dispatchedAt     DateTime?
@@ -2273,6 +2356,34 @@ model TreasuryTransaction {
   statement MerchantPayout? @relation("StatementTreasuryTx")
 
   createdAt DateTime @default(now())
+}
+
+// ── Libanex ↔ PWA order link ──
+// One row per order imported from (or matched to) the Libanex system.
+// libanexOrderId is the seller-prefixed Libanex order id (e.g. "556-20738"),
+// which equals our own Order.orderId for imported orders. The sync job uses
+// this table to (a) never re-import an existing order, (b) know the last
+// OrderHistory stamp already replicated, and (c) store raw Libanex status
+// codes that have no PWA equivalent.
+model LibanexLink {
+  id               String   @id @default(cuid())
+  libanexOrderId   String   @unique // e.g. "556-20738"
+  libanexSellerId  String            // Libanex seller id used for filtering imports
+  orderId          String   @unique  // our Order.id
+  order            Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // Incremental history replication cursor
+  lastHistoryStamp DateTime?
+
+  // Raw Libanex codes last seen (for auditing / unmapped values)
+  rawLocation   String?
+  rawFinStatus  String?
+
+  lastSyncedAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([libanexSellerId])
 }
 ```
 
@@ -2799,3 +2910,92 @@ The existing `POST /api/orders` endpoint handles single order creation. The new 
 - Missing required headers: List which headers are missing
 - Rows with missing required data: Skip and count as failed
 - API errors: Log and count as failed
+
+### `plans/libanex-sync.md` (87 lines)
+
+# Libanex → PWA one-way order sync
+
+## Goal
+Import orders from the partner Libanex system (selected by seller from an admin
+page) into this PWA, then keep their status, financial status and history
+updated automatically every 30 minutes.
+
+## Decisions (confirmed with owner)
+- One-way sync only: Libanex → PWA. The PWA never writes back.
+- Orders already present in the PWA are **adopted** (linked), never duplicated.
+- Imported orders get driver **D999 "Libanex"**. If an operator reassigns the
+  order to another driver, the sync never touches the driver field again
+  (status/amount updates continue).
+- Zones: match PWA zone by name (zone names are identical on both systems);
+  fall back to zone **"99"** when the Libanex zone is unknown.
+- History events are attributed to the system user **"libanex"**; the original
+  Libanex username is stored as text in `OrderHistory.meta.enteredBy`.
+- Returned orders on Libanex (`Re`, `Ba` = out-for-return, `Rc`) → PWA
+  `location=RETURN`, `financialStatus=RWD` (owner's explicit rule).
+- Unknown Libanex status codes: keep the last valid PWA value, store the raw
+  code on the link row, and surface a warning in the admin UI / cron log.
+
+## Status mapping
+| Libanex Location | PWA location | | Libanex Fin | PWA fin |
+|---|---|---|---|---|
+| W, WH, W9, OP | WAREHOUSE | | UD/WD/WO/PS | same |
+| CP, CP1 | CP | | Re | RWD |
+| Dr, DrD, DrR | ASSIGNED | | (others) | keep last + warn |
+| Tr | ASSIGNED_TR | | | |
+| De | DELIVERED | | | |
+| Re, Ba, Rc | RETURN (+RWD) | | | |
+
+## Data model
+- New `LibanexLink` table: `libanexOrderId` (unique, = our `Order.orderId`),
+  `libanexSellerId`, `orderId` (unique FK → Order, cascade), `lastHistoryStamp`
+  (incremental cursor), `rawLocation`/`rawFinStatus` (audit), `lastSyncedAt`.
+- Created directly in SQL (kept `ZoneMapping_backup_20261006` untouched;
+  `prisma db push` would have dropped it). Schema file updated to match.
+
+## Components
+- `lib/libanexSync.ts` — mapping tables, Libanex API client, `importSellerOrders()`
+  (bulk import/adopt) and `runSyncForLinkedSellers()` (history replay via
+  `order_history.php?seller_id&since`, then per-touched-order status refresh).
+- `app/api/admin/libanex/sellers/route.ts` — seller search proxy + linked counts.
+- `app/api/admin/libanex/import/route.ts` — POST {sellerId} bulk import.
+- `app/api/admin/libanex/sync/route.ts` — POST sync; admin session OR
+  `Authorization: Bearer $LIBANEX_SYNC_CRON_SECRET` (for cron).
+- `app/api/admin/libanex/orders/route.ts` — GET preview of a seller's Libanex
+  orders annotated with alreadyLinked/existsInPwa for the order picker.
+- `app/admin/libanex/page.tsx` — seller search (name/phone or exact Seller
+  ID), per-order checkbox picker (select which orders to import), "Sync now",
+  result/warning panels.
+- `scripts/create-libanex-user.js` — creates the "libanex" system user.
+- `scripts/libanex-sync-cron.sh` → curl localhost sync, driven by systemd
+  timer `libanex-sync.timer` (`OnCalendar=*:0/30`, Persistent=true). The PWA
+  server has no crontab binary, so a systemd timer is used instead.
+
+## Libanex API (server 83.149.106.196, /libanexbackup/api/internal/v1/)
+- `orders.php` — order master data (filters: seller_id, order_id, …).
+- `order_history.php` — per-order event log (filters: seller_id, since, …).
+- `sellers.php` — seller directory (filter: q).
+- Auth: `?apikey=` — dedicated key stored in `.env` as `LIBANEX_API_KEY`.
+
+## Env vars added
+- `LIBANEX_API_URL`, `LIBANEX_API_KEY`, `LIBANEX_SYNC_CRON_SECRET`.
+
+## Safety
+- Import is idempotent (link table + orderId unique).
+- Sync caps: 500-row pages, ≤20k history rows and ≤400 status fetches per
+  seller per run; warnings reported instead of failing the whole run.
+- No writes to Libanex; PWA-only additive changes.
+
+## Status: DEPLOYED & VERIFIED (2026-10-15)
+- E2E test with seller 1176 (8 orders): import created 8 orders + 8 links +
+  history; re-import skipped all 8 (idempotent); sync replicated 24 history
+  rows and updated 7 orders; second sync = 0 new rows (cursors work).
+- RETURN→RWD mapping confirmed live (1176-980654, raw "Re").
+- Selective import verified: seller search by exact Seller ID works; preview
+  lists orders with flags; importing 2 of 8 orders created exactly those 2.
+- systemd timer `libanex-sync.timer` enabled, manual trigger succeeded
+  (output in `journalctl -u libanex-sync.service`).
+- Note: the PWA server has no crontab binary — scheduling uses systemd timers.
+- Unmapped Libanex codes (fin: RD/RM/DP/RS/RDr/RW/ZZ/WC/DC…; loc: PK/Dr3/
+  XX/QQ) keep the last valid PWA value, store raw on the link row, and warn.
+- LIBANEX_API_KEY currently reuses the shared admin API key; a dedicated
+  read-only key is recommended later.

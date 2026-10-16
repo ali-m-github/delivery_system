@@ -364,6 +364,9 @@ model Order {
   deliveryPreference String? // e.g. "Leave with concierge", "Call before arrival", "Doorstep"
   deliveryNotes      String? // Entrance details, gate codes, etc.
 
+  // --- Libanex sync link (see LibanexLink) ---
+  libanexLink LibanexLink?
+
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   dispatchedAt     DateTime?
@@ -588,4 +591,32 @@ model TreasuryTransaction {
   statement MerchantPayout? @relation("StatementTreasuryTx")
 
   createdAt DateTime @default(now())
+}
+
+// ── Libanex ↔ PWA order link ──
+// One row per order imported from (or matched to) the Libanex system.
+// libanexOrderId is the seller-prefixed Libanex order id (e.g. "556-20738"),
+// which equals our own Order.orderId for imported orders. The sync job uses
+// this table to (a) never re-import an existing order, (b) know the last
+// OrderHistory stamp already replicated, and (c) store raw Libanex status
+// codes that have no PWA equivalent.
+model LibanexLink {
+  id               String   @id @default(cuid())
+  libanexOrderId   String   @unique // e.g. "556-20738"
+  libanexSellerId  String            // Libanex seller id used for filtering imports
+  orderId          String   @unique  // our Order.id
+  order            Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // Incremental history replication cursor
+  lastHistoryStamp DateTime?
+
+  // Raw Libanex codes last seen (for auditing / unmapped values)
+  rawLocation   String?
+  rawFinStatus  String?
+
+  lastSyncedAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([libanexSellerId])
 }
