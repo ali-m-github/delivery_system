@@ -1,7 +1,7 @@
 # Project map — delivery_system / web-pwa
 
-Generated: 2026-10-15T19:27:52.522Z
-Source files scanned: 212
+Generated: 2026-10-16T19:32:38.525Z
+Source files scanned: 215
 
 ## How to use this file
 
@@ -118,7 +118,7 @@ app/api/orders/[id]/history/route.ts  (139 lines) — GET /api/orders/:id/histor
 app/api/orders/bulk/lookup/route.ts  (153 lines) — ─── POST /api/orders/bulk/lookup ─────────────────────────────────────────────
 app/api/orders/bulk/route.ts  (384 lines) — ─── PATCH /api/orders/bulk ───────────────────────────────────────────────────
 app/api/orders/correction/route.ts  (112 lines) — API endpoint /api/orders/correction
-app/api/orders/route.ts  (1526 lines) — ─── GET /api/orders ──────────────────────────────────────────────────────────
+app/api/orders/route.ts  (1547 lines) — ─── GET /api/orders ──────────────────────────────────────────────────────────
 app/api/orders/waybill/route.ts  (131 lines) — ─── POST /api/orders/waybill ───────────────────────────────────────────────
 app/api/statements/[id]/pay/route.ts  (203 lines) — POST /api/statements/[id]/pay — Phase 1 (Pay) a statement into a cashbox.
 app/api/statements/route.ts  (332 lines) — NOTE: only IDs are accepted from the client. The client may also send
@@ -132,9 +132,9 @@ app/cleared-payouts/page.tsx  (1073 lines) — ─── Types ─────�
 app/dashboard/page.tsx  (331 lines) — ── Helpers ────────────────────────────────────────────────────────────────
 app/driver/DriverClient.tsx  (3454 lines) — ── Merchant Pickup Batch Types (chain-of-custody) ──────────────────────
 app/driver/page.tsx  (147 lines) — ── Read & verify session cookie ──────────────────────────────────────
-app/drivers/[id]/page.tsx  (3193 lines) — ─── Settlement Modal State ────────────────────────────────────────────
+app/drivers/[id]/page.tsx  (3355 lines) — ─── Search helpers (order tabs) ───────────────────────────────────────────
 app/drivers/page.tsx  (1422 lines) — ─── Types ────────────────────────────────────────────────────────────────────
-app/globals.css  (521 lines) — app/globals.css
+app/globals.css  (572 lines) — app/globals.css
 app/layout.tsx  (107 lines) — app/manifest.json is served at /manifest.json; linked explicitly so the
 app/login/page.tsx  (162 lines) — Hard navigation to force root layout remount and auth state re-read
 app/manifest.json  (30 lines) — app/manifest.json
@@ -146,7 +146,7 @@ app/merchants/[id]/page.tsx  (48 lines) — Page /merchants/[id]
 app/merchants/[id]/payouts/[batchId]/BatchDetailClient.tsx  (487 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/merchants/[id]/payouts/[batchId]/page.tsx  (64 lines) — Page /merchants/[id]/payouts/[batchId]
 app/merchants/page.tsx  (1072 lines) — Add Modal State
-app/orders/page.tsx  (7769 lines) — ─── Header Alias Mapping for Bulk Upload ─────────────────────────────────────
+app/orders/page.tsx  (7591 lines) — ─── Header Alias Mapping for Bulk Upload ─────────────────────────────────────
 app/orders/print/page.tsx  (629 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/page.tsx  (66 lines) — Page / (landing)
 app/print/layout.tsx  (8 lines) — Root layout
@@ -199,8 +199,8 @@ components/merchant/NotificationSettingsPanel.tsx  (269 lines) — Shared mercha
 components/merchants/CashSellerWorkspace.tsx  (1309 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 components/orders/GlobalSheetImportModal.tsx  (517 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 components/orders/ImportGoogleSheetsModal.tsx  (394 lines) — Overridable endpoints: the admin flow posts to /api/admin/... and saves the
-components/orders/UniversalStaffScannerModal.tsx  (829 lines) — ─── Types ────────────────────────────────────────────────────────────────────
-components/orders/WarehouseIntakeModal.tsx  (643 lines) — ─── Types (mirror GET /api/admin/pickup-batches) ────────────────────────────
+components/orders/UniversalStaffScannerModal.tsx  (872 lines) — ─── Types ────────────────────────────────────────────────────────────────────
+components/orders/WarehouseIntakePanel.tsx  (616 lines) — ─── Types (mirror GET /api/admin/pickup-batches) ────────────────────────────
 components/orders/WaybillUploadReport.tsx  (272 lines) — ─── Waybill upload result report ────────────────────────────────────────────
 components/payouts/ConfirmPayoutModal.tsx  (172 lines) — Per-rate commission lines, computed by the caller through the
 eslint.config.mjs  (19 lines) — Override default ignores of eslint-config-next.
@@ -239,7 +239,10 @@ next-env.d.ts  (7 lines) — <reference types="next" />
 next.config.ts  (25 lines) — @type {import('next').NextConfig}
 plans/barcode-scanner-feature.md  (319 lines) — Feature plan document
 plans/bulk-upload-excel-support.md  (197 lines) — Feature plan document
+plans/driver-profile-search.md  (131 lines) — Feature plan document
+plans/edit-order-seller.md  (63 lines) — Feature plan document
 plans/libanex-sync.md  (87 lines) — Feature plan document
+plans/unify-scanners.md  (108 lines) — Feature plan document
 postcss.config.mjs  (8 lines) — postcss.config.mjs
 prisma/schema.prisma  (623 lines) — ==========================================
 ```
@@ -399,7 +402,7 @@ prisma/schema.prisma  (623 lines) — ==========================================
 - **POST /api/orders/correction** — API endpoint /api/orders/correction  
   file: `app/api/orders/correction/route.ts` (112 lines)
 - **GET, POST, PATCH /api/orders** — ─── GET /api/orders ──────────────────────────────────────────────────────────  
-  file: `app/api/orders/route.ts` (1526 lines)
+  file: `app/api/orders/route.ts` (1547 lines)
 - **POST, GET /api/orders/waybill** — ─── POST /api/orders/waybill ───────────────────────────────────────────────  
   file: `app/api/orders/waybill/route.ts` (131 lines)
 - **POST /api/statements/[id]/pay** — POST /api/statements/[id]/pay — Phase 1 (Pay) a statement into a cashbox.  
@@ -649,7 +652,7 @@ interface ImportGoogleSheetsModalProps {
 }
 ```
 
-### `components/orders/UniversalStaffScannerModal.tsx` (829 lines)
+### `components/orders/UniversalStaffScannerModal.tsx` (872 lines)
 > ─── Types ────────────────────────────────────────────────────────────────────
 
 ```ts
@@ -661,13 +664,11 @@ export interface UniversalStaffScannerModalProps {
 }
 ```
 
-### `components/orders/WarehouseIntakeModal.tsx` (643 lines)
+### `components/orders/WarehouseIntakePanel.tsx` (616 lines)
 > ─── Types (mirror GET /api/admin/pickup-batches) ────────────────────────────
 
 ```ts
 interface Props {
-  isOpen: boolean;
-  onClose: () => void;
   availableDrivers: DriverOption[];
 }
 ```
@@ -2911,6 +2912,204 @@ The existing `POST /api/orders` endpoint handles single order creation. The new 
 - Rows with missing required data: Skip and count as failed
 - API errors: Log and count as failed
 
+### `plans/driver-profile-search.md` (131 lines)
+
+# Search bar in the admin driver profile (all order tabs)
+
+## Overview
+
+Add a single search bar to the admin driver profile page (`/drivers/d0111` →
+`app/drivers/[id]/page.tsx`) that filters the tables on **all four order tabs**:
+
+- Assigned - Dr (`assigned`)
+- Assigned - Tr (`assigned_tr`)
+- Delivered (`delivered`)
+- Returns/Exchange (`returns`)
+
+The search matches **order ID** and **customer phone number**, and supports
+**one or multiple comma-separated values** (e.g. `10049805, 78981891, 981891`).
+Multiple tokens use **OR** logic (an order matching *any* token is shown), which
+is the behaviour the owner uses on `/orders` for batch lookups. Numeric tokens
+also match as **order-ID suffixes**, so typing the last 4–5 digits works, exactly
+like the `/orders` search.
+
+The Payouts and Seller Rates tabs are **not** filtered (they are not order
+lists); the search bar is hidden on those two tabs.
+
+All data for these tabs is already loaded client-side (`driver.deliveries` from
+`GET /api/admin/drivers/[id]`), so this is a **pure client-side filter** — no
+API route changes, no schema changes, no money-math changes.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    subgraph Page["app/drivers/[id]/page.tsx (client)"]
+        INPUT["Search input (visible on the 4 order tabs)"]
+        DEBOUNCE["Debounced search term (300ms)"]
+        TOKENS["Token parser: split on comma, trim, lowercase"]
+        MATCH["termMatchesDriverOrder: orderId includes / numeric suffix / phone includes"]
+        DERIVED["assignedOrders, assignedTrOrders, deliveredOrders, returnedOrders (unchanged)"]
+        FILTERED["filteredAssigned, filteredAssignedTr, filteredDelivered, filteredReturned (new memos)"]
+        PAGED["paginated* memos (now slice the filtered lists)"]
+        TABLES["Tab tables + pagination counters + select-all + empty state"]
+    end
+
+    INPUT --> DEBOUNCE --> TOKENS --> MATCH
+    DERIVED --> FILTERED
+    MATCH --> FILTERED
+    FILTERED --> PAGED --> TABLES
+```
+
+## Current State Analysis
+
+| File | Line range | Current behaviour |
+| --- | --- | --- |
+| `app/drivers/[id]/page.tsx` | 17-23 | `Tab` union: `assigned`, `assigned_tr`, `delivered`, `returns`, `payouts`, `rates` |
+| `app/drivers/[id]/page.tsx` | 76-96 | Per-tab sort state and per-tab pagination state (`assignedPage`, `deliveredPage`, `returnsPage`, …) — no search state exists |
+| `app/drivers/[id]/page.tsx` | 253-298 | Derived lists `assignedOrders`, `assignedTrOrders`, `deliveredOrders`, `returnedOrders` filtered from `driver.deliveries` by location/financialStatus |
+| `app/drivers/[id]/page.tsx` | 300-323 | `paginatedAssigned/AssignedTr/Delivered/Returned` slice the **unfiltered** derived lists |
+| `app/drivers/[id]/page.tsx` | 331-356 | Summary-card sums use the full derived lists (must stay unfiltered) |
+| `app/drivers/[id]/page.tsx` | 975-1019 | Sticky tab bar with per-tab count badges (badges use full counts — keep) |
+| `app/drivers/[id]/page.tsx` | 1114-1168 | Assigned-tab pagination bar: "Showing X of {assignedOrders.length}", Prev/Next |
+| `app/drivers/[id]/page.tsx` | 1174-1187 | Assigned select-all checkbox uses `assignedOrders` ids |
+| `app/drivers/[id]/page.tsx` | 1225-1234 | Empty-state row keyed on `paginatedAssigned.length === 0 && assignedOrders.length === 0` |
+| `app/drivers/[id]/page.tsx` | 1320-1620 | Assigned-Tr tab: same pagination/select-all/empty-state pattern |
+| `app/drivers/[id]/page.tsx` | 1623-1940 | Delivered tab: settlement action bar + pagination + table (same pattern) |
+| `app/drivers/[id]/page.tsx` | 1942-2176 | Returns tab: bulk toolbar + pagination + table (same pattern) |
+| `app/orders/page.tsx` | 548-558 | Debounce pattern to copy: `searchTerm` → `debouncedSearchTerm` after 300ms |
+| `app/orders/page.tsx` | 1680-1702 | `termMatchesOrder` reference implementation: numeric-suffix + `includes` matching |
+
+## Plan
+
+1. **Search state + debounce** (`app/drivers/[id]/page.tsx`, near line 96)
+   - Add `const [searchTerm, setSearchTerm] = useState("")` and a 300 ms
+     debounced copy `debouncedSearchTerm`, mirroring `app/orders/page.tsx`
+     lines 548-558.
+   - Reset all four tab pages to 1 whenever `debouncedSearchTerm` changes
+     (same effect that already resets pages on items-per-page change).
+
+2. **Token + match helpers** (module scope, above the component)
+   - `parseSearchTokens(term: string): string[]` — split on `,`, trim,
+     lowercase, drop empties.
+   - `termMatchesDriverOrder(term: string, order: any): boolean` — matches:
+     - `order.orderId` case-insensitive `includes`, **plus** suffix match when
+       the token is `^\d{4,}$` (last-digits search, same rule as
+       `termMatchesOrder` in `/orders`);
+     - `order.customerPhone` `includes` (raw and digits-only normalized, so
+       `70123456` matches `+961 70 123 456`).
+   - `filterOrdersByTokens(list, tokens)` — keep an order if **any** token
+     matches (OR logic). Empty token list returns the list unchanged.
+
+3. **Filtered memos** (after the derived lists, ~line 299)
+   - `filteredAssigned`, `filteredAssignedTr`, `filteredDelivered`,
+     `filteredReturned` = `filterOrdersByTokens(derivedList, tokens)` wrapped in
+     `useMemo` keyed on the derived list + `debouncedSearchTerm`.
+   - Tab badge counts and summary-card sums keep using the **full** derived
+     lists (they describe the driver's totals, not the current filter).
+
+4. **Point pagination at the filtered lists** (~lines 300-323)
+   - `paginatedAssigned/AssignedTr/Delivered/Returned` now sort + slice the
+     `filtered*` lists instead of the raw derived lists.
+
+5. **Render the search bar** (right below the tab bar, ~line 1019)
+   - One shared input shown only when `activeTab` is one of the four order
+     tabs. Placeholder:
+     `Search by order ID / phone — single or comma-separated (e.g. 10049805, 78981891)…`
+   - Styling consistent with the page (dark card, `bg-white/[0.02]`,
+     cyan focus ring) and a small ✕ clear button when non-empty.
+   - When tokens are present, show a subtle "N of M orders match" hint next to
+     the input (M = full tab list, N = filtered list).
+
+6. **Wire each tab's chrome to the filtered list** (4 tabs, same edits each)
+   - Pagination bar: "Showing X of **filtered**.length", Next disabled against
+     filtered length.
+   - Select-all checkbox: checked-state and `toggleSelectAll` ids use the
+     filtered list (so "select all" selects exactly what's visible).
+   - Empty-state row: show "No orders match your search." when tokens are
+     present and the filtered list is empty; keep the existing message when the
+     tab is genuinely empty.
+   - Bulk toolbars ("N of M selected", Print/Excel on selected) keep operating
+     on `selectedOrders` ids — no change needed beyond the select-all source.
+
+7. **Verify**
+   - `npm run lint` / `next build` passes.
+   - Manual checks on `/drivers/d0111`: single order ID, partial numeric ID,
+     phone fragment, comma-separated mixed list, clear button, pagination with
+     >50 matches, and that Payouts/Seller Rates tabs are untouched.
+   - Run `node scripts/build-ai-context.js` to refresh the context map.
+
+## Out of scope
+
+- No changes to `app/driver/DriverClient.tsx` (the driver's own portal).
+- No API changes — everything is already loaded client-side.
+- Payouts and Seller Rates tabs are not searchable.
+
+### `plans/edit-order-seller.md` (63 lines)
+
+# Change Seller from the Edit Order modal
+
+## Overview
+
+On https://jett.delivery/orders the "Edit" button opens the Edit Order modal, which
+currently allows editing customer name/phone/address, zone, amounts, flags and notes —
+but not the seller (merchant). Privileged users must today use the separate
+ADMIN-only "Seller Change" bulk button. This feature adds a **Seller** dropdown to
+the Edit Order modal, visible only to users with the `MANAGE_MERCHANTS` permission
+(Admins always see it via the `hasPermission` ADMIN bypass), and enforces the same
+permission server-side in `PATCH /api/orders`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Edit button row] --> B[openEditModal seeds editFormData incl. merchantId]
+    B --> C[Edit modal: Seller select\nvisible only with MANAGE_MERCHANTS]
+    C --> D[submitEdit adds merchantId to payload\nonly when userHasPermission MANAGE_MERCHANTS]
+    D --> E[PATCH /api/orders]
+    E --> F{staff & merchantId changed?}
+    F -- no MANAGE_MERCHANTS --> G[403]
+    F -- allowed --> H[existing update path:\ncommission recalc already handled]
+```
+
+## Current State Analysis
+
+| file | line range | current behaviour |
+|---|---|---|
+| app/orders/page.tsx | 949-962 | `editFormData` state has no `merchantId` field |
+| app/orders/page.tsx | 2560-2575 | `openEditModal` seeds all editable fields except seller |
+| app/orders/page.tsx | 2577-2600 | `submitEdit` builds payload; financial fields gated by `userHasPermission("ORDERS_FINANCIAL")` — pattern to mirror |
+| app/orders/page.tsx | 5506-5535 | Zone `<select>` in the edit modal — insertion point / styling pattern |
+| app/orders/page.tsx | 6231-6255 | Seller `<select>` in the correction modal — option-label pattern (`m.merchantName \|\| owner first+last`) |
+| app/orders/page.tsx | 1178-1217 | Reference-data fetch fills `merchants` state; `/api/admin/merchants` itself requires MANAGE_MERCHANTS, so unprivileged staff can't populate the list anyway |
+| app/api/orders/route.ts | 582-603 | `STAFF_UPDATABLE_FIELDS` already includes `merchantId` (line 595) |
+| app/api/orders/route.ts | 919-938 | Financial-field gate for staff — exact template for the new MANAGE_MERCHANTS gate |
+| app/api/orders/route.ts | 1143-1147, 1196-1197 | merchantId change already triggers commission recalculation — no server work needed beyond the gate |
+
+## Plan
+
+1. **Client — app/orders/page.tsx**
+   1. Add `merchantId: ""` to the `editFormData` initial state.
+   2. Seed `merchantId: order.merchantId || ""` in `openEditModal`.
+   3. In `submitEdit`, include `merchantId` in the payload only when
+      `userHasPermission("MANAGE_MERCHANTS")` (empty string → `null`).
+   4. Add a Seller `<select>` after the Zone block in the edit modal, rendered only
+      when `userHasPermission("MANAGE_MERCHANTS")`, populated from the existing
+      `merchants` state using the correction-modal label pattern, with a
+      "— No seller —" empty option.
+2. **Server — app/api/orders/route.ts**
+   1. After the financial-field gate, add a seller-change gate: for staff
+      (`allowedFields === STAFF_UPDATABLE_FIELDS && !actorIsAdmin`), if `merchantId`
+      is present in the update and differs from `existing.merchantId`, require
+      `hasPermission(actor, "MANAGE_MERCHANTS")` → otherwise 403.
+3. Verify with `npx tsc --noEmit`.
+
+## Deliberately untouched
+
+- The ADMIN-only bulk "Seller Change" toolbar button (unchanged behaviour).
+- The dead single-order seller modal (`openSellerModal` is never called).
+- Commission recalculation on merchantId change (already implemented server-side).
+
 ### `plans/libanex-sync.md` (87 lines)
 
 # Libanex → PWA one-way order sync
@@ -2999,3 +3198,113 @@ updated automatically every 30 minutes.
   XX/QQ) keep the last valid PWA value, store raw on the link row, and warn.
 - LIBANEX_API_KEY currently reuses the shared admin API key; a dedicated
   read-only key is recommended later.
+
+### `plans/unify-scanners.md` (108 lines)
+
+# Unify the three /orders scanners into one Staff Scanner
+
+## Overview
+
+`/orders` currently exposes three separate scanning entry points:
+
+1. **📷 Scan to Assign** — single-order quick assign (inline in `app/orders/page.tsx`)
+2. **📦 Warehouse Intake Scan** — pickup-batch manifest reconciliation (`components/orders/WarehouseIntakeModal.tsx`)
+3. **📷 Staff Scanner** — universal multi-parcel tray (`components/orders/UniversalStaffScannerModal.tsx`)
+
+This change collapses them into **one** button — the Staff Scanner — which gains a
+**Batch Intake** tab that embeds the existing warehouse-intake reconciliation UI.
+The **Scan to Assign** flow is removed outright: its behaviour is superseded by the
+Staff Scanner's `ASSIGN_DRIVER` action, which sets `location` to `WITH_DRIVER`
+(Dr run) or `ASSIGNED_TR` (Tr run) and leaves `financialStatus` untouched (`UD`),
+only flipping to `WD` via `MARK_DELIVERED`. That is the semantics the owner wants.
+
+No new API endpoints are created; all existing endpoints are reused.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    subgraph Page["app/orders/page.tsx"]
+        BTN["📷 Staff Scanner button (only scanner)"]
+    end
+
+    subgraph USM["components/orders/UniversalStaffScannerModal.tsx"]
+        TAB{"Tab switch"}
+        TRAY["Tray mode\n(camera + USB + manual)\nactions → POST /api/admin/orders/universal-scan"]
+        INTAKE["Batch Intake tab"]
+    end
+
+    subgraph WIP["components/orders/WarehouseIntakePanel.tsx (embedded, no modal chrome)"]
+        LIST["PENDING batches → assign driver\nPICKED_UP batches → scan & reconcile"]
+    end
+
+    BTN --> USM
+    TAB --> TRAY
+    TAB --> INTAKE
+    INTAKE --> WIP
+
+    TRAY --> A1["POST /api/admin/orders/universal-scan"]
+    WIP --> A2["GET /api/admin/pickup-batches"]
+    WIP --> A3["PATCH /api/admin/pickup-batches/:id/assign"]
+    WIP --> A4["PATCH /api/admin/pickup-batches/:id/receive"]
+    WIP --> A5["BarcodeScannerModal (per-batch scan)"]
+    USM --> A6["GET /api/admin/drivers"]
+```
+
+## Current State Analysis
+
+| File | Line range | Current behaviour |
+| --- | --- | --- |
+| `app/orders/page.tsx` | 24-27 | Imports `BarcodeScannerModal`, `WarehouseIntakeModal`, `UniversalStaffScannerModal` |
+| `app/orders/page.tsx` | 1074-1085 | State for warehouse-intake modal + full scan-to-assign flow (`scannerOpen`, `scannedOrder`, `scannedAssignDriverId`, `scanError`, `scanLoading`) |
+| `app/orders/page.tsx` | 1683-1729 | `handleScanOrder` (lookup) and `handleScanAssign` (writes `location: "ASSIGNED"`, `financialStatus: "UD"`, zeroes collections) |
+| `app/orders/page.tsx` | 2827-2837 | "📷 Scan to Assign" toolbar button |
+| `app/orders/page.tsx` | 2861-2872 | "📦 Warehouse Intake Scan" toolbar button (guarded by `MANAGE_ORDERS`) |
+| `app/orders/page.tsx` | 7218-7319 | Scan-to-Assign slide-over (order summary + driver dropdown) |
+| `app/orders/page.tsx` | 7321-7334 | Scan error toast |
+| `app/orders/page.tsx` | 7336-7353 | Renders `BarcodeScannerModal` + `WarehouseIntakeModal` |
+| `components/orders/WarehouseIntakeModal.tsx` | 68-121, 249-290 | Modal shell: fixed overlay, own header/close, `availableDrivers` prop, fetches active batches |
+| `components/orders/WarehouseIntakeModal.tsx` | 292-641 | Batch lists, per-batch scan/match/notes/receive, embedded `BarcodeScannerModal` |
+| `components/orders/UniversalStaffScannerModal.tsx` | 126-181 | Loads drivers from `/api/admin/drivers` (same payload the page already uses) |
+| `components/orders/UniversalStaffScannerModal.tsx` | 298-368 | Continuous camera; starts on open, stops on close |
+| `components/orders/UniversalStaffScannerModal.tsx` | 502-828 | Tray UI + action buttons + assign/returns sub-panels |
+| `app/api/admin/orders/universal-scan/route.ts` | 187-248 | `ASSIGN_DRIVER` → `WITH_DRIVER`/`ASSIGNED_TR`, never touches `financialStatus` |
+| `app/api/admin/orders/universal-scan/route.ts` | 386-433 | `MARK_DELIVERED` → `DELIVERED` + `WD` + `deliveredAt`; blocks unassigned orders |
+
+## Plan
+
+1. **`components/orders/WarehouseIntakeModal.tsx` → `WarehouseIntakePanel`**
+   Rename the default export to `WarehouseIntakePanel` and strip the modal chrome:
+   the fixed backdrop, the outer `max-w-4xl` card, the header (title/close/refresh
+   moves to a compact in-panel refresh button). Keep every handler, the completion
+   banner, the PENDING/PICKED_UP sections and the embedded `BarcodeScannerModal`
+   exactly as-is. Drop the `isOpen` early-return and the `onClose` prop; keep
+   `availableDrivers`. Rename the file to `WarehouseIntakePanel.tsx`.
+
+2. **Add a tab switch to `UniversalStaffScannerModal`**
+   Two tabs above the right column: `Scan Tray` and `Batch Intake`.
+   - `Scan Tray` → existing camera + tray + actions, unchanged.
+   - `Batch Intake` → renders `<WarehouseIntakePanel availableDrivers={drivers} />`
+     reusing the driver list the modal already fetches.
+   When switching to `Batch Intake`, stop the tray camera (the panel opens its own
+   scanner on demand); switching back restarts it. Reset `activeTab` on close.
+
+3. **Remove Scan-to-Assign from `app/orders/page.tsx`**
+   Delete the toolbar button, the state block, `handleScanOrder`/`handleScanAssign`,
+   the slide-over, the scan-error toast, the `BarcodeScannerModal` render and its
+   import.
+
+4. **Remove the Warehouse Intake button/modal from `app/orders/page.tsx`**
+   Delete the toolbar button, `warehouseIntakeOpen` state, the `WarehouseIntakeModal`
+   render and its import. The Staff Scanner button (already `MANAGE_ORDERS`-guarded)
+   becomes the single entry point.
+
+5. **Verify + refresh the map**
+   `npx tsc --noEmit` (or `npm run build`) then `node scripts/build-ai-context.js`.
+
+## Deliberately preserved
+
+- `components/BarcodeScannerModal.tsx` stays — still used by `app/driver/DriverClient.tsx`
+  and by the intake panel.
+- All pickup-batch endpoints stay — the driver app (`/api/driver/pickup-batches`) depends on them.
+- `app/admin/page.tsx` Staff Scanner quick-access gains the Batch Intake tab for free.

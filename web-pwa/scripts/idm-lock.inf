@@ -1,0 +1,5 @@
+; regini security descriptor — LOCK the IDM settings key (read-only)
+; Applying this INF removes WRITE permission, freezing the trial counter
+; so the registration nag can never come back.
+HKEY_CURRENT_USER\Software\DownloadManager
+    R

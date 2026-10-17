@@ -38,6 +38,41 @@ type SortDir = "asc" | "desc";
 
 type SortConfig = { key: SortKey; dir: SortDir };
 
+// ─── Search helpers (order tabs) ───────────────────────────────────────────
+// Tokens are comma-separated; an order matches when ANY token matches (OR
+// logic), so pasting a list of order IDs / phone numbers shows them all.
+// Numeric tokens (4+ digits) also match as order-ID suffixes, mirroring the
+// termMatchesOrder behaviour on /orders, so last-digits lookups work.
+const parseSearchTokens = (term: string): string[] =>
+  term
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+const termMatchesDriverOrder = (term: string, order: any): boolean => {
+  const orderIdLower = String(order.orderId ?? "").toLowerCase();
+  const isNumeric = /^\d{4,}$/.test(term);
+  if (isNumeric && orderIdLower.endsWith(term)) return true;
+  if (orderIdLower.includes(term)) return true;
+  const phoneRaw = String(order.customerPhone ?? "").toLowerCase();
+  if (phoneRaw.includes(term)) return true;
+  // Digits-only comparison so "70123456" matches "+961 70 123 456".
+  const phoneDigits = phoneRaw.replace(/\D/g, "");
+  const termDigits = term.replace(/\D/g, "");
+  if (termDigits && phoneDigits.includes(termDigits)) return true;
+  return false;
+};
+
+const filterOrdersByTokens = <T extends Record<string, any>>(
+  orders: T[],
+  tokens: string[],
+): T[] => {
+  if (tokens.length === 0) return orders;
+  return orders.filter((order) =>
+    tokens.some((token) => termMatchesDriverOrder(token, order)),
+  );
+};
+
 export default function DriverProfilePage() {
   const params = useParams();
   const router = useRouter();
@@ -94,6 +129,25 @@ export default function DriverProfilePage() {
   const [returnsItemsPerPage, setReturnsItemsPerPage] = useState(50);
   const [payoutsPage, setPayoutsPage] = useState(1);
   const [payoutsItemsPerPage, setPayoutsItemsPerPage] = useState(50);
+
+  // ─── Search (order tabs: assigned / assigned_tr / delivered / returns) ──
+  // Debounced copy of searchTerm so typing stays responsive on large lists,
+  // mirroring the pattern used on /orders. The input's onChange also resets
+  // every order tab's page, since a new term invalidates the current page.
+  const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearchTerm(searchTerm), 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+    setAssignedPage(1);
+    setAssignedTrPage(1);
+    setDeliveredPage(1);
+    setReturnsPage(1);
+  };
 
   const handleSort = (tab: Tab, key: SortKey) => {
     setSortConfig((prev) => {
@@ -297,30 +351,97 @@ export default function DriverProfilePage() {
     [deliveries],
   );
 
+  // ─── Search-filtered lists (order tabs) ─────────────────────────────────
+  // Tab badges and summary cards keep using the full derived lists; only the
+  // tables and their pagination use these filtered copies.
+  const searchTokens = useMemo(
+    () => parseSearchTokens(debouncedSearchTerm),
+    [debouncedSearchTerm],
+  );
+
+  const filteredAssigned = useMemo(
+    () => filterOrdersByTokens(assignedOrders, searchTokens),
+    [assignedOrders, searchTokens],
+  );
+
+  const filteredAssignedTr = useMemo(
+    () => filterOrdersByTokens(assignedTrOrders, searchTokens),
+    [assignedTrOrders, searchTokens],
+  );
+
+  const filteredDelivered = useMemo(
+    () => filterOrdersByTokens(deliveredOrders, searchTokens),
+    [deliveredOrders, searchTokens],
+  );
+
+  const filteredReturned = useMemo(
+    () => filterOrdersByTokens(returnedOrders, searchTokens),
+    [returnedOrders, searchTokens],
+  );
+
+  // Match counts for the search hint, per active order tab (null on the
+  // non-order tabs, which also hides the search bar).
+  const activeTabSearchCounts = useMemo(() => {
+    switch (activeTab) {
+      case "assigned":
+        return {
+          total: assignedOrders.length,
+          matches: filteredAssigned.length,
+        };
+      case "assigned_tr":
+        return {
+          total: assignedTrOrders.length,
+          matches: filteredAssignedTr.length,
+        };
+      case "delivered":
+        return {
+          total: deliveredOrders.length,
+          matches: filteredDelivered.length,
+        };
+      case "returns":
+        return {
+          total: returnedOrders.length,
+          matches: filteredReturned.length,
+        };
+      default:
+        return null;
+    }
+  }, [
+    activeTab,
+    assignedOrders,
+    filteredAssigned,
+    assignedTrOrders,
+    filteredAssignedTr,
+    deliveredOrders,
+    filteredDelivered,
+    returnedOrders,
+    filteredReturned,
+  ]);
+
   // ─── Paginated Lists per Tab ────────────────────────────────────────────
   const paginatedAssigned = useMemo(() => {
-    const sorted = sortOrders(assignedOrders, "assigned");
+    const sorted = sortOrders(filteredAssigned, "assigned");
     const start = (assignedPage - 1) * assignedItemsPerPage;
     return sorted.slice(start, start + assignedItemsPerPage);
-  }, [assignedOrders, assignedPage, assignedItemsPerPage, sortConfig]);
+  }, [filteredAssigned, assignedPage, assignedItemsPerPage, sortConfig]);
 
   const paginatedAssignedTr = useMemo(() => {
-    const sorted = sortOrders(assignedTrOrders, "assigned_tr");
+    const sorted = sortOrders(filteredAssignedTr, "assigned_tr");
     const start = (assignedTrPage - 1) * assignedTrItemsPerPage;
     return sorted.slice(start, start + assignedTrItemsPerPage);
-  }, [assignedTrOrders, assignedTrPage, assignedTrItemsPerPage, sortConfig]);
+  }, [filteredAssignedTr, assignedTrPage, assignedTrItemsPerPage, sortConfig]);
 
   const paginatedDelivered = useMemo(() => {
-    const sorted = sortOrders(deliveredOrders, "delivered");
+    const sorted = sortOrders(filteredDelivered, "delivered");
     const start = (deliveredPage - 1) * deliveredItemsPerPage;
     return sorted.slice(start, start + deliveredItemsPerPage);
-  }, [deliveredOrders, deliveredPage, deliveredItemsPerPage, sortConfig]);
+  }, [filteredDelivered, deliveredPage, deliveredItemsPerPage, sortConfig]);
 
   const paginatedReturned = useMemo(() => {
-    const sorted = sortOrders(returnedOrders, "returns");
+    const sorted = sortOrders(filteredReturned, "returns");
     const start = (returnsPage - 1) * returnsItemsPerPage;
     return sorted.slice(start, start + returnsItemsPerPage);
-  }, [returnedOrders, returnsPage, returnsItemsPerPage, sortConfig]);
+  }, [filteredReturned, returnsPage, returnsItemsPerPage, sortConfig]);
 
   const paginatedPayouts = useMemo(() => {
     const start = (payoutsPage - 1) * payoutsItemsPerPage;
@@ -1018,6 +1139,42 @@ export default function DriverProfilePage() {
           ))}
         </div>
 
+        {/* ── Search (order tabs only) ───────────────────────────────── */}
+        {(activeTab === "assigned" ||
+          activeTab === "assigned_tr" ||
+          activeTab === "delivered" ||
+          activeTab === "returns") && (
+          <div className="mb-4 flex items-center gap-3 flex-wrap">
+            <div className="relative flex-1 min-w-[260px] max-w-xl">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
+                🔍
+              </span>
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                placeholder="Search by order ID / phone — single or comma-separated (e.g. 10049805, 78981891)…"
+                className="w-full pl-10 pr-9 py-2.5 text-sm rounded-xl bg-white/[0.04] border border-white/10 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/60 focus:ring-1 focus:ring-cyan-500/40"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => handleSearchChange("")}
+                  title="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-sm px-1"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            {activeTabSearchCounts && searchTokens.length > 0 && (
+              <span className="text-xs text-gray-400">
+                {activeTabSearchCounts.matches} of{" "}
+                {activeTabSearchCounts.total} orders match
+              </span>
+            )}
+          </div>
+        )}
+
         {/* ── Tab: Assigned Orders ───────────────────────────────────── */}
         {activeTab === "assigned" && (
           <>
@@ -1131,13 +1288,13 @@ export default function DriverProfilePage() {
                   </select>
                   <span className="ml-2">
                     Showing{" "}
-                    {assignedOrders.length
+                    {filteredAssigned.length
                       ? Math.min(
                           assignedPage * assignedItemsPerPage,
-                          assignedOrders.length,
+                          filteredAssigned.length,
                         )
                       : 0}{" "}
-                    of {assignedOrders.length}
+                    of {filteredAssigned.length}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1151,14 +1308,14 @@ export default function DriverProfilePage() {
                   <button
                     onClick={() =>
                       setAssignedPage((p) =>
-                        p * assignedItemsPerPage < assignedOrders.length
+                        p * assignedItemsPerPage < filteredAssigned.length
                           ? p + 1
                           : p,
                       )
                     }
                     disabled={
                       assignedPage * assignedItemsPerPage >=
-                      assignedOrders.length
+                      filteredAssigned.length
                     }
                     className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
@@ -1175,12 +1332,12 @@ export default function DriverProfilePage() {
                         <input
                           type="checkbox"
                           checked={
-                            assignedOrders.length > 0 &&
-                            selectedOrders.length === assignedOrders.length
+                            filteredAssigned.length > 0 &&
+                            selectedOrders.length === filteredAssigned.length
                           }
                           onChange={() =>
                             toggleSelectAll(
-                              assignedOrders.map((o: any) => o.id),
+                              filteredAssigned.map((o: any) => o.id),
                             )
                           }
                           className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
@@ -1222,14 +1379,15 @@ export default function DriverProfilePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {paginatedAssigned.length === 0 &&
-                    assignedOrders.length === 0 ? (
+                    {paginatedAssigned.length === 0 ? (
                       <tr>
                         <td
                           colSpan={12}
                           className="text-center py-10 text-gray-500 italic"
                         >
-                          No active assignments for this driver.
+                          {searchTokens.length > 0
+                            ? "No orders match your search."
+                            : "No active assignments for this driver."}
                         </td>
                       </tr>
                     ) : (
@@ -1430,13 +1588,13 @@ export default function DriverProfilePage() {
                   </select>
                   <span className="ml-2">
                     Showing{" "}
-                    {assignedTrOrders.length
+                    {filteredAssignedTr.length
                       ? Math.min(
                           assignedTrPage * assignedTrItemsPerPage,
-                          assignedTrOrders.length,
+                          filteredAssignedTr.length,
                         )
                       : 0}{" "}
-                    of {assignedTrOrders.length}
+                    of {filteredAssignedTr.length}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1450,14 +1608,14 @@ export default function DriverProfilePage() {
                   <button
                     onClick={() =>
                       setAssignedTrPage((p) =>
-                        p * assignedTrItemsPerPage < assignedTrOrders.length
+                        p * assignedTrItemsPerPage < filteredAssignedTr.length
                           ? p + 1
                           : p,
                       )
                     }
                     disabled={
                       assignedTrPage * assignedTrItemsPerPage >=
-                      assignedTrOrders.length
+                      filteredAssignedTr.length
                     }
                     className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
@@ -1474,12 +1632,12 @@ export default function DriverProfilePage() {
                         <input
                           type="checkbox"
                           checked={
-                            assignedTrOrders.length > 0 &&
-                            selectedOrders.length === assignedTrOrders.length
+                            filteredAssignedTr.length > 0 &&
+                            selectedOrders.length === filteredAssignedTr.length
                           }
                           onChange={() =>
                             toggleSelectAll(
-                              assignedTrOrders.map((o: any) => o.id),
+                              filteredAssignedTr.map((o: any) => o.id),
                             )
                           }
                           className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
@@ -1521,14 +1679,15 @@ export default function DriverProfilePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {paginatedAssignedTr.length === 0 &&
-                    assignedTrOrders.length === 0 ? (
+                    {paginatedAssignedTr.length === 0 ? (
                       <tr>
                         <td
                           colSpan={12}
                           className="text-center py-10 text-gray-500 italic"
                         >
-                          No transit assignments for this driver.
+                          {searchTokens.length > 0
+                            ? "No orders match your search."
+                            : "No transit assignments for this driver."}
                         </td>
                       </tr>
                     ) : (
@@ -1764,13 +1923,13 @@ export default function DriverProfilePage() {
                   </select>
                   <span className="ml-2">
                     Showing{" "}
-                    {deliveredOrders.length
+                    {filteredDelivered.length
                       ? Math.min(
                           deliveredPage * deliveredItemsPerPage,
-                          deliveredOrders.length,
+                          filteredDelivered.length,
                         )
                       : 0}{" "}
-                    of {deliveredOrders.length}
+                    of {filteredDelivered.length}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1784,14 +1943,14 @@ export default function DriverProfilePage() {
                   <button
                     onClick={() =>
                       setDeliveredPage((p) =>
-                        p * deliveredItemsPerPage < deliveredOrders.length
+                        p * deliveredItemsPerPage < filteredDelivered.length
                           ? p + 1
                           : p,
                       )
                     }
                     disabled={
                       deliveredPage * deliveredItemsPerPage >=
-                      deliveredOrders.length
+                      filteredDelivered.length
                     }
                     className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
@@ -1808,15 +1967,15 @@ export default function DriverProfilePage() {
                         <input
                           type="checkbox"
                           checked={
-                            deliveredOrders.length > 0 &&
+                            filteredDelivered.length > 0 &&
                             selectedOrders.length ===
-                              deliveredOrders.filter(
+                              filteredDelivered.filter(
                                 (o: any) => !o.driverPayoutId,
                               ).length
                           }
                           onChange={() =>
                             toggleSelectAll(
-                              deliveredOrders
+                              filteredDelivered
                                 .filter((o: any) => !o.driverPayoutId)
                                 .map((o: any) => o.id),
                             )
@@ -1854,14 +2013,15 @@ export default function DriverProfilePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {paginatedDelivered.length === 0 &&
-                    deliveredOrders.length === 0 ? (
+                    {paginatedDelivered.length === 0 ? (
                       <tr>
                         <td
                           colSpan={10}
                           className="text-center py-10 text-gray-500 italic"
                         >
-                          No delivered orders awaiting payout.
+                          {searchTokens.length > 0
+                            ? "No orders match your search."
+                            : "No delivered orders awaiting payout."}
                         </td>
                       </tr>
                     ) : (
@@ -2006,13 +2166,13 @@ export default function DriverProfilePage() {
                   </select>
                   <span className="ml-2">
                     Showing{" "}
-                    {returnedOrders.length
+                    {filteredReturned.length
                       ? Math.min(
                           returnsPage * returnsItemsPerPage,
-                          returnedOrders.length,
+                          filteredReturned.length,
                         )
                       : 0}{" "}
-                    of {returnedOrders.length}
+                    of {filteredReturned.length}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -2026,13 +2186,14 @@ export default function DriverProfilePage() {
                   <button
                     onClick={() =>
                       setReturnsPage((p) =>
-                        p * returnsItemsPerPage < returnedOrders.length
+                        p * returnsItemsPerPage < filteredReturned.length
                           ? p + 1
                           : p,
                       )
                     }
                     disabled={
-                      returnsPage * returnsItemsPerPage >= returnedOrders.length
+                      returnsPage * returnsItemsPerPage >=
+                      filteredReturned.length
                     }
                     className="px-3 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
@@ -2048,12 +2209,12 @@ export default function DriverProfilePage() {
                         <input
                           type="checkbox"
                           checked={
-                            returnedOrders.length > 0 &&
-                            selectedOrders.length === returnedOrders.length
+                            filteredReturned.length > 0 &&
+                            selectedOrders.length === filteredReturned.length
                           }
                           onChange={() =>
                             toggleSelectAll(
-                              returnedOrders.map((o: any) => o.id),
+                              filteredReturned.map((o: any) => o.id),
                             )
                           }
                           className="rounded border-gray-600 bg-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-0"
@@ -2092,14 +2253,15 @@ export default function DriverProfilePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {paginatedReturned.length === 0 &&
-                    returnedOrders.length === 0 ? (
+                    {paginatedReturned.length === 0 ? (
                       <tr>
                         <td
                           colSpan={11}
                           className="text-center py-10 text-gray-500 italic"
                         >
-                          No returned orders currently with this driver.
+                          {searchTokens.length > 0
+                            ? "No orders match your search."
+                            : "No returned orders currently with this driver."}
                         </td>
                       </tr>
                     ) : (

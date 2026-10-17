@@ -404,6 +404,7 @@ html.light {
   --color-blue-300: #1d4ed8;
   --color-blue-400: #1d4ed8;
   --color-sky-300: #0369a1;
+  --color-indigo-300: #4338ca;
   --color-indigo-400: #4338ca;
   --color-pink-400: #be185d;
   --color-fuchsia-300: #a21caf;
@@ -510,6 +511,56 @@ html.light .border-\[\#0B0F17\] {
 }
 html.light .to-\[\#121824\] {
   --tw-gradient-to: #ffffff;
+}
+html.light .bg-\[\#0d1220\] {
+  background-color: #ffffff;
+}
+
+/* ── Glass surfaces → solid light surfaces ──────────────────────────────────
+   bg-white/N utilities resolve against --color-white, which light mode
+   remaps to dark ink — so every translucent "glass" surface (modal panels,
+   cards, inputs) silently turns dark and its text disappears into it.
+   Remap the base utilities to solid light surfaces. `hover:bg-white/N` are
+   separate classes and stay untouched, so hover states keep working.
+   Order matters: these generic rules come first so the modal-panel rule
+   below wins on elements that carry both classes. */
+html.light .bg-white\/5 {
+  background-color: #f8fafc;
+}
+html.light .bg-white\/10 {
+  background-color: #eef2f7;
+}
+
+/* Modal panels: the glass-card signature is `backdrop-blur-2xl bg-white/10`
+   (orders + merchant modals) — render them as solid white cards. Text and
+   borders inside already flip to dark ink via the palette remap above. */
+html.light .backdrop-blur-2xl {
+  background-color: #ffffff;
+}
+
+/* Modal backdrops: dim the page without going pitch-black on a light UI. */
+html.light .bg-black\/60,
+html.light .bg-black\/70,
+html.light .bg-black\/80,
+html.light .bg-black\/85 {
+  background-color: rgba(15, 23, 42, 0.45);
+}
+
+/* Disabled controls: the dark-UI opacity steps (30–60%) fade tinted buttons
+   into a light background so they read as broken rather than disabled.
+   Raise the floor while keeping the tiers ordered, so disabled buttons stay
+   clearly muted but their color and label remain legible. */
+html.light .disabled\:opacity-30:disabled {
+  opacity: 0.6;
+}
+html.light .disabled\:opacity-40:disabled {
+  opacity: 0.65;
+}
+html.light .disabled\:opacity-50:disabled {
+  opacity: 0.7;
+}
+html.light .disabled\:opacity-60:disabled {
+  opacity: 0.75;
 }
 
 /* Printing must stay on white paper regardless of theme */

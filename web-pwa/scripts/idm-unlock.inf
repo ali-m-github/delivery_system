@@ -1,0 +1,5 @@
+; regini security descriptor — UNLOCK the IDM settings key (full control)
+; Run this when you need IDM to save setting changes (download folder, etc.),
+; then re-run idm-freeze-trial.bat to lock it again.
+HKEY_CURRENT_USER\Software\DownloadManager
+    F

@@ -937,6 +937,27 @@ export async function PATCH(request: Request) {
       }
     }
 
+    // ── Seller-change gate (staff only — ADMIN bypasses) ────────────────────
+    // merchantId is in STAFF_UPDATABLE_FIELDS, but actually moving an order to
+    // a different seller has commission implications and additionally requires
+    // MANAGE_MERCHANTS. Setting the same (or a null→null) value is a no-op and
+    // stays allowed.
+    if (
+      allowedFields === STAFF_UPDATABLE_FIELDS &&
+      !actorIsAdmin &&
+      (data as Record<string, unknown>).merchantId !== undefined &&
+      (data as Record<string, unknown>).merchantId !== existing.merchantId &&
+      !hasPermission(actor, "MANAGE_MERCHANTS")
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Changing an order's seller requires the MANAGE_MERCHANTS permission",
+        },
+        { status: 403 },
+      );
+    }
+
     // ── Numeric validation (reject NaN / non-finite / negative values) ─────
     const numericFields = [
       "amountUsd",

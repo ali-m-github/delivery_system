@@ -44,8 +44,6 @@ interface CompletionBanner {
 }
 
 interface Props {
-  isOpen: boolean;
-  onClose: () => void;
   availableDrivers: DriverOption[];
 }
 
@@ -65,9 +63,7 @@ function fmtDate(iso: string): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function WarehouseIntakeModal({
-  isOpen,
-  onClose,
+export default function WarehouseIntakePanel({
   availableDrivers,
 }: Props) {
   const [batches, setBatches] = useState<BatchRecord[]>([]);
@@ -112,13 +108,13 @@ export default function WarehouseIntakeModal({
     }
   }, []);
 
+  // The panel is mounted by the Staff Scanner's "Batch Intake" tab, so loading on
+  // mount is sufficient — the host unmounts it whenever the tab changes.
   useEffect(() => {
-    if (isOpen) {
-      setCompletion(null);
-      setScanMsg(null);
-      fetchBatches();
-    }
-  }, [isOpen, fetchBatches]);
+    setCompletion(null);
+    setScanMsg(null);
+    fetchBatches();
+  }, [fetchBatches]);
 
   // ── Assign a driver to a PENDING batch ─────────────────────────────────────
   const handleAssign = async (batchId: string) => {
@@ -246,50 +242,28 @@ export default function WarehouseIntakeModal({
     return out;
   }, [batches, matched]);
 
-  if (!isOpen) return null;
-
   const pendingBatches = batches.filter((b) => b.status === "PENDING");
   const pickedUpBatches = batches.filter((b) => b.status === "PICKED_UP");
 
+  // Embedded panel (rendered by the Staff Scanner's "Batch Intake" tab) — no
+  // backdrop, no card chrome; the host modal owns those.
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl bg-[#0d1117] border border-white/10 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* ── Header ── */}
-        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 bg-[#0d1117]/95 backdrop-blur border-b border-white/10">
-          <div>
-            <h2 className="text-lg font-bold text-white flex items-center gap-2">
-              📦 Warehouse Intake Scan
-            </h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Verify merchant pickup batches against physical stock at the
-              warehouse
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={fetchBatches}
-              disabled={loading}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors disabled:opacity-40"
-            >
-              {loading ? "Refreshing..." : "↻ Refresh"}
-            </button>
-            <button
-              onClick={onClose}
-              className="w-8 h-8 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
-              aria-label="Close"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
+    <div>
+      {/* ── Panel toolbar ── */}
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+        <p className="text-xs text-gray-500">
+          Verify merchant pickup batches against physical stock at the warehouse
+        </p>
+        <button
+          onClick={fetchBatches}
+          disabled={loading}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors disabled:opacity-40"
+        >
+          {loading ? "Refreshing..." : "↻ Refresh"}
+        </button>
+      </div>
 
-        <div className="px-6 py-4">
+      <div>
           {/* ── Completion banner ── */}
           {completion && (
             <div
@@ -617,7 +591,6 @@ export default function WarehouseIntakeModal({
               )}
             </>
           )}
-        </div>
       </div>
 
       {/* ── Intake scanner (continuous scanning) ── */}

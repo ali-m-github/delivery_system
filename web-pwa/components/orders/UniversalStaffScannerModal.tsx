@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
+import WarehouseIntakePanel from "@/components/orders/WarehouseIntakePanel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 // Mirrors the payloads of:
@@ -158,6 +159,9 @@ export default function UniversalStaffScannerModal({
   const [resolving, setResolving] = useState(false);
   const [panel, setPanel] = useState<Panel>(null);
   const [manualCode, setManualCode] = useState("");
+
+  // ── Tabs: the tray scanner and the embedded warehouse-intake panel ───────
+  const [activeTab, setActiveTab] = useState<"tray" | "intake">("tray");
 
   // ── Driver picker ────────────────────────────────────────────────────────
   const [drivers, setDrivers] = useState<DriverOption[]>([]);
@@ -356,8 +360,15 @@ export default function UniversalStaffScannerModal({
   }, [stopCamera]);
 
   // ── React to isOpen changes ───────────────────────────────────────────────
+  // Reset to the tray tab whenever the modal is (re)opened.
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen) setActiveTab("tray");
+  }, [isOpen]);
+
+  // The tray camera only runs on the "tray" tab; the intake tab uses the panel's
+  // own per-batch scanner, so the tray camera is released when switching tabs.
+  useEffect(() => {
+    if (isOpen && activeTab === "tray") {
       const timeout = setTimeout(() => {
         startCamera();
       }, 150);
@@ -365,7 +376,7 @@ export default function UniversalStaffScannerModal({
     } else {
       stopCamera();
     }
-  }, [isOpen, startCamera, stopCamera]);
+  }, [isOpen, activeTab, startCamera, stopCamera]);
 
   // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
@@ -516,8 +527,8 @@ export default function UniversalStaffScannerModal({
               📷 Universal Staff Scanner
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Scan parcels into the tray, then apply an action. Camera and USB
-              scanners both work.
+              Scan parcels into the tray and apply an action, or reconcile
+              pickup batches in the Batch Intake tab.
             </p>
           </div>
           <button
@@ -531,6 +542,31 @@ export default function UniversalStaffScannerModal({
           </button>
         </div>
 
+        {/* ── Tabs: tray scanner / warehouse batch intake ── */}
+        <div className="flex items-center gap-1 px-4 sm:px-6 pt-4">
+          <button
+            onClick={() => setActiveTab("tray")}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+              activeTab === "tray"
+                ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                : "text-gray-400 hover:text-white hover:bg-white/5 border border-transparent"
+            }`}
+          >
+            📷 Scan Tray
+          </button>
+          <button
+            onClick={() => setActiveTab("intake")}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+              activeTab === "intake"
+                ? "bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/40"
+                : "text-gray-400 hover:text-white hover:bg-white/5 border border-transparent"
+            }`}
+          >
+            📦 Batch Intake
+          </button>
+        </div>
+
+        {activeTab === "tray" && (
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,340px)_1fr] gap-4 p-4 sm:p-6">
           {/* ═══ Left: camera + manual entry ═══ */}
           <div className="flex flex-col items-center gap-3">
@@ -822,6 +858,13 @@ export default function UniversalStaffScannerModal({
             )}
           </div>
         </div>
+        )}
+
+        {activeTab === "intake" && (
+          <div className="p-4 sm:p-6">
+            <WarehouseIntakePanel availableDrivers={drivers} />
+          </div>
+        )}
       </div>
     </div>
   );

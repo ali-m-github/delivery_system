@@ -21,9 +21,7 @@ import WaybillUploadReport, {
 } from "@/components/orders/WaybillUploadReport";
 import OrderHistoryModal from "@/components/OrderHistoryModal";
 import OrderDetailsModal from "@/components/OrderDetailsModal";
-import BarcodeScannerModal from "@/components/BarcodeScannerModal";
 import PermissionGuard from "@/components/PermissionGuard";
-import WarehouseIntakeModal from "@/components/orders/WarehouseIntakeModal";
 import UniversalStaffScannerModal from "@/components/orders/UniversalStaffScannerModal";
 import { hasPermission } from "@/lib/permissions";
 import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
@@ -954,6 +952,7 @@ function OrdersPageInner() {
     customerPhone: "",
     customerAddress: "",
     zoneId: "",
+    merchantId: "",
     amountUsd: "",
     amountLbp: "",
     hasExchange: false,
@@ -1071,18 +1070,10 @@ function OrdersPageInner() {
     "ASSIGNED" | "ASSIGNED_TR"
   >("ASSIGNED");
 
-  // ── Warehouse Intake (pickup batch verification) State ──
-  const [warehouseIntakeOpen, setWarehouseIntakeOpen] = useState(false);
-
-  // ── Universal Staff Scanner (multi-parcel tray) State ──
+  // ── Universal Staff Scanner (multi-parcel tray + batch intake) State ──
+  // Single scanner entry point: the tray tab covers scan-to-assign, and the
+  // Batch Intake tab covers warehouse pickup-batch reconciliation.
   const [universalScannerOpen, setUniversalScannerOpen] = useState(false);
-
-  // ── Scan-to-Assign State ──
-  const [scannerOpen, setScannerOpen] = useState(false);
-  const [scannedOrder, setScannedOrder] = useState<any | null>(null);
-  const [scannedAssignDriverId, setScannedAssignDriverId] = useState("");
-  const [scanError, setScanError] = useState<string | null>(null);
-  const [scanLoading, setScanLoading] = useState(false);
 
   // ── Fetch all tab data ──
   // When called without params on the "All" tab, reuses current pagination state
@@ -1678,54 +1669,6 @@ function OrdersPageInner() {
       console.error("Failed to quick-assign orders", error);
       alert("An error occurred during assignment.");
     }
-  };
-
-  // ── Scan Order Handler (from barcode/QR scanner) ──
-  const handleScanOrder = async (decodedText: string) => {
-    setScannerOpen(false);
-    setScanError(null);
-    setScanLoading(true);
-    try {
-      const res = await fetch("/api/orders/bulk/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderIds: [decodedText.trim()] }),
-      });
-      const { found, notFound } = await res.json();
-      if (!found || found.length === 0) {
-        setScanError(`Order "${decodedText.trim()}" not found in the system.`);
-        return;
-      }
-      setScannedOrder(found[0]);
-      setScannedAssignDriverId("");
-    } catch (err) {
-      setScanError("Failed to look up order. Please try again.");
-    } finally {
-      setScanLoading(false);
-    }
-  };
-
-  // ── Confirm Scan-to-Assign ──
-  const handleScanAssign = async () => {
-    if (!scannedOrder || !scannedAssignDriverId) {
-      alert("Please select a driver.");
-      return;
-    }
-    if (["WD", "WO"].includes(scannedOrder.financialStatus)) {
-      alert(
-        `Cannot reassign order "${scannedOrder.orderId}" — it is already delivered or paid out (status: ${scannedOrder.financialStatus}).`,
-      );
-      return;
-    }
-    await patchOrder(scannedOrder.id, {
-      driverId: scannedAssignDriverId,
-      location: "ASSIGNED",
-      financialStatus: "UD",
-      collectedUsd: 0,
-      collectedLbp: 0,
-    });
-    setScannedOrder(null);
-    setScannedAssignDriverId("");
   };
 
   // ── Archived filter ──
@@ -2622,6 +2565,7 @@ function OrdersPageInner() {
       customerPhone: order.customerPhone,
       customerAddress: order.customerAddress,
       zoneId: order.zoneId,
+      merchantId: order.merchantId || "",
       amountUsd: order.amountUsd.toString(),
       amountLbp: order.amountLbp.toString(),
       hasExchange: order.hasExchange,
@@ -2650,6 +2594,11 @@ function OrdersPageInner() {
       payload.amountUsd = parseFloat(editFormData.amountUsd) || 0;
       payload.amountLbp = parseFloat(editFormData.amountLbp) || 0;
       payload.extraShipping = parseFloat(editFormData.extraShipping) || 0;
+    }
+    // Changing the seller requires MANAGE_MERCHANTS (ADMIN bypasses); the
+    // server enforces the same rule.
+    if (userHasPermission("MANAGE_MERCHANTS")) {
+      payload.merchantId = editFormData.merchantId || null;
     }
     // patchOrder surfaces the server error (and handles an expired session),
     // so the modal only closes on a real success.
@@ -2824,17 +2773,6 @@ function OrdersPageInner() {
                   >
                     Assign
                   </button>
-                  {/* ── Scan Order to Assign (single-order scanner) ── */}
-                  <button
-                    onClick={() => setScannerOpen(true)}
-                    className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
-                               bg-cyan-500/20 text-cyan-300 border border-cyan-500/30
-                               hover:bg-cyan-500/30 hover:shadow-[0_0_12px_rgba(6,182,212,0.3)]
-                               transition-all duration-200"
-                    title="Scan a barcode/QR code to find and assign an order to a driver"
-                  >
-                    📷 Scan to Assign
-                  </button>
                   <button
                     onClick={handleBulkMoveToWarehouse}
                     disabled={selectedOrderIds.length === 0}
@@ -2860,24 +2798,12 @@ function OrdersPageInner() {
                   </button>
                   <PermissionGuard requires="MANAGE_ORDERS">
                     <button
-                      onClick={() => setWarehouseIntakeOpen(true)}
-                      className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
-                                 bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/30
-                                 hover:bg-fuchsia-500/30 hover:shadow-[0_0_12px_rgba(217,70,239,0.3)]
-                                 transition-all duration-200"
-                      title="Verify merchant pickup batches at the warehouse (assign drivers, scan & reconcile)"
-                    >
-                      📦 Warehouse Intake Scan
-                    </button>
-                  </PermissionGuard>
-                  <PermissionGuard requires="MANAGE_ORDERS">
-                    <button
                       onClick={() => setUniversalScannerOpen(true)}
                       className="px-3 py-1.5 text-[11px] font-semibold rounded-lg
                                  bg-indigo-500/20 text-indigo-300 border border-indigo-500/30
                                  hover:bg-indigo-500/30 hover:shadow-[0_0_12px_rgba(99,102,241,0.3)]
                                  transition-all duration-200"
-                      title="Universal staff scanner: scan parcels from any merchant, then receive, assign, return, or deliver them"
+                      title="Universal staff scanner: scan parcels into a tray, then receive, assign, return, or deliver them — or reconcile pickup batches in the Batch Intake tab"
                     >
                       📷 Staff Scanner
                     </button>
@@ -5615,6 +5541,39 @@ function OrdersPageInner() {
                   </select>
                 </div>
 
+                {/* Seller — only shown to users with MANAGE_MERCHANTS */}
+                {userHasPermission("MANAGE_MERCHANTS") && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1.5">
+                      Seller
+                    </label>
+                    <select
+                      value={editFormData.merchantId}
+                      onChange={(e) =>
+                        setEditFormData((p) => ({
+                          ...p,
+                          merchantId: e.target.value,
+                        }))
+                      }
+                      className="w-full px-4 py-2.5 text-sm rounded-xl bg-slate-950 text-white border border-gray-700 outline-none focus:border-cyan-500 transition-all duration-200"
+                    >
+                      <option value="" className="bg-slate-950 text-white">
+                        — No seller —
+                      </option>
+                      {merchants.map((m: any) => (
+                        <option
+                          key={m.id}
+                          value={m.id}
+                          className="bg-slate-950 text-white"
+                        >
+                          {m.merchantName ||
+                            `${m.ownerFirstName} ${m.ownerLastName}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 {/* Notes */}
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1.5">
@@ -7216,144 +7175,7 @@ function OrdersPageInner() {
         )}
 
         {/* ════════════════════════════════════════ */}
-        {/* SCAN-TO-ASSIGN SLIDE-OVER                */}
-        {/* ════════════════════════════════════════ */}
-        {scannedOrder && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div
-              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-              onClick={() => {
-                setScannedOrder(null);
-                setScannedAssignDriverId("");
-              }}
-            />
-            <div className="relative z-10 w-full max-w-md bg-gray-900 border border-white/10 rounded-2xl shadow-2xl p-6">
-              <h2 className="text-lg font-bold text-white mb-1">
-                Assign Order to Driver
-              </h2>
-              <p className="text-xs text-gray-500 mb-4">
-                Scanned via barcode scanner
-              </p>
-
-              {/* Order summary */}
-              <div className="bg-white/[0.03] border border-white/10 rounded-xl p-4 mb-4 space-y-1.5">
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-400">Order ID</span>
-                  <span className="text-cyan-400 font-mono font-semibold">
-                    {scannedOrder.orderId}
-                  </span>
-                </div>
-                {scannedOrder.driver && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-400">Current Driver</span>
-                    <span className="text-yellow-400">
-                      {scannedOrder.driver.firstName}{" "}
-                      {scannedOrder.driver.lastName}
-                    </span>
-                  </div>
-                )}
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-400">Status</span>
-                  <span className="text-gray-300">
-                    {scannedOrder.location} / {scannedOrder.financialStatus}
-                  </span>
-                </div>
-              </div>
-
-              {/* Warning for WD/WO orders */}
-              {["WD", "WO"].includes(scannedOrder.financialStatus) && (
-                <div className="mb-4 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-xs">
-                  This order is already delivered or paid out and cannot be
-                  reassigned.
-                </div>
-              )}
-
-              {/* Driver dropdown */}
-              {!["WD", "WO"].includes(scannedOrder.financialStatus) && (
-                <>
-                  <label className="block text-xs text-gray-500 uppercase tracking-wider mb-1.5">
-                    Select Driver
-                  </label>
-                  <select
-                    value={scannedAssignDriverId}
-                    onChange={(e) => setScannedAssignDriverId(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-500/50 transition-colors mb-4"
-                  >
-                    <option value="">— Choose a driver —</option>
-                    {availableDrivers.map((d: any) => (
-                      <option key={d.id} value={d.id}>
-                        {d.firstName} {d.lastName} ({d.driverId})
-                      </option>
-                    ))}
-                  </select>
-                </>
-              )}
-
-              {/* Action buttons */}
-              <div className="flex gap-3">
-                <button
-                  onClick={() => {
-                    setScannedOrder(null);
-                    setScannedAssignDriverId("");
-                  }}
-                  className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold
-                             bg-white/5 text-gray-400 border border-white/10
-                             hover:bg-white/10 hover:text-white transition-colors"
-                >
-                  Cancel
-                </button>
-                {!["WD", "WO"].includes(scannedOrder.financialStatus) && (
-                  <button
-                    onClick={handleScanAssign}
-                    className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold
-                               bg-cyan-500/20 text-cyan-300 border border-cyan-500/30
-                               hover:bg-cyan-500/30 hover:shadow-[0_0_12px_rgba(6,182,212,0.3)]
-                               transition-all duration-200"
-                  >
-                    Assign Driver
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ════════════════════════════════════════ */}
-        {/* SCAN ERROR TOAST                       */}
-        {/* ════════════════════════════════════════ */}
-        {scanError && (
-          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 bg-red-500/90 backdrop-blur border border-red-400/30 rounded-xl text-white text-sm font-medium shadow-lg max-w-sm text-center">
-            {scanError}
-            <button
-              onClick={() => setScanError(null)}
-              className="ml-3 text-red-200 hover:text-white underline text-xs"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        {/* ════════════════════════════════════════ */}
-        {/* BARCODE SCANNER MODAL                  */}
-        {/* ════════════════════════════════════════ */}
-        <BarcodeScannerModal
-          isOpen={scannerOpen}
-          onClose={() => setScannerOpen(false)}
-          onScanSuccess={handleScanOrder}
-          heading="Scan Order Barcode / QR"
-        />
-
-        {/* ════════════════════════════════════════ */}
-        {/* WAREHOUSE INTAKE (PICKUP BATCHES)      */}
-        {/* ════════════════════════════════════════ */}
-        <WarehouseIntakeModal
-          isOpen={warehouseIntakeOpen}
-          onClose={() => setWarehouseIntakeOpen(false)}
-          availableDrivers={availableDrivers}
-        />
-
-        {/* ════════════════════════════════════════ */}
-        {/* UNIVERSAL STAFF SCANNER (TRAY)          */}
+        {/* UNIVERSAL STAFF SCANNER (TRAY + INTAKE) */}
         {/* ════════════════════════════════════════ */}
         <UniversalStaffScannerModal
           isOpen={universalScannerOpen}
