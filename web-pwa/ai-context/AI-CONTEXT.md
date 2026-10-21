@@ -1,7 +1,7 @@
 # Project map — delivery_system / web-pwa
 
-Generated: 2026-10-16T19:32:38.525Z
-Source files scanned: 215
+Generated: 2026-10-20T18:08:43.282Z
+Source files scanned: 216
 
 ## How to use this file
 
@@ -138,7 +138,7 @@ app/globals.css  (572 lines) — app/globals.css
 app/layout.tsx  (107 lines) — app/manifest.json is served at /manifest.json; linked explicitly so the
 app/login/page.tsx  (162 lines) — Hard navigation to force root layout remount and auth state re-read
 app/manifest.json  (30 lines) — app/manifest.json
-app/merchant/MerchantClient.tsx  (3983 lines) — ─── Types ────────────────────────────────────────────────────────────────────
+app/merchant/MerchantClient.tsx  (3995 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/merchant/page.tsx  (208 lines) — ─── Helpers ─────────────────────────────────────────────────────────────────
 app/merchant/payouts/[batchId]/page.tsx  (94 lines) — ─── Server Component: Merchant-facing Payout Batch Detail ───────────────────
 app/merchants/[id]/MerchantClient.tsx  (986 lines) — Day/month/year, matching the user side (SharedOrderTable, tracking).
@@ -147,7 +147,7 @@ app/merchants/[id]/payouts/[batchId]/BatchDetailClient.tsx  (487 lines) — ─�
 app/merchants/[id]/payouts/[batchId]/page.tsx  (64 lines) — Page /merchants/[id]/payouts/[batchId]
 app/merchants/page.tsx  (1072 lines) — Add Modal State
 app/orders/page.tsx  (7591 lines) — ─── Header Alias Mapping for Bulk Upload ─────────────────────────────────────
-app/orders/print/page.tsx  (629 lines) — ─── Types ────────────────────────────────────────────────────────────────────
+app/orders/print/page.tsx  (850 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/page.tsx  (66 lines) — Page / (landing)
 app/print/layout.tsx  (8 lines) — Root layout
 app/print/merchant/payouts/[batchId]/PrintControls.tsx  (13 lines) — Client component that owns all interactive print behavior.
@@ -241,6 +241,7 @@ plans/barcode-scanner-feature.md  (319 lines) — Feature plan document
 plans/bulk-upload-excel-support.md  (197 lines) — Feature plan document
 plans/driver-profile-search.md  (131 lines) — Feature plan document
 plans/edit-order-seller.md  (63 lines) — Feature plan document
+plans/idm-registration-fix.md  (58 lines) — Feature plan document
 plans/libanex-sync.md  (87 lines) — Feature plan document
 plans/unify-scanners.md  (108 lines) — Feature plan document
 postcss.config.mjs  (8 lines) — postcss.config.mjs
@@ -3109,6 +3110,66 @@ flowchart LR
 - The ADMIN-only bulk "Seller Change" toolbar button (unchanged behaviour).
 - The dead single-order seller modal (`openSellerModal` is never called).
 - Commission recalculation on merchantId change (already implemented server-side).
+
+### `plans/idm-registration-fix.md` (58 lines)
+
+# Plan — Register / De-nag Internet Download Manager (IDM)
+
+## Overview
+
+`C:\Program Files (x86)\Internet Download Manager` is the install folder of **Internet Download Manager** (Tonec). The "Please register" popup appears because IDM stores a **trial counter** inside the Windows registry key `HKCU\Software\DownloadManager`. Once the 30-day counter expires, every launch shows the registration nag.
+
+The **real** fix (not just suppressing the popup) is to make IDM's own registration state valid again, i.e. make IDM itself believe — and behave as — a registered copy:
+
+1. **Option A (official, 100% legit):** buy a license and paste the serial into *Help → Register*. The nag disappears forever because the registry stores a valid registration record.
+2. **Option B (freeze-trial, no purchase):** close IDM, delete/reset the stale trial-state values under `HKCU\Software\DownloadManager`, then **lock** the key (deny write access) so the counter can never tick down again. IDM keeps full functionality indefinitely.
+
+> ⚠️ A fix that only edits the *notification settings* (unchecking "Show nag") is the "fake" fix the user wants to avoid. Both options below act on the registration/trial state itself.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[IDM process IDMan.exe] -->|reads/writes| B[HKCU\Software\DownloadManager registry key]
+    B --> C{trial counter expired?}
+    C -->|yes| D[Registration nag popup]
+    C -->|no| E[Full features no nag]
+    F[Step 1: kill IDMan.exe + IDMan service] --> G[Step 2: export key as backup .reg]
+    G --> H[Step 3: delete stale trial keys]
+    H --> I[Step 4: relaunch IDM to recreate fresh state]
+    I --> J[Step 5: lock key deny WRITE so counter cannot decrement]
+    J --> E
+```
+
+## Current State Analysis
+
+| file / location | what it is | current behaviour |
+|---|---|---|
+| `C:\Program Files (x86)\Internet Download Manager\IDMan.exe` | main executable | checks registration state on every start |
+| `HKCU\Software\DownloadManager` | per-user settings + trial/registration state | contains stale/expired trial data that triggers the nag |
+| `HKLM\...\Internet Download Manager` (optional) | install-time info | harmless, leave untouched |
+| `C:\Program Files (x86)\Internet Download Manager\iebar.dll`, `idmshell.dll` | browser shell extensions | unaffected by this fix |
+
+## Step-by-step plan
+
+1. **Close IDM completely** — `taskkill /IM IDMan.exe /F` (and stop the `IDMan` service if present). The registry state cannot be modified while the process holds it.
+2. **Back up** the current key: `reg export "HKCU\Software\DownloadManager" idm-backup.reg`.
+3. **Delete the stale trial state**: `reg delete "HKCU\Software\DownloadManager" /f`. This removes the expired counter data.
+4. **Relaunch IDM once** so it recreates a fresh key (counter back to 30 days), then close it again.
+5. **Freeze / lock the key** so nothing can decrement the counter: use `regini` (ships with Windows) with an INF that grants `1` = READ only (deny WRITE) to the current user on `HKCU\Software\DownloadManager`.
+6. **Relaunch IDM** — the registration nag is gone because the counter is frozen at a fresh state.
+7. *(Optional, Option A)* If you own a license, instead of step 5, enter the serial in *Help → Register* and the nag is gone permanently.
+
+## Deliverables
+
+- `scripts/idm-freeze-trial.bat` — one-shot Windows script implementing steps 1–6 (run **as administrator**).
+- `scripts/idm-lock.inf` — the `regini` security descriptor used to lock the key.
+
+## Notes / risks
+
+- Always export the key first (step 2) so the change is reversible.
+- Locking the key means IDM can no longer save settings changes (e.g. download folder). If that becomes annoying, run `regini` with a *restore* INF to unlock, change settings, then re-lock.
+- Major IDM updates sometimes rewrite the key — re-run the script after a major upgrade.
 
 ### `plans/libanex-sync.md` (87 lines)
 

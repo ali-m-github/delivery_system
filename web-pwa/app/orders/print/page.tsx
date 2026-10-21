@@ -463,14 +463,61 @@ function WaybillCard({ order, printedAt }: { order: Order; printedAt: string }) 
 }
 
 // ─── Print page ───────────────────────────────────────────────────────────────
+// Two paper modes, selected via the ?paper= URL parameter:
+//   label (default) — one 6×4in thermal sticker per waybill (unchanged behaviour)
+//   a5              — waybills uniformly scaled down, exactly 2 per A5 portrait
+//                     sheet, minimal gap (for merchants printing on A5 paper)
+// Everything is layout-only: the WaybillCard markup is identical in both modes,
+// so the waybill design itself never changes.
+const A5_PAPER = {
+  pageWidthIn: 5.83,
+  pageHeightIn: 8.27,
+  // The print dialog must use Margins: None (the on-screen hint says so) —
+  // Chrome's "Default" margins eat ~0.4in per side and cap the usable width.
+  // With Margins: None the whole sheet is usable, so @page margin is 0.
+  pageMarginIn: 0,
+  // Small separator between the two waybills on one sheet.
+  gapIn: 0.2,
+  // Uniform scale applied to the 6×4 card, filling the sheet like the
+  // merchant's reference photo: width constraint 5.83 / 6 = 0.972 max; 0.9
+  // prints each waybill 5.4in wide (≈93% of the sheet, a 0.215in side band —
+  // outside a laser jet's ~0.2in non-printable edge). Height:
+  // 2 × 3.6 + 0.2 gap = 7.4in ≤ 8.27in sheet. If the dialog keeps the
+  // "Default" margins instead, Chrome just scales the page down a few percent
+  // — still one pair per sheet, only slightly smaller.
+  scale: 0.9,
+  contentWidthIn: 6 * 0.9, // 5.4in
+  contentHeightIn: 4 * 0.9, // 3.6in
+} as const;
+
 export default function PrintPage() {
   const searchParams = useSearchParams();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Paper mode is URL-driven so the print page stays a plain link target for
+  // every existing caller (they simply get the default label mode).
+  const paper = searchParams.get("paper") === "a5" ? "a5" : "label";
+
   // Computed once per render so every waybill in the batch shares the same
   // print timestamp (the cards only render after the client-side fetch).
   const printedAt = formatPrintTimestamp();
+
+  // Switch paper mode: rewrite ?paper= in place. `auto` is replaced by an
+  // explicit `print=1` flag so the print dialog re-opens for the new layout
+  // (in either direction) without looping; `pdf` is kept so the PDF export
+  // follows the selected paper.
+  const switchPaper = (mode: "label" | "a5") => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (mode === "a5") {
+      params.set("paper", "a5");
+    } else {
+      params.delete("paper");
+    }
+    params.delete("auto");
+    params.set("print", "1");
+    window.location.search = params.toString();
+  };
 
   useEffect(() => {
     const idsParam = searchParams.get("ids");
@@ -503,23 +550,31 @@ export default function PrintPage() {
   }, [searchParams]);
 
   // ── Auto-handle: browser print (triggered by "Save & Print" in order entry) ──
+  // Also re-opens the print dialog after the paper selector changes mode
+  // (`print=1` is set by the switch handler), so the merchant sees the new
+  // layout immediately.
   useEffect(() => {
-    if (orders.length > 0 && searchParams.get("auto") === "true") {
-      // Delay briefly so the QR data-URL <img>s finish rendering before the
-      // print dialog opens.
-      const timer = setTimeout(() => window.print(), 800);
-      return () => clearTimeout(timer);
-    }
+    if (orders.length === 0) return;
+    const shouldPrint =
+      searchParams.get("auto") === "true" || searchParams.get("print") === "1";
+    if (!shouldPrint) return;
+    // Delay briefly so the QR data-URL <img>s finish rendering before the
+    // print dialog opens.
+    const timer = setTimeout(() => window.print(), 800);
+    return () => clearTimeout(timer);
   }, [orders, searchParams]);
 
-  // ── Auto-handle: PDF generation (one 6×4 in landscape page per waybill) ──
+  // ── Auto-handle: PDF generation ──
+  // label mode: one 6×4in landscape page per waybill (unchanged).
+  // a5 mode: one A5 portrait page per pair, two scaled waybills per page,
+  // matching the browser print layout.
   useEffect(() => {
     if (orders.length > 0 && searchParams.get("pdf") === "true") {
       import("html2pdf.js").then(async (html2pdf) => {
         const element = document.getElementById("print-container");
         if (!element) return;
 
-        // Grab the exact 6×4 waybill cards (skip the on-screen spacing).
+        // Grab the exact waybill cards (skip the on-screen spacing/toolbar).
         const cards = Array.from(
           element.querySelectorAll<HTMLElement>(".waybill-label"),
         );
@@ -528,12 +583,27 @@ export default function PrintPage() {
         // The html2pdf.js bundle is CJS — the callable factory is exposed on
         // the `default` property of the dynamic-import module namespace.
         const jsPDF = (await import("jspdf")).jsPDF;
+        const isA5 = paper === "a5";
         const doc = new jsPDF({
-          orientation: "landscape",
+          orientation: isA5 ? "portrait" : "landscape",
           unit: "in",
-          format: [6, 4],
+          format: isA5 ? "a5" : [6, 4],
           compress: true,
         });
+
+        // A5 placement: mirrors the @page CSS above — page margins, the first
+        // card at the top, the gap, then the second card.
+        const imgW = isA5 ? A5_PAPER.contentWidthIn : 6;
+        const imgH = isA5 ? A5_PAPER.contentHeightIn : 4;
+        const marginX = isA5
+          ? (A5_PAPER.pageWidthIn - imgW) / 2
+          : 0;
+        const rowY = isA5
+          ? [
+              A5_PAPER.pageMarginIn,
+              A5_PAPER.pageMarginIn + imgH + A5_PAPER.gapIn,
+            ]
+          : [0, 0];
 
         for (let i = 0; i < cards.length; i++) {
           // toCanvas() resolves to the rendered <canvas> at runtime; the
@@ -552,8 +622,15 @@ export default function PrintPage() {
             .from(cards[i])
             .toCanvas()) as unknown as HTMLCanvasElement;
 
-          if (i > 0) doc.addPage([6, 4], "landscape");
-          doc.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, 6, 4);
+          const imgData = canvas.toDataURL("image/jpeg", 0.95);
+          if (isA5) {
+            const slot = i % 2;
+            if (i > 0 && slot === 0) doc.addPage("a5", "portrait");
+            doc.addImage(imgData, "JPEG", marginX, rowY[slot], imgW, imgH);
+          } else {
+            if (i > 0) doc.addPage([6, 4], "landscape");
+            doc.addImage(imgData, "JPEG", 0, 0, 6, 4);
+          }
         }
 
         doc.save("Waybills.pdf");
@@ -562,7 +639,7 @@ export default function PrintPage() {
         console.error("[orders/print] PDF generation failed:", err);
       });
     }
-  }, [orders, searchParams]);
+  }, [orders, searchParams, paper]);
 
   if (loading) {
     return <div className="bg-white text-black p-8">Loading orders...</div>;
@@ -572,13 +649,20 @@ export default function PrintPage() {
     return <div className="bg-white text-black p-8">No orders selected.</div>;
   }
 
+  // Screen container width mirrors the paper so the preview matches the print.
+  const containerWidth =
+    paper === "a5" ? `${A5_PAPER.pageWidthIn}in` : "6in";
+
   return (
     <>
       <style
         dangerouslySetInnerHTML={{
           __html: `
-        /* 6×4 inch thermal label — exact page size, no browser margins. */
+        /* ── Label mode: 6×4 inch thermal label — exact page size, no browser margins. ── */
         @page { size: 6in 4in; margin: 0; }
+        .print-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; font-size: 14px; }
+        .print-toolbar button { padding: 6px 14px; border: 1px solid #000; background: #fff; cursor: pointer; border-radius: 6px; }
+        .print-toolbar button.active { background: #000; color: #fff; }
 
         @media print {
           html, body {
@@ -596,10 +680,13 @@ export default function PrintPage() {
             top: 0;
             width: 6in;
           }
+          /* Toolbar is screen-only in every mode. */
+          .no-print { display: none !important; }
           .waybill-label {
             width: 6in !important;
             height: 4in !important;
             margin: 0 !important;
+            box-shadow: none !important;
             page-break-after: always;
             page-break-inside: avoid;
           }
@@ -608,18 +695,152 @@ export default function PrintPage() {
       `,
         }}
       />
+      {paper === "a5" && (
+        <style
+          dangerouslySetInnerHTML={{
+            __html: `
+        /* ── A5 mode: exactly 2 scaled waybills per A5 portrait sheet. ──
+           Each .waybill-label is a fixed-size box (contentWidth × contentHeight)
+           with the unmodified 6×4 card scaled down inside it, so the design is
+           identical to label mode — just smaller and packed tightly. */
+        @page { size: A5 portrait; margin: ${A5_PAPER.pageMarginIn}in; }
+
+        @media print {
+          html, body {
+            background: #fff !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            width: ${A5_PAPER.pageWidthIn}in;
+            height: auto;
+          }
+          body * { visibility: hidden; }
+          #print-container, #print-container * { visibility: visible; }
+          #print-container {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: ${A5_PAPER.pageWidthIn}in;
+            /* Drop the on-screen preview padding so the pair is positioned
+               exactly by the @page margins above. */
+            padding: 0 !important;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+          }
+          .no-print { display: none !important; }
+          .waybill-label {
+            position: relative;
+            width: ${A5_PAPER.contentWidthIn}in !important;
+            height: ${A5_PAPER.contentHeightIn}in !important;
+            margin: 0 0 ${A5_PAPER.gapIn}in !important;
+            box-shadow: none !important;
+            page-break-inside: avoid;
+            overflow: hidden;
+            /* Undo the label-mode rule that forces a break after EVERY
+               waybill — in A5 mode pairs must share one sheet. */
+            page-break-after: auto !important;
+            break-after: auto !important;
+          }
+          /* Deterministic 2-per-sheet pagination: the card handler tags the
+             second card of each pair with .pair-end, so exactly two waybills
+             land on every sheet no matter which margins the printer applies. */
+          .waybill-label.pair-end {
+            page-break-after: always !important;
+            break-after: page !important;
+          }
+          /* Don't emit a trailing blank sheet when the batch ends on a pair. */
+          .waybill-label.pair-end:last-child {
+            page-break-after: auto !important;
+            break-after: auto !important;
+          }
+          /* Tighten the card's decorative white sticker bands for A5 paper:
+             the bordered frame starts 0.12in from the top instead of 0.305in.
+             The "Printed:" footer is absolutely positioned against the card's
+             bottom edge, so it stays below the frame in either mode. Label
+             mode keeps the original sticker bands untouched. */
+          .waybill-label .waybill-card {
+            padding: 0.12in 0.115in 0.16in !important;
+          }
+        }
+      `,
+          }}
+        />
+      )}
       <div
         id="print-container"
         className="bg-white text-black"
-        style={{ padding: "16px", display: "flex", flexDirection: "column", alignItems: "center" }}
+        style={{
+          width: containerWidth,
+          margin: "0 auto",
+          padding: "16px",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          boxSizing: "border-box",
+        }}
       >
-        {orders.map((o) => (
+        <div className="print-toolbar no-print">
+          <span>Paper:</span>
+          <button
+            type="button"
+            className={paper === "label" ? "active" : ""}
+            onClick={() => switchPaper("label")}
+          >
+            6×4 label
+          </button>
+          <button
+            type="button"
+            className={paper === "a5" ? "active" : ""}
+            onClick={() => switchPaper("a5")}
+          >
+            A5 (2 per page)
+          </button>
+          {paper === "a5" && (
+            // The page already packs two waybills per sheet and uses the full
+            // sheet, so the dialog settings matter — tell the merchant exactly
+            // what to pick.
+            <span style={{ color: "#666" }}>
+              In the print dialog, set: Paper&nbsp;size = <b>A5</b> ·
+              Pages&nbsp;per&nbsp;sheet = <b>1</b> · Margins = <b>None</b> ·
+              Scale = <b>100%</b> — this page already puts 2 waybills on every
+              A5 sheet and sizes them to fill it.
+            </span>
+          )}
+        </div>
+        {orders.map((o, i) => (
           <div
             key={o.id}
-            className="waybill-label"
-            style={{ marginBottom: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.35)" }}
+            // .pair-end marks the second card of each A5 pair (see the print
+            // CSS above) — label mode never uses the class.
+            className={`waybill-label${paper === "a5" && i % 2 === 1 ? " pair-end" : ""}`}
+            style={
+              paper === "a5"
+                ? {
+                    // Fixed box; the unscaled 6×4 card sits inside it, scaled
+                    // from the top-left corner. Inline styles (not print CSS)
+                    // so the on-screen preview matches the printed sheet too.
+                    position: "relative",
+                    width: `${A5_PAPER.contentWidthIn}in`,
+                    height: `${A5_PAPER.contentHeightIn}in`,
+                    overflow: "hidden",
+                    marginBottom: `${A5_PAPER.gapIn}in`,
+                    boxShadow: "none",
+                  }
+                : { marginBottom: "16px", boxShadow: "0 2px 10px rgba(0,0,0,0.35)" }
+            }
           >
-            <WaybillCard order={o} printedAt={printedAt} />
+            <div
+              style={
+                paper === "a5"
+                  ? {
+                      transform: `scale(${A5_PAPER.scale})`,
+                      transformOrigin: "top left",
+                    }
+                  : undefined
+              }
+            >
+              <WaybillCard order={o} printedAt={printedAt} />
+            </div>
           </div>
         ))}
       </div>

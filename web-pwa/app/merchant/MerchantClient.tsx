@@ -915,7 +915,19 @@ export default function MerchantClient({
       return;
     }
 
-    const selectedData = orders.filter((o) => selectedOrders.includes(o.id));
+    // Export in the exact order the merchant sees on screen: apply the active
+    // column sort (same comparator as sortedOrders) to the selected rows, so
+    // e.g. an oldest-to-newest date sort is preserved in the spreadsheet.
+    let selectedData = orders.filter((o) => selectedOrders.includes(o.id));
+    if (sortKey) {
+      const dir = sortDir;
+      selectedData = [...selectedData].sort((a, b) => {
+        const va = getOrderSortValue(a, sortKey);
+        const vb = getOrderSortValue(b, sortKey);
+        const cmp = compareSortValues(va, vb);
+        return dir === "asc" ? cmp : -cmp;
+      });
+    }
     const ExcelJS = (await import("exceljs")).default;
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Selected_Orders");
