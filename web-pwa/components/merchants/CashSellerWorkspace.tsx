@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -112,6 +112,35 @@ function computeAdvance(amountUsd: number, sellerRate: number): number {
   return (amountUsd ?? 0) - sellerRate;
 }
 
+// Order-ID search for the "Eligible Orders for Advance" table: the raw input is
+// split on commas/whitespace/newlines into tokens. An order matches when ANY
+// token matches (OR logic) — substring match on the order ID, plus suffix match
+// for pure-numeric tokens of 4+ digits, so typing the last digits of an order
+// ID works exactly like the search on /orders.
+function parseSearchTokens(term: string): string[] {
+  return term
+    .split(/[\s,]+/)
+    .map((t) => t.trim().toLowerCase())
+    .filter((t) => t !== "");
+}
+
+function orderMatchesSearchTokens(orderId: string, tokens: string[]): boolean {
+  if (tokens.length === 0) return true;
+  const id = (orderId ?? "").toLowerCase();
+  return tokens.some(
+    (token) =>
+      id.includes(token) || (/^\d{4,}$/.test(token) && id.endsWith(token)),
+  );
+}
+
+function filterOrdersBySearchTokens<T extends { orderId: string }>(
+  list: T[],
+  tokens: string[],
+): T[] {
+  if (tokens.length === 0) return list;
+  return list.filter((o) => orderMatchesSearchTokens(o.orderId, tokens));
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function CashSellerWorkspace({
@@ -161,6 +190,22 @@ export default function CashSellerWorkspace({
   // ── Date Range Filter State ──
   const [filterFromDate, setFilterFromDate] = useState<string>("");
   const [filterToDate, setFilterToDate] = useState<string>("");
+
+  // ── Order ID Search State (client-side filter for the eligible table) ──
+  // Purely a display filter: selections and the payout payload intentionally
+  // survive search changes, so morning + night order batches entered on the
+  // same date can be searched separately and still paid in one batch.
+  const [orderSearch, setOrderSearch] = useState<string>("");
+
+  const searchTokens = useMemo(
+    () => parseSearchTokens(orderSearch),
+    [orderSearch],
+  );
+
+  const visibleUnpaidOrders = useMemo(
+    () => filterOrdersBySearchTokens(unpaidOrders, searchTokens),
+    [unpaidOrders, searchTokens],
+  );
 
   // ── Fetch workspace data ──
   const applyDateFilter = useCallback(
@@ -319,8 +364,13 @@ export default function CashSellerWorkspace({
     selectedAdvance - totalReturnDeductions + adjustmentsTotal;
 
   // ── Select All Toggles ──
+  // "Select all" acts on the rows currently visible after the order-ID search,
+  // so it always selects exactly what the operator can see. The summary math and
+  // the POST payload keep resolving ids against the full unpaidOrders list, so
+  // selections made under different searches are all paid in one batch.
   const allOrdersSelected =
-    unpaidOrders.length > 0 && selectedOrderIds.size === unpaidOrders.length;
+    visibleUnpaidOrders.length > 0 &&
+    visibleUnpaidOrders.every((o) => selectedOrderIds.has(o.id));
 
   const allReturnsSelected =
     pendingReturns.length > 0 &&
@@ -331,11 +381,17 @@ export default function CashSellerWorkspace({
     selectedReturnBatchIds.size === pendingReturnBatches.length;
 
   const toggleSelectAllOrders = () => {
-    if (allOrdersSelected) {
-      setSelectedOrderIds(new Set());
-    } else {
-      setSelectedOrderIds(new Set(unpaidOrders.map((o) => o.id)));
-    }
+    setSelectedOrderIds((prev) => {
+      const next = new Set(prev);
+      if (allOrdersSelected) {
+        // Unchecking removes only the currently visible rows; selections made
+        // under a previous search stay in the batch untouched.
+        for (const o of visibleUnpaidOrders) next.delete(o.id);
+      } else {
+        for (const o of visibleUnpaidOrders) next.add(o.id);
+      }
+      return next;
+    });
   };
 
   const toggleSelectAllReturns = () => {
@@ -588,7 +644,9 @@ export default function CashSellerWorkspace({
                 Eligible Orders for Advance
               </h3>
               <span className="text-[10px] text-gray-500 bg-white/5 px-2 py-0.5 rounded">
-                {unpaidOrders.length} orders
+                {searchTokens.length > 0
+                  ? `${visibleUnpaidOrders.length} of ${unpaidOrders.length} orders`
+                  : `${unpaidOrders.length} orders`}
               </span>
             </div>
             {/* Date Range Filter */}
@@ -635,6 +693,39 @@ export default function CashSellerWorkspace({
                 </button>
               )}
             </div>
+            {/* Order ID search — display-only filter; never triggers a fetch and
+                never clears existing selections. */}
+            <div className="mt-2">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-bold whitespace-nowrap">
+                  Search
+                </span>
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    value={orderSearch}
+                    onChange={(e) => setOrderSearch(e.target.value)}
+                    placeholder="Search order IDs — comma separated, e.g. 10049805, 78981891"
+                    className="w-full bg-[#0B0F17] border border-gray-800 rounded px-2 py-1 pr-7 text-white text-xs outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-colors placeholder:text-gray-600"
+                  />
+                  {orderSearch !== "" && (
+                    <button
+                      onClick={() => setOrderSearch("")}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs"
+                      title="Clear search"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+              {searchTokens.length > 0 && (
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Showing {visibleUnpaidOrders.length} of {unpaidOrders.length}{" "}
+                  eligible orders — selections stay active while you search.
+                </p>
+              )}
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -659,17 +750,19 @@ export default function CashSellerWorkspace({
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {unpaidOrders.length === 0 ? (
+                {visibleUnpaidOrders.length === 0 ? (
                   <tr>
                     <td
                       colSpan={5}
                       className="px-4 py-8 text-center text-gray-600"
                     >
-                      No eligible orders found
+                      {searchTokens.length > 0
+                        ? "No orders match your search."
+                        : "No eligible orders found"}
                     </td>
                   </tr>
                 ) : (
-                  unpaidOrders.map((order) => {
+                  visibleUnpaidOrders.map((order) => {
                     const advance = computeAdvance(
                       order.amountUsd,
                       defaultSellerRate,
