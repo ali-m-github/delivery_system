@@ -130,6 +130,19 @@ function parseStamp(s: string): Date {
   return new Date(s.replace(" ", "T"));
 }
 
+/**
+ * The Libanex received date (date_rcvd) for a newly imported order.
+ * Imported orders must show their real received date, exactly like the
+ * Bulk Excel/CSV and Google Sheets import paths do — never the import
+ * timestamp. Falls back to "now" only when Libanex has no usable date.
+ */
+function receivedDate(lx: LibanexOrder): Date {
+  const raw = (lx.date_rcvd ?? "").trim();
+  if (!raw) return new Date();
+  const d = parseStamp(raw);
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
 /** Date → "YYYY-MM-DD HH:MM:SS" in local time (what the Libanex API expects). */
 function toApiStamp(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -340,10 +353,14 @@ export async function previewSellerOrders(
 /**
  * Import a seller's Libanex orders. Pass `orderIds` to import only the
  * selected orders; omit it to import every order the seller has.
+ * Pass `merchantId` (one of OUR merchants, validated by the API route) to
+ * assign newly created orders to that seller. Orders that already exist in
+ * the PWA are adopted but their current merchant is never overwritten.
  */
 export async function importSellerOrders(
   sellerId: string,
   orderIds?: string[],
+  merchantId?: string,
 ): Promise<ImportSummary> {
   const ctx = await resolveContext();
   const summary: ImportSummary = {
@@ -402,6 +419,9 @@ export async function importSellerOrders(
     const order = await prisma.order.create({
       data: {
         orderId: lx.order_id,
+        // Preserve the real received date (fixes orders all showing the
+        // import date, see the 2026-10-23 seller-5272 incident).
+        createdAt: receivedDate(lx),
         customerName: (lx.customer ?? "").trim() || "(no name)",
         customerPhone: (lx.tel_number ?? "").trim() || "N/A",
         customerAddress:
@@ -418,6 +438,8 @@ export async function importSellerOrders(
         zoneId,
         creatorId: ctx.systemUserId,
         driverId: ctx.driverId, // D999 — "Libanex"
+        // Assign to one of our merchants when the admin selected one.
+        ...(merchantId ? { merchantId } : {}),
       },
     });
 

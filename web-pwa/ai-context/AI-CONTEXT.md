@@ -1,7 +1,7 @@
 # Project map — delivery_system / web-pwa
 
-Generated: 2026-10-22T16:59:23.004Z
-Source files scanned: 217
+Generated: 2026-10-23T14:19:12.274Z
+Source files scanned: 218
 
 ## How to use this file
 
@@ -40,7 +40,7 @@ app/403/page.tsx  (27 lines) — Page /403
 app/actions/driverRates.ts  (33 lines) — Server-side authorization: driver rate changes mirror the already-guarded
 app/actions/treasury.ts  (37 lines) — Server-side authorization: creating treasury boxes is a financial action.
 app/admin/drivers/[id]/page.tsx  (726 lines) — ─── Types ────────────────────────────────────────────────────────────────────
-app/admin/libanex/page.tsx  (753 lines) — Mirrors the codes accepted by the Libanex create_order endpoint.
+app/admin/libanex/page.tsx  (802 lines) — One of OUR merchants, for assigning imported orders to a seller
 app/admin/page.tsx  (1572 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/admin/treasury/page.tsx  (737 lines) — ── Pending approvals (across every cash box) ──
 app/api/admin/dashboard/approvals/route.ts  (47 lines) — GET — fetch pending merchant approvals data for admin dashboard
@@ -56,7 +56,7 @@ app/api/admin/drivers/settlements/route.ts  (423 lines) — GET /api/admin/drive
 app/api/admin/employees/[id]/route.ts  (451 lines) — PUT /api/admin/employees/[id] — Update an employee (user)
 app/api/admin/fix-orders/route.ts  (65 lines) — API endpoint /api/admin/fix-orders
 app/api/admin/libanex/export/route.ts  (66 lines) — POST /api/admin/libanex/export — export selected PWA orders into Libanex.
-app/api/admin/libanex/import/route.ts  (42 lines) — POST /api/admin/libanex/import — import one seller's Libanex orders.
+app/api/admin/libanex/import/route.ts  (74 lines) — POST /api/admin/libanex/import — import selected Libanex orders of one
 app/api/admin/libanex/orders/route.ts  (30 lines) — GET /api/admin/libanex/orders?sellerId=556 — list a seller's Libanex orders
 app/api/admin/libanex/pwa-orders/route.ts  (28 lines) — GET /api/admin/libanex/pwa-orders — list PWA orders that have never been
 app/api/admin/libanex/sellers/route.ts  (62 lines) — GET /api/admin/libanexsellers — list Libanex sellers for the import picker.
@@ -213,7 +213,7 @@ lib/driver-reasons.ts  (132 lines) — Shared driver exception reason codes (pos
 lib/excel-export.ts  (100 lines) — ─── Shared Excel export helpers ─────────────────────────────────────────────
 lib/exchange.ts  (86 lines) — Shared fields of an Order needed to build the "-Exchange" proof order.
 lib/jwt.ts  (150 lines) — ─── Canonical session-JWT primitives ─────────────────────────────────────────
-lib/libanexSync.ts  (879 lines) — One-way sync: Libanex (partner delivery system) → this PWA.
+lib/libanexSync.ts  (901 lines) — One-way sync: Libanex (partner delivery system) → this PWA.
 lib/logoUpload.ts  (48 lines) — Directory (relative to the project root) where merchant logo files are stored.
 lib/notifications.ts  (102 lines) — Notification base-URL resolution.
 lib/notifications/dispatcher.ts  (216 lines) — Merchant notification dispatcher.
@@ -243,6 +243,7 @@ plans/cash-seller-advance-order-search.md  (130 lines) — Feature plan document
 plans/driver-profile-search.md  (131 lines) — Feature plan document
 plans/edit-order-seller.md  (63 lines) — Feature plan document
 plans/idm-registration-fix.md  (58 lines) — Feature plan document
+plans/libanex-import-merchant-assignment.md  (72 lines) — Feature plan document
 plans/libanex-sync.md  (87 lines) — Feature plan document
 plans/unify-scanners.md  (108 lines) — Feature plan document
 postcss.config.mjs  (8 lines) — postcss.config.mjs
@@ -279,8 +280,8 @@ prisma/schema.prisma  (623 lines) — ==========================================
   file: `app/api/admin/fix-orders/route.ts` (65 lines)
 - **POST /api/admin/libanex/export** — POST /api/admin/libanex/export — export selected PWA orders into Libanex.  
   file: `app/api/admin/libanex/export/route.ts` (66 lines)
-- **POST /api/admin/libanex/import** — POST /api/admin/libanex/import — import one seller's Libanex orders.  
-  file: `app/api/admin/libanex/import/route.ts` (42 lines)
+- **POST /api/admin/libanex/import** — POST /api/admin/libanex/import — import selected Libanex orders of one  
+  file: `app/api/admin/libanex/import/route.ts` (74 lines)
 - **GET /api/admin/libanex/orders** — GET /api/admin/libanex/orders?sellerId=556 — list a seller's Libanex orders  
   file: `app/api/admin/libanex/orders/route.ts` (30 lines)
 - **GET /api/admin/libanex/pwa-orders** — GET /api/admin/libanex/pwa-orders — list PWA orders that have never been  
@@ -997,7 +998,7 @@ export function getSessionCookieOptions(requestedSecure: boolean): {
 
 ```
 
-### `lib/libanexSync.ts` (879 lines)
+### `lib/libanexSync.ts` (901 lines)
 > One-way sync: Libanex (partner delivery system) → this PWA.
 
 ```ts
@@ -1031,6 +1032,7 @@ export async function previewSellerOrders(
 export async function importSellerOrders(
   sellerId: string,
   orderIds?: string[],
+  merchantId?: string,
 ): Promise<ImportSummary> {
 
 export interface ExportSummary {
@@ -3303,6 +3305,80 @@ flowchart TD
 - Always export the key first (step 2) so the change is reversible.
 - Locking the key means IDM can no longer save settings changes (e.g. download folder). If that becomes annoying, run `regini` with a *restore* INF to unlock, change settings, then re-lock.
 - Major IDM updates sometimes rewrite the key — re-run the script after a major upgrade.
+
+### `plans/libanex-import-merchant-assignment.md` (72 lines)
+
+# Assign a merchant (seller) to Libanex-imported orders
+
+## Overview
+Orders imported from Libanex currently land on the PWA with `merchantId = NULL`
+("— No seller —"), so they never appear in the seller's order list, statements
+or payouts. The admin must be able to pick which merchant of **our** system the
+selected Libanex orders are assigned to at import time.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[app/admin/libanex/page.tsx\norder picker] -->|sellerMerchantId in POST body| B[app/api/admin/libanex/import/route.ts]
+    B -->|validates merchant exists + active| C[lib/libanexSync.ts\nimportSellerOrders]
+    C --> D[(Order.merchantId)]
+    L[GET /api/admin/merchants/list\nexisting endpoint] -->|merchant dropdown| A
+```
+
+## Current State Analysis
+
+| file | line range | current behaviour |
+|---|---|---|
+| lib/libanexSync.ts | 402-422 (`importSellerOrders` → `prisma.order.create`) | creates orders with no `merchantId` → NULL |
+| lib/libanexSync.ts | 344-349 (`importSellerOrders` signature) | accepts only `sellerId` + optional `orderIds` |
+| app/api/admin/libanex/import/route.ts | 13-40 | parses `sellerId`/`orderIds` only; requires MANAGE_ORDERS |
+| app/admin/libanex/page.tsx | 186-219 (`importSelected`) | posts `{sellerId, orderIds}`; no merchant selector in the picker header (423-444) |
+| app/api/admin/merchants/list/route.ts | 8-36 | existing endpoint returning `{id, numericId, name}` of active merchants, gated MANAGE_MERCHANTS |
+| plans/edit-order-seller.md | 35-38 | precedent: staff may edit `merchantId` on existing orders; `/api/orders` already recalculates commission on merchant change |
+
+## Plan
+
+1. **UI — app/admin/libanex/page.tsx**
+   - In the order-picker header (next to "Import selected"), add a
+     "Assign to seller" `<select>` populated from the existing
+     `GET /api/admin/merchants/list`. Options: "— No seller —" (default),
+     then every active merchant (`#numericId — name`).
+   - `importSelected` includes `merchantId` in the POST body when one is
+     chosen, and the confirm dialog names the seller.
+   - Permission note: the page is ADMIN-gated by middleware, and
+     `/api/admin/merchants/list` requires MANAGE_MERCHANTS — admins hold it.
+     If the list call fails (403 for a non-admin staff with MANAGE_ORDERS),
+     the dropdown shows "loading/…" and import still works without a seller.
+
+2. **API — app/api/admin/libanex/import/route.ts**
+   - Accept optional `merchantId` (string). If present: look the merchant up
+     with Prisma (`id`, `isActive`); 400 when it does not exist or is
+     inactive. Pass it to `importSellerOrders`.
+
+3. **Core — lib/libanexSync.ts**
+   - `importSellerOrders(sellerId, orderIds?, merchantId?)`: when `merchantId`
+     is given, set `merchantId` on every **newly created** order. Adopted
+     (already-existing) orders keep their current merchant untouched — the
+     import never overwrites assignment of existing orders.
+   - `ImportSummary` unchanged (created/adopted/skipped counts are enough).
+
+4. **Not in scope**
+   - Backfilling merchant on the 205 already-linked seller-5272 orders (the
+     193 adopted ones already carry their real merchant). Can be done later
+     with a small script if the owner wants it.
+
+## Safety
+- Merchant validation server-side before any write; a bad id fails the whole
+  import call (nothing half-imported).
+- Existing orders/links untouched; behavior without a selected merchant is
+  identical to today.
+
+## Verification
+- `npx tsc --noEmit` clean.
+- Manual: open /admin/libanex → pick a seller → dropdown lists active
+  merchants → select merchant + 1 test order → import → the created order
+  shows that seller in /orders.
 
 ### `plans/libanex-sync.md` (87 lines)
 

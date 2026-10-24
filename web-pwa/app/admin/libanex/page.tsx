@@ -31,6 +31,14 @@ interface ImportSummary {
   warnings: string[];
 }
 
+// One of OUR merchants, for assigning imported orders to a seller
+// (same shape as GET /api/admin/merchants/list).
+interface MerchantOption {
+  id: string;
+  numericId: number;
+  name: string;
+}
+
 interface SyncResult {
   sellerId: string;
   historyRows: number;
@@ -99,6 +107,10 @@ export default function LibanexAdminPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importingSelected, setImportingSelected] = useState(false);
 
+  // Which of our merchants newly imported orders are assigned to ("" = none)
+  const [merchantOptions, setMerchantOptions] = useState<MerchantOption[]>([]);
+  const [importMerchantId, setImportMerchantId] = useState("");
+
   const [syncing, setSyncing] = useState(false);
   const [syncResults, setSyncResults] = useState<SyncResult[] | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -153,15 +165,28 @@ export default function LibanexAdminPage() {
       } else {
         const rows: OrderRow[] = data.orders ?? [];
         setPreviewRows(rows);
-        // Pre-select everything not already imported.
-        setSelected(
-          new Set(rows.filter((r) => !r.alreadyLinked).map((r) => r.order_id)),
-        );
+        // Nothing is selected automatically — orders are only imported if the
+        // admin explicitly checks them (or uses "Select all" on purpose).
+        setSelected(new Set());
+        setImportMerchantId("");
+        loadMerchantOptions();
       }
     } catch (error) {
       setPreviewError(String(error));
     } finally {
       setPreviewLoading(false);
+    }
+  };
+
+  const loadMerchantOptions = async () => {
+    if (merchantOptions.length > 0) return; // load once per page visit
+    try {
+      const res = await fetch("/api/admin/merchants/list");
+      if (res.ok) {
+        setMerchantOptions((await res.json()) as MerchantOption[]);
+      }
+    } catch {
+      // Dropdown stays empty; imports without a seller still work.
     }
   };
 
@@ -190,9 +215,14 @@ export default function LibanexAdminPage() {
       alert("Select at least one order to import.");
       return;
     }
+    const chosenMerchant = merchantOptions.find((m) => m.id === importMerchantId);
     if (
       !confirm(
-        `Import ${orderIds.length} selected order(s) from seller ${previewSeller.sellerId}? Orders already on this site will be linked, not duplicated.`,
+        `Import ${orderIds.length} selected order(s) from seller ${previewSeller.sellerId}` +
+          (chosenMerchant
+            ? ` and assign the new ones to seller #${chosenMerchant.numericId} — ${chosenMerchant.name}`
+            : "") +
+          `? Orders already on this site will be linked, not duplicated.`,
       )
     )
       return;
@@ -202,7 +232,11 @@ export default function LibanexAdminPage() {
       const res = await fetch("/api/admin/libanex/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sellerId: previewSeller.sellerId, orderIds }),
+        body: JSON.stringify({
+          sellerId: previewSeller.sellerId,
+          orderIds,
+          merchantId: importMerchantId || undefined,
+        }),
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -433,6 +467,21 @@ export default function LibanexAdminPage() {
                     {previewRows.filter((r) => !r.alreadyLinked).length}{" "}
                     importable order(s) selected
                   </span>
+                  <label className="flex items-center gap-2 text-sm text-gray-400">
+                    Assign to seller:
+                    <select
+                      value={importMerchantId}
+                      onChange={(e) => setImportMerchantId(e.target.value)}
+                      className="bg-slate-700 border border-gray-600 rounded-lg px-2 py-1.5 text-sm max-w-[260px]"
+                    >
+                      <option value="">— No seller —</option>
+                      {merchantOptions.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          #{m.numericId} — {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <button
                     onClick={importSelected}
                     disabled={importingSelected || selected.size === 0}
