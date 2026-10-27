@@ -3,6 +3,10 @@ import prisma from "@/lib/prisma";
 import { computeOrderProfit, resolveDriverSellerException } from "@/lib/profit";
 import { orderIdForFinancialStatus } from "@/lib/order-id";
 import { requireServerPermission } from "@/lib/server-permissions";
+import {
+  ConcurrencyConflictError,
+  withConcurrencyRetries,
+} from "@/lib/concurrency";
 
 // Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
@@ -245,8 +249,11 @@ export async function POST(
       adjustments?: { description: string; amountUsd: number }[];
     } = body;
 
-    // --- Run the entire batch creation inside an atomic transaction ---
-    const batch = await prisma.$transaction(async (tx) => {
+    // --- Run the entire batch creation inside an atomic transaction, retried
+    // on concurrency conflicts (CAS guard failures / P2034 rollbacks) so two
+    // simultaneous payouts can never claim the same returns batch twice. ---
+    const batch = await withConcurrencyRetries(() =>
+      prisma.$transaction(async (tx) => {
       // 1. Fetch the Merchant to retrieve default rates
       const merchant = await tx.merchant.findUnique({
         where: { id: merchantId },
@@ -316,15 +323,26 @@ export async function POST(
             select: { id: true, orders: { select: { id: true } } },
           })
         : [];
+      // A requested batch that is no longer unsettled was claimed by another
+      // payout between page load and submit — abort instead of silently
+      // dropping its deduction.
+      if (selectedBatches.length !== returnBatchIds.length) {
+        throw new ConcurrencyConflictError(
+          "One or more selected return batches were already settled by another payout",
+        );
+      }
       const batchOrderIds = selectedBatches.flatMap((b) =>
         b.orders.map((o) => o.id),
       );
 
+      const requestedReturnIds = Array.from(
+        new Set([...returnIds, ...batchOrderIds]),
+      );
       const returnOrders =
         returnIds.length || batchOrderIds.length
           ? await tx.order.findMany({
               where: {
-                id: { in: Array.from(new Set([...returnIds, ...batchOrderIds])) },
+                id: { in: requestedReturnIds },
                 merchantId,
                 returnDeductionBatchId: null,
               },
@@ -337,6 +355,13 @@ export async function POST(
               },
             })
           : [];
+      // Same guard as above for unbatched return ids: a row already claimed by
+      // another payout must abort the payout, not shrink its deductions.
+      if (returnOrders.length !== requestedReturnIds.length) {
+        throw new ConcurrencyConflictError(
+          "One or more selected return orders were already settled by another payout",
+        );
+      }
 
       let deductedReturns = 0;
 
@@ -423,12 +448,14 @@ export async function POST(
         });
       }
 
-      // 10. Update all return orders — link to batch + mark RTS (Returned to Seller)
+      // 10. Update all return orders — link to batch + mark RTS (Returned to
+      // Seller). CAS: each row must still be unclaimed (returnDeductionBatchId
+      // null) at write time.
       if (returnOrders.length) {
-        await Promise.all(
+        const results = await Promise.all(
           returnOrders.map((o) =>
-            tx.order.update({
-              where: { id: o.id },
+            tx.order.updateMany({
+              where: { id: o.id, returnDeductionBatchId: null },
               data: {
                 orderId: orderIdForFinancialStatus(o.orderId, "RTS"),
                 returnDeductionBatchId: cashPayoutBatch.id,
@@ -437,23 +464,48 @@ export async function POST(
             }),
           ),
         );
+        if (results.some((r) => r.count !== 1)) {
+          throw new ConcurrencyConflictError(
+            "A return order was already settled by another payout",
+          );
+        }
       }
 
       // 11. Settle the selected Return Batches — link them to this payout so
-      //     the merchant/admin views can show settlement status.
+      //     the merchant/admin views can show settlement status. CAS: a batch
+      //     may only flip PENDING/COMPLETED -> SETTLED once, so a return batch
+      //     can never be deducted through two different payouts.
       if (selectedBatches.length) {
-        await tx.returnBatch.updateMany({
-          where: { id: { in: selectedBatches.map((b) => b.id) } },
+        const settled = await tx.returnBatch.updateMany({
+          where: {
+            id: { in: selectedBatches.map((b) => b.id) },
+            status: { not: "SETTLED" },
+          },
           data: { status: "SETTLED", cashPayoutBatchId: cashPayoutBatch.id },
         });
+        if (settled.count !== selectedBatches.length) {
+          throw new ConcurrencyConflictError(
+            "A selected return batch was just settled by another payout",
+          );
+        }
       }
 
-      return cashPayoutBatch;
-    });
+        return cashPayoutBatch;
+      }),
+    );
 
     return NextResponse.json(batch, { status: 201 });
   } catch (error: unknown) {
     console.error("CashPayouts POST Error:", error);
+    if (error instanceof ConcurrencyConflictError) {
+      return NextResponse.json(
+        {
+          error:
+            "Some selected orders or return batches were settled by another payout while you were submitting — refresh the page and try again.",
+        },
+        { status: 409 },
+      );
+    }
     return NextResponse.json(
       { error: "Internal Server Error" },
       { status: 500 },

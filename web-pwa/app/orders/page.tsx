@@ -2427,7 +2427,10 @@ function OrdersPageInner() {
     }
   };
 
-  // ── Bulk Returned to Seller Handler (Re/EX -> RTS) ──
+  // ── Bulk Returned to Seller Handler (Re/EX -> RTS, creates a ReturnBatch) ──
+  // Creates a ReturnBatch (same shape as the scanner's RETURN_TO_SELLER action)
+  // so the selection settles as ONE deduction unit in the cash payout
+  // workspace. A batch is per-seller, so the Seller filter must be set first.
   const [rtsUpdating, setRtsUpdating] = useState(false);
   const [rwdUpdating, setRwdUpdating] = useState(false);
   const handleBulkRTS = async () => {
@@ -2445,27 +2448,49 @@ function OrdersPageInner() {
       );
       return;
     }
+    // A ReturnBatch belongs to exactly one seller — require the Seller filter
+    // to be set so the batch's scope is unambiguous (same rule as the scanner).
+    if (returnSeller === "ALL") {
+      alert(
+        "Please pick a Seller in the filter above first — a Return batch can only contain one seller's orders.",
+      );
+      return;
+    }
+    const selectedMerchantIds = selectedOrders.map((o) => o.merchantId);
+    if (
+      selectedMerchantIds.some((id) => !id) ||
+      new Set(selectedMerchantIds).size !== 1
+    ) {
+      alert(
+        "All selected orders must belong to the same seller — refresh the list and select only that seller's orders.",
+      );
+      return;
+    }
     if (
       !window.confirm(
-        `Mark ${selectedOrderIds.length} order(s) as "Returned to Seller"?`,
+        `Create a Return batch for ${selectedOrderIds.length} order(s) and mark them as "Returned to Seller" (RTS)?\n\nThe batch will appear in that seller's cash payout workspace as one deduction unit and can only be settled once.`,
       )
     )
       return;
     setRtsUpdating(true);
     try {
-      const res = await fetch("/api/admin/orders/returns", {
-        method: "PATCH",
+      const res = await fetch("/api/admin/return-batches", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderIds: selectedOrderIds, newStatus: "RTS" }),
+        body: JSON.stringify({ orderIds: selectedOrderIds }),
       });
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || "Failed to update returns");
+        throw new Error(err.error || "Failed to create return batch");
       }
+      const data = await res.json();
       setSelectedOrderIds([]);
       fetchOrders();
+      alert(
+        `Return batch ${data.batchNumber} created (${data.count} order(s) marked RTS).`,
+      );
     } catch (error: any) {
-      alert(error.message || "Failed to update returns.");
+      alert(error.message || "Failed to create return batch.");
     } finally {
       setRtsUpdating(false);
     }
@@ -4751,27 +4776,11 @@ function OrdersPageInner() {
                     </button>
                     <button
                       onClick={() => handleBulkRTS()}
-                      disabled={
-                        rtsUpdating ||
-                        selectedOrderIds.length === 0 ||
-                        !returnsOrders
-                          .filter((o) => selectedOrderIds.includes(o.id))
-                          .every((o) =>
-                            ["Re", "EX"].includes(o.financialStatus),
-                          )
-                      }
-                      className={`px-3 py-1.5 text-xs font-bold rounded transition-all shadow-sm ${
-                        selectedOrderIds.length > 0 &&
-                        returnsOrders
-                          .filter((o) => selectedOrderIds.includes(o.id))
-                          .every((o) =>
-                            ["Re", "EX"].includes(o.financialStatus),
-                          )
-                          ? "bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30"
-                          : "bg-gray-700 text-gray-500 cursor-not-allowed border border-gray-600"
-                      } ${rtsUpdating ? "opacity-50" : ""}`}
+                      disabled
+                      title="Disabled — use the “↩ Returned to Seller (n)” button in the filters bar above, which shows how many orders are selected."
+                      className="px-3 py-1.5 text-xs font-bold rounded bg-gray-700 text-gray-500 cursor-not-allowed border border-gray-600"
                     >
-                      {rtsUpdating ? "Updating…" : "Returned to Seller"}
+                      Returned to Seller
                     </button>
                   </div>
                 </div>

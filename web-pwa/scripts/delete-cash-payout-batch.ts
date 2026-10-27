@@ -1,12 +1,17 @@
 /**
- * Delete a CashPayoutBatch and return its orders to the available pool.
+ * Delete (revoke) a CashPayoutBatch and return its orders to the available pool.
  *
- * What this does (in a single atomic transaction):
+ * What this does (in a single atomic transaction) — the exact inverse of the
+ * payout POST in app/api/admin/merchants/[id]/cash-payouts/route.ts:
  *   1. Unlinks all advance orders  (cashPayoutBatchId = null)  → they become
  *      eligible again in the "Unpaid Eligible Orders" workspace list.
- *   2. Unlinks all deducted returns (returnDeductionBatchId = null) and resets
- *      their financialStatus back to "Re" → they become pending returns again.
- *   3. Deletes the batch record (PayoutAdjustment rows cascade-delete).
+ *   2. Unlinks all deducted returns (returnDeductionBatchId = null), resets
+ *      their financialStatus back to "Re" AND strips the "R" suffix the payout
+ *      appended to their orderId (orderIdForFinancialStatus).
+ *   3. Un-settles any Return Batches settled through this payout
+ *      (status SETTLED → PENDING, cashPayoutBatchId = null) so they can be
+ *      selected again by the re-done payout.
+ *   4. Deletes the batch record (PayoutAdjustment rows cascade-delete).
  *
  * Usage:
  *   Dry run (inspect only, no changes):
@@ -16,6 +21,7 @@
  */
 
 import { PrismaClient } from "@prisma/client";
+import { orderIdForFinancialStatus } from "../lib/order-id";
 
 const prisma = new PrismaClient();
 
@@ -39,6 +45,9 @@ async function main() {
         },
       },
       adjustments: true,
+      settledReturnBatches: {
+        select: { id: true, batchNumber: true, status: true },
+      },
     },
   });
 
@@ -76,6 +85,12 @@ async function main() {
       .map((a) => `${a.description} ($${a.amountUsd})`)
       .join("; ") || "none",
   );
+  console.log(
+    `Settled return batches (${batch.settledReturnBatches.length}):`,
+    batch.settledReturnBatches
+      .map((b) => `${b.batchNumber} (${b.status})`)
+      .join("; ") || "none",
+  );
 
   if (DRY_RUN) {
     console.log("\n[DRY RUN] No changes made.");
@@ -90,18 +105,34 @@ async function main() {
       data: { cashPayoutBatchId: null },
     });
 
-    // 2. Unlink deducted returns → pending returns again (undo RTS marking)
-    const returnedOrders = await tx.order.updateMany({
-      where: { returnDeductionBatchId: batch.id },
-      data: { returnDeductionBatchId: null, financialStatus: "Re" },
+    // 2. Unlink deducted returns → pending returns again (undo RTS marking).
+    //    Undo per-order: financialStatus "Re" + strip the "R" orderId suffix
+    //    the payout appended, mirroring orderIdForFinancialStatus in the POST.
+    for (const o of batch.resolvedReturns) {
+      await tx.order.update({
+        where: { id: o.id },
+        data: {
+          returnDeductionBatchId: null,
+          financialStatus: "Re",
+          orderId: orderIdForFinancialStatus(o.orderId, "Re"),
+        },
+      });
+    }
+
+    // 3. Un-settle return batches settled through this payout so the re-done
+    //    payout can claim them again.
+    const settledBatches = await tx.returnBatch.updateMany({
+      where: { cashPayoutBatchId: batch.id },
+      data: { status: "PENDING", cashPayoutBatchId: null },
     });
 
-    // 3. Delete the batch (PayoutAdjustment rows cascade-delete)
+    // 4. Delete the batch (PayoutAdjustment rows cascade-delete)
     await tx.cashPayoutBatch.delete({ where: { id: batch.id } });
 
     return {
       advanceOrders: advanceOrders.count,
-      returnedOrders: returnedOrders.count,
+      returnedOrders: batch.resolvedReturns.length,
+      settledBatches: settledBatches.count,
     };
   });
 
@@ -110,7 +141,10 @@ async function main() {
     `Unlinked ${result.advanceOrders} advance order(s) → cashPayoutBatchId = null (available again)`,
   );
   console.log(
-    `Unlinked ${result.returnedOrders} return order(s) → returnDeductionBatchId = null, financialStatus reset to "Re"`,
+    `Unlinked ${result.returnedOrders} return order(s) → returnDeductionBatchId = null, financialStatus reset to "Re", "R" orderId suffix stripped`,
+  );
+  console.log(
+    `Un-settled ${result.settledBatches} return batch(es) → status "PENDING", cashPayoutBatchId = null`,
   );
   console.log(
     `Batch "${BATCH_REFERENCE}" (id=${batch.id}) deleted; its PayoutAdjustments cascade-deleted.`,

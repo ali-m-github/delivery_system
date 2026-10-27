@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { ReturnBatch } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { requireServerPermission } from "@/lib/server-permissions";
+import { beirutBatchTimestamp } from "@/lib/sequences";
 
 // ─── POST /api/admin/orders/universal-scan ────────────────────────────────────
 // Central endpoint for the Universal Staff Scanner tray. Every action here is
@@ -33,36 +34,6 @@ const VALID_ACTIONS = new Set([
   "RETURN_TO_SELLER",
   "MARK_DELIVERED",
 ]);
-
-/**
- * Format the current instant in Beirut wall-clock time as YYYYMMDD-HHmm for
- * ReturnBatch numbers (e.g. "20261013-1830"). en-GB gives a stable
- * dd/mm/yyyy hh:mm ordering; stripping non-digits yields
- * [dd, mm, yyyy, hh, mm] in that same order.
- */
-function beirutBatchTimestamp(now: Date): string {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Beirut",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })
-    .formatToParts(now)
-    .reduce<Record<string, string>>((acc, p) => {
-      if (p.type !== "literal") acc[p.type] = p.value;
-      return acc;
-    }, {});
-
-  const yyyy = parts.year ?? "";
-  const mm = parts.month ?? "";
-  const dd = parts.day ?? "";
-  const hh = parts.hour === "24" ? "00" : (parts.hour ?? "");
-  const min = parts.minute ?? "";
-  return `${yyyy}${mm}${dd}-${hh}${min}`;
-}
 
 export async function POST(request: NextRequest) {
   const auth = await requireServerPermission(request, "MANAGE_ORDERS");

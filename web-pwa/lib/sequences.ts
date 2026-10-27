@@ -39,3 +39,37 @@ export async function nextPickupBatchNumber(tx: DbClient): Promise<string> {
   `) as unknown as { n: number | bigint }[];
   return `PKB-${Number(rows[0].n) + 1}`;
 }
+
+/**
+ * Format an instant in Beirut wall-clock time as YYYYMMDD-HHmm, the timestamp
+ * segment of ReturnBatch numbers ("Returns-M102-20261013-1830"). en-GB gives a
+ * stable dd/mm/yyyy hh:mm ordering; the parts are reassembled as yyyy mm dd -
+ * hh mm. Shared by every code path that opens a ReturnBatch (Universal Staff
+ * Scanner AND the Returns-tab bulk action) so batch numbers always match.
+ *
+ * Collisions inside the same minute for the same merchant are resolved by the
+ * P2002 retry loop at the call site (batchNumber is @unique), not here.
+ */
+export function beirutBatchTimestamp(now: Date): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Beirut",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .formatToParts(now)
+    .reduce<Record<string, string>>((acc, p) => {
+      if (p.type !== "literal") acc[p.type] = p.value;
+      return acc;
+    }, {});
+
+  const yyyy = parts.year ?? "";
+  const mm = parts.month ?? "";
+  const dd = parts.day ?? "";
+  const hh = parts.hour === "24" ? "00" : (parts.hour ?? "");
+  const min = parts.minute ?? "";
+  return `${yyyy}${mm}${dd}-${hh}${min}`;
+}
