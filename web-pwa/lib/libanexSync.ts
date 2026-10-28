@@ -11,11 +11,19 @@
  * Libanex order id (which equals our Order.orderId, e.g. "556-20738"). Orders
  * that already exist in the PWA are adopted (linked) instead of duplicated.
  *
- * Status mapping (Libanex → PWA runtime strings):
+ *  Status mapping (Libanex → PWA runtime strings):
  *  Location: W/WH/W9/OP→WAREHOUSE, CP/CP1→CP, Dr/DrD/DrR→ASSIGNED,
  *            Tr→ASSIGNED_TR, De→DELIVERED, Re/Ba/Rc→RETURN (fin forced RWD).
- *  Fin:      UD/WD/WO/PS pass through, Re→RWD; unknown codes keep the last
- *            valid value and are recorded on the link + reported as warnings.
+ *  Fin:      UD/WD pass through, Re→RWD; WO/PS are NEVER synced (owner rule:
+ *            "With Office"/"Paid to Seller" are financial statements that only
+ *            a Jett employee may set, so both payout systems can be compared);
+ *            unknown codes keep the last valid value and are reported as
+ *            warnings. The raw Libanex code is still stored on the link row.
+ *  Delivery: Libanex "De" makes the PWA order DELIVERED + WD (cash with the
+ *            driver, exactly like PATCH /api/orders). A Jett-side WO/PS is
+ *            never downgraded, so Libanex can undo a delivery (back to
+ *            warehouse / out for delivery / returned) but can never mark an
+ *            order paid on our side.
  *
  * Driver rule: imported orders get driver D999 ("Libanex"). If an operator
  * later reassigns the order to another driver, the sync never touches the
@@ -65,10 +73,24 @@ const RETURN_LOCATIONS = new Set(["Re", "Ba", "Rc"]);
 const FIN_MAP: Record<string, string> = {
   UD: "UD",
   WD: "WD",
+  // WO/PS are listed for completeness (they are real Libanex codes) but are
+  // deliberately NOT applied — see JETT_OWNED_FIN_CODES below.
   WO: "WO",
   PS: "PS",
   Re: "RWD",
 };
+
+/**
+ * Financial statuses owned by Jett, never by Libanex.
+ *
+ * WO (With Office) and PS (Paid to Seller) are produced only by Jett's payout
+ * workflows (driver payout approval, merchant statements, cash batches). If the
+ * sync mirrored them, orders would silently leave
+ * PAID_OUT_ELIGIBLE_STATUSES (lib/commission.ts) and disappear from payouts.
+ * They are also never written back to the PWA in reverse: a Jett-side WO/PS is
+ * never downgraded to WD by a Libanex "De".
+ */
+const JETT_OWNED_FIN_CODES = new Set(["WO", "PS"]);
 
 export interface LibanexOrder {
   order_id: string;
@@ -197,6 +219,39 @@ export async function libanexGet(
   return body;
 }
 
+/**
+ * The financial status that goes with a PWA location, identical to the
+ * server-side rule in PATCH /api/orders (app/api/orders/route.ts): DELIVERED →
+ * WD (cash with the driver), WAREHOUSE/ASSIGNED/ASSIGNED_TR/WITH_DRIVER → UD,
+ * RETURN → RWD. CP is intentionally absent: it carries no money meaning, so the
+ * previous financial status is preserved.
+ */
+const LOCATION_FIN: Record<string, string> = {
+  DELIVERED: "WD",
+  RETURN: "RWD",
+  WAREHOUSE: "UD",
+  ASSIGNED: "UD",
+  ASSIGNED_TR: "UD",
+  WITH_DRIVER: "UD",
+};
+
+/**
+ * Map a Libanex order onto PWA status strings.
+ *
+ * The physical flow always follows Libanex, including un-delivering an order:
+ * Libanex puts it back in the warehouse, back on a driver, or returns it and the
+ * PWA follows (owner rule). The one thing Libanex may NOT change is its own
+ * money bookkeeping: Libanex WO/PS are never mirrored onto the PWA, because
+ * "With Office" and "Paid to Seller" are statements a Jett employee creates via
+ * a payout — that is what lets both systems be compared side by side.
+ *
+ * So financial status follows the PWA location (LOCATION_FIN) only when Libanex
+ * actually moved the order, which means:
+ *  - Libanex "De"  → DELIVERED + WD (never PS/WO);
+ *  - Libanex warehouse/driver/return → UD/RWD, and this also releases an order
+ *    we had already cleared to WO/PS, since the goods really moved;
+ *  - Libanex changed only WO/PS, location unchanged → Jett value is kept.
+ */
 function mapStatus(
   rawLoc: string | null,
   rawFin: string | null,
@@ -206,16 +261,22 @@ function mapStatus(
   warnings: string[],
 ): { location: string; financialStatus: string } {
   let location = currentLoc;
-  let financialStatus = currentFin;
+  const financialStatus = currentFin;
 
   const loc = (rawLoc ?? "").trim();
   const fin = (rawFin ?? "").trim();
 
+  // Our WO/PS came from a Jett payout: a matching Libanex code is expected
+  // bookkeeping, not a disagreement, so it must not raise a warning.
+  const jettManagedPayout = JETT_OWNED_FIN_CODES.has(currentFin);
+
+  let locationChanged = false;
   if (RETURN_LOCATIONS.has(loc)) {
-    // Confirmed rule: a returned order shows as RETURN + RWD on the PWA.
+    // Confirmed rule: a returned order shows as RETURN on the PWA.
+    locationChanged = location !== "RETURN";
     location = "RETURN";
-    financialStatus = "RWD";
   } else if (loc && LOCATION_MAP[loc]) {
+    locationChanged = location !== LOCATION_MAP[loc];
     location = LOCATION_MAP[loc];
   } else if (loc) {
     warnings.push(
@@ -223,14 +284,32 @@ function mapStatus(
     );
   }
 
-  if (fin && FIN_MAP[fin]) {
-    financialStatus = FIN_MAP[fin];
-  } else if (fin && !RETURN_LOCATIONS.has(loc)) {
+  if (fin && JETT_OWNED_FIN_CODES.has(fin)) {
+    // Owner rule: WO/PS are financial statements made on Jett only, so they are
+    // recorded on the link row (audit) but never mirrored onto the order. The
+    // order keeps its payout status (WD/UD) and stays visible in payouts.
+    if (!jettManagedPayout) {
+      warnings.push(
+        `Order ${orderId}: Libanex fin "${fin}" NOT applied — WO/PS are set by Jett payouts only`,
+      );
+    }
+  } else if (fin && !FIN_MAP[fin] && !RETURN_LOCATIONS.has(loc)) {
     warnings.push(
       `Order ${orderId}: unknown Libanex fin status "${fin}" — kept "${currentFin}"`,
     );
   }
 
+  // Money state follows the physical move, never Libanex's own WO/PS bookkeeping.
+  //  - Libanex physically moved the order (warehouse, out for delivery,
+  //    delivered, returned) → the PWA takes the financial status that goes with
+  //    that location, exactly like PATCH /api/orders does. This is what lets an
+  //    undelivery/return on Libanex still come through.
+  //  - Libanex only changed its WO/PS (location unchanged) → the PWA keeps the
+  //    Jett payout value, so payouts/statement comparisons stay intact.
+  const derivedFin = LOCATION_FIN[location];
+  if (locationChanged && derivedFin) {
+    return { location, financialStatus: derivedFin };
+  }
   return { location, financialStatus };
 }
 

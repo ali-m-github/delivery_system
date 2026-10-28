@@ -500,6 +500,22 @@ export default function DriverProfilePage() {
     [driver, sellerRates],
   );
 
+  // Delivered orders the payout will cover: the checked subset when any
+  // checkboxes are ticked, otherwise ALL delivered orders.
+  const selectedWdOrders = useMemo(
+    () =>
+      deliveredOrders.filter((o: any) => {
+        const selectedOrderIds = new Set(selectedOrders);
+        return selectedOrderIds.has(o.id);
+      }),
+    [deliveredOrders, selectedOrders],
+  );
+
+  const payoutOrders = useMemo(
+    () => (selectedWdOrders.length > 0 ? selectedWdOrders : deliveredOrders),
+    [selectedWdOrders, deliveredOrders],
+  );
+
   // Authoritative per-order commission for the payout preview (the same
   // module every ledger path uses): seller exception (cash wins) → zone
   // rate → MISSING. A configured $0 is a valid line; a missing rate is
@@ -511,7 +527,7 @@ export default function DriverProfilePage() {
     >();
     let commission = 0;
     let missingCount = 0;
-    for (const o of deliveredOrders) {
+    for (const o of payoutOrders) {
       const b = computeOrderCommission(rateTable, {
         merchantId: o.merchantId ?? o.merchant?.id,
         zoneId: String(o.zoneId),
@@ -536,25 +552,15 @@ export default function DriverProfilePage() {
       (a, b) => b.rateUsd - a.rateUsd,
     );
     return { commission, missingCount, commissionLines };
-  }, [deliveredOrders, rateTable]);
+  }, [payoutOrders, rateTable]);
 
   const totalCommission = payoutBreakdown.commission;
 
-  const netPayoutUsd = totalDeliveredUsd - totalCommission;
-
   // ─── Payout Button Visibility (Bulletproof) ───────────────────────────
   // The "Generate Payout" button is active if there is AT LEAST ONE delivered,
-  // unpaid order. It pays out ALL delivered orders — no checkbox selection needed.
+  // unpaid order. It pays out the SELECTED delivered orders when checkboxes
+  // are ticked, otherwise ALL delivered orders.
   const canGeneratePayout = deliveredOrders?.length > 0;
-
-  const selectedWdOrders = useMemo(
-    () =>
-      deliveredOrders.filter((o: any) => {
-        const selectedOrderIds = new Set(selectedOrders);
-        return selectedOrderIds.has(o.id);
-      }),
-    [deliveredOrders, selectedOrders],
-  );
 
   // Bulletproof disabled logic for the delivered-tab bulk actions
   const hasValidClearSelection = selectedWdOrders?.length > 0;
@@ -593,32 +599,35 @@ export default function DriverProfilePage() {
 
   // ─── Payout-preview modal inputs ───────────────────────────────────────
   // Gross-based totals (not raw amount) so the modal preview matches the
-  // server-computed payout totals exactly.
-  const deliveredGrossUsd = deliveredOrders.reduce(
+  // server-computed payout totals exactly. Scoped to payoutOrders so the
+  // preview matches the batch actually submitted (selected orders only).
+  const payoutGrossUsd = payoutOrders.reduce(
     (sum: number, o) => sum + grossUsd(o),
     0,
   );
-  const deliveredGrossLbp = deliveredOrders.reduce(
+  const payoutGrossLbp = payoutOrders.reduce(
     (sum: number, o) => sum + grossLbp(o),
     0,
   );
+  const payoutNetUsd = payoutGrossUsd - totalCommission;
 
   // ─── Payout Submission ──────────────────────────────────────────────────
   const handleGeneratePayout = async () => {
     setSubmitting(true);
     try {
-      const orderIds = deliveredOrders.map((o: any) => o.id);
+      const orderIds = payoutOrders.map((o: any) => o.id);
       const res = await fetch(`/api/drivers/${driverId}/payouts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           orderIds,
           commissionUsd: totalCommission,
-          netUsd: netPayoutUsd,
+          netUsd: payoutNetUsd,
         }),
       });
       if (res.ok) {
         setShowPayoutModal(false);
+        setSelectedOrders([]);
         await refreshData();
       } else {
         const err = await res.json().catch(() => null);
@@ -1789,6 +1798,8 @@ export default function DriverProfilePage() {
                 className={`px-5 py-2.5 rounded-lg font-bold text-white bg-cyan-600 transition-colors text-sm shadow-lg shadow-cyan-500/20 ${!canGeneratePayout ? "opacity-50 cursor-not-allowed" : "hover:bg-cyan-500"}`}
               >
                 ⚡ Generate Payout Batch
+                {selectedWdOrders.length > 0 &&
+                  ` (${selectedWdOrders.length} selected)`}
               </button>
               <div className="flex items-center gap-1.5 border-l border-white/10 pl-3">
                 <button
@@ -3326,9 +3337,9 @@ export default function DriverProfilePage() {
         {/* ── Payout Confirmation Modal ──────────────────────────────── */}
         {showPayoutModal && (
           <ConfirmPayoutModal
-            orders={deliveredOrders}
-            totalUsd={deliveredGrossUsd}
-            totalLbp={deliveredGrossLbp}
+            orders={payoutOrders}
+            totalUsd={payoutGrossUsd}
+            totalLbp={payoutGrossLbp}
             carriedDebtUsd={driver?.carriedDebtUsd ?? 0}
             carriedDebtLbp={driver?.carriedDebtLbp ?? 0}
             commissionLines={payoutBreakdown.commissionLines}

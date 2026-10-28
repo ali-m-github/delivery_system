@@ -23,12 +23,29 @@ updated automatically every 30 minutes.
 ## Status mapping
 | Libanex Location | PWA location | | Libanex Fin | PWA fin |
 |---|---|---|---|---|
-| W, WH, W9, OP | WAREHOUSE | | UD/WD/WO/PS | same |
+| W, WH, W9, OP | WAREHOUSE | | UD/WD | same |
 | CP, CP1 | CP | | Re | RWD |
-| Dr, DrD, DrR | ASSIGNED | | (others) | keep last + warn |
-| Tr | ASSIGNED_TR | | | |
+| Dr, DrD, DrR | ASSIGNED | | **WO/PS** | **NEVER applied** (Jett-owned) |
+| Tr | ASSIGNED_TR | | (others) | keep last + warn |
 | De | DELIVERED | | | |
 | Re, Ba, Rc | RETURN (+RWD) | | | |
+
+### WO/PS are owned by Jett (owner rule, 2026-10-27)
+`WO` (With Office) and `PS` (Paid to Seller) are financial statements created by
+a Jett employee through a payout, never by Libanex — so both systems can be
+compared. The sync records the raw Libanex code on `LibanexLink.rawFinStatus`
+(audit) but never mirrors it onto the order.
+
+`mapStatus()` derives the PWA financial status from the resulting **location**
+(`LOCATION_FIN`: DELIVERED→WD, RETURN→RWD, WAREHOUSE/ASSIGNED/ASSIGNED_TR/
+WITH_DRIVER→UD) but only when Libanex actually **moved** the order. Consequences:
+- Libanex `De` → always `DELIVERED` + `WD` (never `PS`/`WO`).
+- Libanex un-delivers or returns an order → the PWA follows, and this also
+  releases an order we had already cleared to `WO`/`PS` (the goods really moved).
+- Libanex changed only its own `WO`/`PS` → PWA keeps the Jett value; the order
+  stays in `PAID_OUT_ELIGIBLE_STATUSES` and remains visible in payouts.
+Previously `FIN_MAP` passed `WO`/`PS` straight through, which silently removed
+Libanex orders from payout eligibility.
 
 ## Data model
 - New `LibanexLink` table: `libanexOrderId` (unique, = our `Order.orderId`),
@@ -70,7 +87,17 @@ updated automatically every 30 minutes.
   seller per run; warnings reported instead of failing the whole run.
 - No writes to Libanex; PWA-only additive changes.
 
-## Status: DEPLOYED & VERIFIED (2026-10-15)
+## Status: DEPLOYED & VERIFIED (2026-10-15; WO/PS rule deployed 2026-10-27)
+- WO/PS rule verified live: seller 5062 (Lily's Corner) had been bulk-statemented
+  on Libanex ("Stmt-82386"), which dragged 17 DELIVERED orders to `PS` with no
+  Jett payout. `scripts/fix-libanex-wo-ps-to-wd.js` restored them to `WD`
+  ($595 back in payout eligibility, history row `LIBANEX_WOPS_ROLLBACK` each).
+  A manual `/api/admin/libanex/sync` run afterwards left all 17 at
+  `DELIVERED/WD` while `LibanexLink.rawFinStatus` stayed `PS` (audit preserved).
+- `scripts/audit-libanex-wo-ps.js` / `scripts/inspect-libanex-wo-history.js`
+  are the read-only tools for this class of problem: an order in `WO`/`PS` with
+  no `driverPayoutId`/`merchantPayoutId`/`cashPayoutBatchId` can only have been
+  moved there by the sync, because Jett's payout flows always set one.
 - E2E test with seller 1176 (8 orders): import created 8 orders + 8 links +
   history; re-import skipped all 8 (idempotent); sync replicated 24 history
   rows and updated 7 orders; second sync = 0 new rows (cursors work).
