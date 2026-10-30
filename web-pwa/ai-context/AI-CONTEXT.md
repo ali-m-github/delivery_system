@@ -1,6 +1,6 @@
 # Project map — delivery_system / web-pwa
 
-Generated: 2026-10-27T20:54:09.878Z
+Generated: 2026-10-29T19:06:14.697Z
 Source files scanned: 219
 
 ## How to use this file
