@@ -33,7 +33,7 @@ import prisma from "@/lib/prisma";
 
 const API_URL =
   process.env.LIBANEX_API_URL ||
-  "http://83.149.106.196/libanexbackup/api/internal/v1";
+  "https://libanex.seedbox.cfd/api/internal/v1";
 const API_KEY = process.env.LIBANEX_API_KEY || "";
 
 const LIBANEX_DRIVER_CODE = "D999";

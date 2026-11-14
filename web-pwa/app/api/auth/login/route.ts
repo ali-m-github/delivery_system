@@ -57,7 +57,7 @@ export async function POST(request: Request) {
         { error: "Invalid credentials" },
         { status: 401 },
       );
-    }
+    };
 
     const token = await createSessionToken({ id: user.id, role: user.role });
 
