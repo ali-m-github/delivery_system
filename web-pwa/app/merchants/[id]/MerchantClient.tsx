@@ -7,6 +7,7 @@ import SharedOrderTable from "@/components/SharedOrderTable";
 import CashSellerWorkspace from "@/components/merchants/CashSellerWorkspace";
 import ImportGoogleSheetsModal from "@/components/orders/ImportGoogleSheetsModal";
 import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
+import { resolveMerchantShippingRate } from "@/lib/merchantRates";
 
 // Day/month/year, matching the user side (SharedOrderTable, tracking).
 const formatDate = (iso: string) => {
@@ -377,17 +378,17 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
         return;
       }
 
-      const rate = merchant.zoneRates?.find(
-        (zr: any) =>
-          String(zr.zoneId) === String(order.zoneId) ||
-          String(zr.zone?.name) === String(order.zone?.name) ||
-          String(zr.zoneId) === String(order.zone?.name),
+      // Zone-rate RULE matching this order's zone + creation date, falling
+      // back to the universal zone price (identical to the server:
+      // lib/merchantRates.ts).
+      const rate = resolveMerchantShippingRate(
+        merchant.rateRules || [],
+        order.zone?.name,
+        order.zone,
+        order.createdAt,
       );
-
-      if (rate) {
-        shippingUsd += rate.rateUsd ?? rate.rate ?? rate.price ?? 0;
-        shippingLbp += rate.rateLbp ?? 0;
-      }
+      shippingUsd += rate.usd;
+      shippingLbp += rate.lbp;
     });
 
     return {
@@ -406,7 +407,7 @@ export default function MerchantClient({ merchant }: MerchantClientProps) {
     selectedOrders,
     filteredOrders,
     activeTab,
-    merchant.zoneRates,
+    merchant.rateRules,
     merchant.isCashSeller,
     merchant.defaultSellerRate,
     merchant.defaultProfitRate,

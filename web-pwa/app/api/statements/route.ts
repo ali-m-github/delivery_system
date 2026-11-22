@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { computeOrderProfit, resolveDriverSellerException } from "@/lib/profit";
 import { grossUsd, grossLbp } from "@/lib/commission";
+import { resolveMerchantShippingRate } from "@/lib/merchantRates";
 import { withConcurrencyRetries } from "@/lib/concurrency";
 import {
   requireAuthenticatedSession,
@@ -86,7 +87,7 @@ export async function GET(req: Request) {
       },
       include: {
         merchant: {
-          include: { zoneRates: true },
+          include: { rateRules: true },
         },
         orders: {
           include: { driver: true, zone: true },
@@ -164,7 +165,7 @@ export async function POST(req: Request) {
             isCashSeller: true,
             defaultSellerRate: true,
             defaultProfitRate: true,
-            zoneRates: true,
+            rateRules: true,
           },
         });
         if (!merchant) throw new MerchantNotFoundError();
@@ -183,6 +184,17 @@ export async function POST(req: Request) {
             financialStatus: "WO",
           },
           orderBy: { id: "asc" },
+          // zone name + universal price are needed to resolve the merchant's
+          // per-order rate (lib/merchantRates.ts).
+          include: {
+            zone: {
+              select: {
+                name: true,
+                basePriceUsd: true,
+                basePriceLbp: true,
+              },
+            },
+          },
         });
 
         // Reject the whole batch if ANY requested ID is missing or ineligible.
@@ -207,16 +219,9 @@ export async function POST(req: Request) {
         // Shipping deducted from the seller, per order, from the merchant's
         // own configured rates:
         //  - Cash sellers: flat fee = defaultSellerRate + defaultProfitRate.
-        //  - Otherwise: the merchant's zone rate (USD + LBP) for the order's
-        //    zone; 0 when the merchant has no rate configured for that zone
-        //    (mirrors the live UI calculator).
-        const zoneRateMap = new Map<string, { usd: number; lbp: number }>();
-        for (const zr of merchant.zoneRates) {
-          zoneRateMap.set(String(zr.zoneId), {
-            usd: Number(zr.rate) || 0,
-            lbp: Number(zr.rateLbp) || 0,
-          });
-        }
+        //  - Otherwise: the merchant's zone-rate RULE matching the order's
+        //    zone and creation date (lib/merchantRates.ts); the universal
+        //    zone price when no rule matches (mirrors the live UI calculator).
         const cashFeeUsd = merchant.isCashSeller
           ? (Number(merchant.defaultSellerRate) || 0) +
             (Number(merchant.defaultProfitRate) || 0)
@@ -229,11 +234,14 @@ export async function POST(req: Request) {
             shippingUsd += cashFeeUsd;
             continue;
           }
-          const zr = zoneRateMap.get(String(o.zoneId));
-          if (zr) {
-            shippingUsd += zr.usd;
-            shippingLbp += zr.lbp;
-          }
+          const rate = resolveMerchantShippingRate(
+            merchant.rateRules,
+            o.zone?.name,
+            o.zone,
+            o.createdAt,
+          );
+          shippingUsd += rate.usd;
+          shippingLbp += rate.lbp;
         }
 
         const netUsd = totalUsd - shippingUsd;

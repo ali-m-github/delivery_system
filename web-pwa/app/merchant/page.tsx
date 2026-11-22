@@ -102,17 +102,22 @@ export default async function MerchantPage() {
               location: true,
               financialStatus: true,
               createdAt: true,
-              zone: { select: { id: true, name: true } },
+              // basePrice* needed for the universal-rate fallback
+              // (lib/merchantRates.ts).
+              zone: {
+                select: {
+                  id: true,
+                  name: true,
+                  basePriceUsd: true,
+                  basePriceLbp: true,
+                },
+              },
               driver: { select: { id: true, firstName: true, lastName: true } },
             },
           },
         },
       },
-      zoneRates: {
-        include: {
-          zone: { select: { id: true, name: true } },
-        },
-      },
+      rateRules: true,
     },
   });
 
@@ -146,11 +151,15 @@ export default async function MerchantPage() {
     // Account creation date, taken straight from the Merchant row.
     createdAt: merchant.createdAt.toISOString(),
     sheetImportConfig: normalizeSheetImportConfig(merchant.sheetImportConfig),
-    zoneRates: merchant.zoneRates.map((zr) => ({
-      id: zr.id,
-      zoneId: zr.zoneId,
-      rate: zr.rate,
-      zone: zr.zone,
+    // Zone-rate rules (range + effective date) — resolution happens in the
+    // client via lib/merchantRates.ts so figures match the server exactly.
+    rateRules: merchant.rateRules.map((rr) => ({
+      id: rr.id,
+      zoneFrom: rr.zoneFrom,
+      zoneTo: rr.zoneTo,
+      rate: rr.rate,
+      rateLbp: rr.rateLbp,
+      effectiveFrom: rr.effectiveFrom.toISOString(),
     })),
     orders: merchant.orders.map((o) => ({
       ...o,

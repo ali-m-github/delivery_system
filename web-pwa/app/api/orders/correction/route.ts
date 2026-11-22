@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { generateTrackToken } from "@/lib/tracking";
 import { requireServerPermission } from "@/lib/server-permissions";
+import {
+  loadMerchantRateRules,
+  resolveMerchantShippingRate,
+} from "@/lib/merchantRates";
 
 // Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 
@@ -25,28 +29,33 @@ export async function POST(request: Request) {
         { status: 400 },
       );
 
-    // 1. Fetch OLD merchant's zone rate to calculate the exact net amount they were incorrectly paid
-    const oldZoneRate = await prisma.merchantZoneRate.findUnique({
-      where: {
-        merchantId_zoneId: {
-          merchantId: originalOrder.merchantId,
-          zoneId: originalOrder.zoneId,
-        },
-      },
-    });
-    const oldShipping = oldZoneRate?.rate || 0;
+    // 1+2. Resolve each merchant's shipping charge for this order via the
+    // zone-rate RULES (lib/merchantRates.ts): the rule matching the order's
+    // zone and creation date, falling back to the universal zone price —
+    // the same figures the statements were (or will be) built with.
+    const [orderZone, oldRules, newRules] = await Promise.all([
+      prisma.zone.findUnique({
+        where: { id: originalOrder.zoneId },
+        select: { name: true, basePriceUsd: true, basePriceLbp: true },
+      }),
+      loadMerchantRateRules(originalOrder.merchantId),
+      loadMerchantRateRules(newMerchantId),
+    ]);
+
+    const oldShipping = resolveMerchantShippingRate(
+      oldRules,
+      orderZone?.name,
+      orderZone,
+      originalOrder.createdAt,
+    ).usd;
     const netPaidUsd = originalOrder.amountUsd - oldShipping;
 
-    // 2. Fetch NEW merchant's zone rate to calculate the exact net amount they should receive
-    const newZoneRate = await prisma.merchantZoneRate.findUnique({
-      where: {
-        merchantId_zoneId: {
-          merchantId: newMerchantId,
-          zoneId: originalOrder.zoneId,
-        },
-      },
-    });
-    const newShipping = newZoneRate?.rate || 0;
+    const newShipping = resolveMerchantShippingRate(
+      newRules,
+      orderZone?.name,
+      orderZone,
+      originalOrder.createdAt,
+    ).usd;
     const netOwedUsd = originalOrder.amountUsd - newShipping;
 
     // 3. Generate the Deduction (D) and Correction (C) Orders simultaneously

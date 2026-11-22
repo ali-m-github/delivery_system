@@ -39,11 +39,30 @@ export default function SellersPage() {
   });
   const [editLogoFile, setEditLogoFile] = useState<File | null>(null);
 
-  // Zone Overrides Modal State
+  // Zone Rate Rules Modal State (zone-range + rate + effective date rules;
+  // resolution lives in lib/merchantRates.ts, CRUD in
+  // /api/admin/merchants/[id]/rate-rules)
   const [isRatesModalOpen, setIsRatesModalOpen] = useState(false);
   const [selectedSeller, setSelectedSeller] = useState<any | null>(null);
-  // stagedRates now includes: { zone, rateUsd, rateLbp, overridden }
-  const [stagedRates, setStagedRates] = useState<any[]>([]);
+  const [rateRules, setRateRules] = useState<any[]>([]);
+  const [rateRulesLoading, setRateRulesLoading] = useState(false);
+  const [rateRulesSaving, setRateRulesSaving] = useState(false);
+  const [rateRuleError, setRateRuleError] = useState<string | null>(null);
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const emptyRuleForm = () => ({
+    id: null as string | null,
+    zoneFrom: "",
+    zoneTo: "",
+    rateUsd: "",
+    rateLbp: "",
+    effectiveFrom: todayStr(),
+  });
+  const [ruleForm, setRuleForm] = useState(emptyRuleForm());
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  // Inline delete confirmation: ruleId currently awaiting confirmation
+  const [confirmDeleteRuleId, setConfirmDeleteRuleId] = useState<
+    string | null
+  >(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -224,28 +243,154 @@ export default function SellersPage() {
     }
   };
 
+  // ── Zone Rate Rules modal handlers ─────────────────────────────────────
+  // Rules charge a merchant per order for a span of zones (e.g. 2–9) on
+  // orders received on/after the rule's effective date. Orders matching no
+  // rule are charged the universal zone price (lib/merchantRates.ts).
+  const loadRateRules = async (sellerId: string) => {
+    setRateRulesLoading(true);
+    try {
+      const res = await fetch(
+        `/api/admin/merchants/${sellerId}/rate-rules`,
+      );
+      if (res.ok) {
+        setRateRules(await res.json());
+      } else {
+        setRateRules([]);
+        alert("Failed to load zone rate rules.");
+      }
+    } catch (e) {
+      setRateRules([]);
+      alert("Error loading zone rate rules.");
+    } finally {
+      setRateRulesLoading(false);
+    }
+  };
+
   const handleOpenRates = (seller: any) => {
     setSelectedSeller(seller);
-    // Build override map from existing merchant zone rates
-    const overrideMap = new Map();
-    (seller.zoneRates || []).forEach((zr: any) => {
-      overrideMap.set(zr.zoneId, {
-        rateUsd: zr.rate,
-        rateLbp: zr.rateLbp || 0,
-      });
-    });
-    // Build staged rates from ALL zones, marking which have overrides
-    const allRates = zones.map((z: any) => {
-      const existing = overrideMap.get(z.id);
-      return {
-        zone: z,
-        rateUsd: existing ? existing.rateUsd : z.basePriceUsd,
-        rateLbp: existing ? existing.rateLbp : z.basePriceLbp,
-        overridden: !!existing,
-      };
-    });
-    setStagedRates(allRates);
+    setRateRules([]);
+    setRateRuleError(null);
+    setEditingRuleId(null);
+    setConfirmDeleteRuleId(null);
+    setRuleForm(emptyRuleForm());
     setIsRatesModalOpen(true);
+    loadRateRules(seller.id);
+  };
+
+  const closeRatesModal = () => {
+    setIsRatesModalOpen(false);
+    setSelectedSeller(null);
+    setRateRules([]);
+    setRateRuleError(null);
+    setEditingRuleId(null);
+    setConfirmDeleteRuleId(null);
+  };
+
+  const startEditRule = (rule: any) => {
+    setEditingRuleId(rule.id);
+    setConfirmDeleteRuleId(null);
+    setRateRuleError(null);
+    setRuleForm({
+      id: rule.id,
+      zoneFrom: String(rule.zoneFrom),
+      zoneTo: String(rule.zoneTo),
+      rateUsd: String(rule.rate ?? ""),
+      rateLbp: String(rule.rateLbp ?? ""),
+      effectiveFrom: rule.effectiveFrom
+        ? new Date(rule.effectiveFrom).toISOString().slice(0, 10)
+        : todayStr(),
+    });
+  };
+
+  const cancelEditRule = () => {
+    setEditingRuleId(null);
+    setRuleForm(emptyRuleForm());
+    setRateRuleError(null);
+  };
+
+  const handleSaveRule = async () => {
+    if (!selectedSeller) return;
+    setRateRuleError(null);
+
+    const zoneFrom = parseInt(ruleForm.zoneFrom, 10);
+    const zoneTo = parseInt(ruleForm.zoneTo, 10);
+    const rateUsd = parseFloat(ruleForm.rateUsd);
+    const rateLbp =
+      ruleForm.rateLbp === "" ? 0 : parseFloat(ruleForm.rateLbp);
+
+    if (
+      !Number.isInteger(zoneFrom) ||
+      !Number.isInteger(zoneTo) ||
+      zoneFrom < 0 ||
+      zoneTo < 0 ||
+      zoneFrom > zoneTo
+    ) {
+      setRateRuleError("Zone range must be whole numbers ≥ 0 with from ≤ to.");
+      return;
+    }
+    if (!Number.isFinite(rateUsd) || rateUsd < 0) {
+      setRateRuleError("USD rate must be a number ≥ 0.");
+      return;
+    }
+    if (!Number.isFinite(rateLbp) || rateLbp < 0) {
+      setRateRuleError("LBP rate must be a number ≥ 0.");
+      return;
+    }
+    if (!ruleForm.effectiveFrom) {
+      setRateRuleError("Effective-from date is required.");
+      return;
+    }
+
+    setRateRulesSaving(true);
+    try {
+      const res = await fetch(
+        `/api/admin/merchants/${selectedSeller.id}/rate-rules`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: editingRuleId ?? undefined,
+            zoneFrom,
+            zoneTo,
+            rate: rateUsd,
+            rateLbp,
+            effectiveFrom: ruleForm.effectiveFrom,
+          }),
+        },
+      );
+      if (res.ok) {
+        await loadRateRules(selectedSeller.id);
+        cancelEditRule();
+      } else {
+        const body = await res.json().catch(() => null);
+        setRateRuleError(body?.error || "Failed to save rule.");
+      }
+    } catch (e) {
+      setRateRuleError("Error saving rule.");
+    } finally {
+      setRateRulesSaving(false);
+    }
+  };
+
+  const handleDeleteRule = async (ruleId: string) => {
+    if (!selectedSeller) return;
+    setRateRuleError(null);
+    try {
+      const res = await fetch(
+        `/api/admin/merchants/${selectedSeller.id}/rate-rules?ruleId=${encodeURIComponent(ruleId)}`,
+        { method: "DELETE" },
+      );
+      if (res.ok) {
+        if (editingRuleId === ruleId) cancelEditRule();
+        setConfirmDeleteRuleId(null);
+        await loadRateRules(selectedSeller.id);
+      } else {
+        setRateRuleError("Failed to delete rule.");
+      }
+    } catch (e) {
+      setRateRuleError("Error deleting rule.");
+    }
   };
 
   const handleDeleteSeller = async (id: string, name: string) => {
@@ -269,70 +414,6 @@ export default function SellersPage() {
     }
   };
 
-  const handleUpdateRate = (
-    index: number,
-    field: "rateUsd" | "rateLbp",
-    value: string,
-  ) => {
-    const updated = [...stagedRates];
-    const numVal = value === "" ? 0 : parseFloat(value);
-    updated[index] = {
-      ...updated[index],
-      [field]: isNaN(numVal) ? 0 : numVal,
-      overridden: true,
-    };
-    setStagedRates(updated);
-  };
-
-  const handleResetRate = (index: number) => {
-    const z = stagedRates[index].zone;
-    const updated = [...stagedRates];
-    updated[index] = {
-      ...updated[index],
-      rateUsd: z.basePriceUsd,
-      rateLbp: z.basePriceLbp,
-      overridden: false,
-    };
-    setStagedRates(updated);
-  };
-
-  const handleApplyUniversal = () => {
-    const updated = stagedRates.map((sr: any) => ({
-      ...sr,
-      rateUsd: sr.zone.basePriceUsd,
-      rateLbp: sr.zone.basePriceLbp,
-      overridden: false,
-    }));
-    setStagedRates(updated);
-  };
-
-  const handleSaveRates = async () => {
-    try {
-      const payload = {
-        merchantId: selectedSeller.id,
-        rates: stagedRates
-          .filter((sr: any) => sr.overridden)
-          .map((sr: any) => ({
-            zoneId: sr.zone.id,
-            rate: sr.rateUsd,
-            rateLbp: sr.rateLbp,
-          })),
-      };
-      const res = await fetch("/api/admin/merchants", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (res.ok) {
-        setIsRatesModalOpen(false);
-        fetchData();
-      } else {
-        alert("Failed to save rates");
-      }
-    } catch (e) {
-      alert("Error saving rates");
-    }
-  };
 
   return (
     <div className="min-h-screen bg-gray-950 text-white p-6">
@@ -440,7 +521,7 @@ export default function SellersPage() {
                           onClick={() => handleOpenRates(seller)}
                           className="bg-purple-600/20 text-purple-400 hover:bg-purple-600/40 border border-purple-500/30 px-3 py-1.5 rounded transition-colors text-xs font-bold mr-2"
                         >
-                          Zone Overrides
+                          Zone Rates
                         </button>
                         {!seller.user && (
                           <Link
@@ -882,52 +963,155 @@ export default function SellersPage() {
         </div>
       )}
 
-      {/* ZONE OVERRIDES MODAL */}
+      {/* ZONE RATE RULES MODAL */}
       {isRatesModalOpen && selectedSeller && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-slate-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh] relative z-10">
             <div className="p-6 border-b border-gray-800 bg-slate-950 flex justify-between items-center shrink-0">
               <div>
                 <h2 className="text-xl font-bold text-white">
-                  Zone Overrides: {selectedSeller.merchantName}
+                  Zone Rate Rules: {selectedSeller.merchantName}
                 </h2>
                 <p className="text-sm text-gray-400 mt-1">
-                  Override universal zone rates for this seller. Edit USD/LBP
-                  values to set custom rates.
+                  Charge this seller per order for a range of zones, effective
+                  from a date. Orders outside every rule (or received before
+                  its effective date) are charged the universal zone price.
                 </p>
-              </div>
-              <div className="flex gap-2">
-                <span className="inline-flex items-center gap-1.5 text-xs text-gray-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                  Overridden
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-xs text-gray-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-gray-600" />
-                  Default (Universal)
-                </span>
               </div>
             </div>
 
             <div className="p-6 flex-1 overflow-y-auto">
+              {/* Add / Edit rule form */}
+              <div className="rounded-xl border border-gray-800 bg-slate-950 p-4 mb-6">
+                <h3 className="text-sm font-bold text-white mb-3">
+                  {editingRuleId ? "Edit Rule" : "Add Rule"}
+                </h3>
+                <div className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+                      Zones from
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="2"
+                      value={ruleForm.zoneFrom}
+                      onChange={(e) =>
+                        setRuleForm({ ...ruleForm, zoneFrom: e.target.value })
+                      }
+                      className="w-20 bg-slate-900 border border-gray-700 rounded px-2 py-1.5 text-center text-white font-mono text-sm focus:border-cyan-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+                      Zones to
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="9"
+                      value={ruleForm.zoneTo}
+                      onChange={(e) =>
+                        setRuleForm({ ...ruleForm, zoneTo: e.target.value })
+                      }
+                      className="w-20 bg-slate-900 border border-gray-700 rounded px-2 py-1.5 text-center text-white font-mono text-sm focus:border-cyan-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+                      USD
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="$2.50"
+                      value={ruleForm.rateUsd}
+                      onChange={(e) =>
+                        setRuleForm({ ...ruleForm, rateUsd: e.target.value })
+                      }
+                      className="w-24 bg-slate-900 border border-gray-700 rounded px-2 py-1.5 text-center text-white font-mono text-sm focus:border-cyan-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+                      LBP
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="0"
+                      value={ruleForm.rateLbp}
+                      onChange={(e) =>
+                        setRuleForm({ ...ruleForm, rateLbp: e.target.value })
+                      }
+                      className="w-28 bg-slate-900 border border-gray-700 rounded px-2 py-1.5 text-center text-white font-mono text-sm focus:border-cyan-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+                      Effective from
+                    </label>
+                    <input
+                      type="date"
+                      value={ruleForm.effectiveFrom}
+                      onChange={(e) =>
+                        setRuleForm({
+                          ...ruleForm,
+                          effectiveFrom: e.target.value,
+                        })
+                      }
+                      className="bg-slate-900 border border-gray-700 rounded px-2 py-1.5 text-white text-sm focus:border-cyan-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex gap-2 ml-auto">
+                    {editingRuleId && (
+                      <button
+                        type="button"
+                        onClick={cancelEditRule}
+                        className="px-4 py-1.5 rounded-lg bg-[#232529] text-white hover:bg-gray-700 text-sm font-medium transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleSaveRule}
+                      disabled={rateRulesSaving}
+                      className="bg-[#124046] text-[#42d4e6] px-5 py-1.5 rounded-lg text-sm font-bold transition-colors disabled:opacity-50 hover:brightness-110"
+                    >
+                      {rateRulesSaving
+                        ? "Saving..."
+                        : editingRuleId
+                          ? "Save Changes"
+                          : "Add Rule"}
+                    </button>
+                  </div>
+                </div>
+                {rateRuleError && (
+                  <p className="text-xs text-red-400 mt-2">{rateRuleError}</p>
+                )}
+              </div>
+
+              {/* Rules list */}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 bg-slate-900 z-10">
                     <tr className="border-b border-gray-700 text-xs text-gray-400 uppercase tracking-wider">
-                      <th className="py-3 px-3 text-left font-medium">Zone</th>
-                      <th className="py-3 px-3 text-center font-medium">
-                        Universal USD
+                      <th className="py-3 px-3 text-left font-medium">
+                        Zones
                       </th>
                       <th className="py-3 px-3 text-center font-medium">
-                        Universal LBP
+                        USD
                       </th>
                       <th className="py-3 px-3 text-center font-medium">
-                        Seller USD
+                        LBP
                       </th>
                       <th className="py-3 px-3 text-center font-medium">
-                        Seller LBP
-                      </th>
-                      <th className="py-3 px-3 text-center font-medium">
-                        Status
+                        Effective from
                       </th>
                       <th className="py-3 px-3 text-center font-medium">
                         Actions
@@ -935,96 +1119,81 @@ export default function SellersPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-800">
-                    {stagedRates.length === 0 ? (
+                    {rateRulesLoading ? (
                       <tr>
                         <td
-                          colSpan={7}
+                          colSpan={5}
                           className="p-8 text-center text-gray-500"
                         >
-                          No zones configured yet.
+                          Loading rules...
+                        </td>
+                      </tr>
+                    ) : rateRules.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="p-8 text-center text-gray-500"
+                        >
+                          No rules yet — this seller is charged the universal
+                          zone price for every order.
                         </td>
                       </tr>
                     ) : (
-                      stagedRates.map((sr: any, index: number) => (
+                      rateRules.map((rule: any) => (
                         <tr
-                          key={sr.zone.id}
-                          className={`hover:bg-slate-800/30 transition-colors ${sr.overridden ? "bg-emerald-500/5" : ""}`}
+                          key={rule.id}
+                          className={`hover:bg-slate-800/30 transition-colors ${editingRuleId === rule.id ? "bg-cyan-500/5" : ""}`}
                         >
-                          {/* Zone Name */}
                           <td className="py-3 px-3 font-semibold text-white">
-                            {sr.zone.name}
+                            {rule.zoneFrom === rule.zoneTo
+                              ? `Zone ${rule.zoneFrom}`
+                              : `Zones ${rule.zoneFrom}–${rule.zoneTo}`}
                           </td>
-
-                          {/* Universal USD */}
-                          <td className="py-3 px-3 text-center text-gray-400 font-mono text-xs">
-                            ${sr.zone.basePriceUsd?.toFixed(2) ?? "0.00"}
+                          <td className="py-3 px-3 text-center text-white font-mono text-xs">
+                            ${(Number(rule.rate) || 0).toFixed(2)}
                           </td>
-
-                          {/* Universal LBP */}
-                          <td className="py-3 px-3 text-center text-gray-400 font-mono text-xs">
-                            {(sr.zone.basePriceLbp ?? 0).toLocaleString()}
+                          <td className="py-3 px-3 text-center text-white font-mono text-xs">
+                            {(Number(rule.rateLbp) || 0).toLocaleString()}
                           </td>
-
-                          {/* Seller USD - editable */}
-                          <td className="py-3 px-3">
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              value={sr.rateUsd ?? ""}
-                              onChange={(e) =>
-                                handleUpdateRate(
-                                  index,
-                                  "rateUsd",
-                                  e.target.value,
-                                )
-                              }
-                              className="w-24 mx-auto block bg-slate-950 border border-gray-700 rounded px-2 py-1 text-center text-white font-mono text-sm focus:border-cyan-500 focus:outline-none"
-                            />
+                          <td className="py-3 px-3 text-center text-gray-300 text-xs">
+                            {rule.effectiveFrom
+                              ? new Date(
+                                  rule.effectiveFrom,
+                                ).toLocaleDateString()
+                              : "—"}
                           </td>
-
-                          {/* Seller LBP - editable */}
-                          <td className="py-3 px-3">
-                            <input
-                              type="number"
-                              step="1"
-                              min="0"
-                              value={sr.rateLbp ?? ""}
-                              onChange={(e) =>
-                                handleUpdateRate(
-                                  index,
-                                  "rateLbp",
-                                  e.target.value,
-                                )
-                              }
-                              className="w-28 mx-auto block bg-slate-950 border border-gray-700 rounded px-2 py-1 text-center text-white font-mono text-sm focus:border-cyan-500 focus:outline-none"
-                            />
-                          </td>
-
-                          {/* Status Badge */}
-                          <td className="py-3 px-3 text-center">
-                            {sr.overridden ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                                Custom
-                              </span>
+                          <td className="py-3 px-3 text-center whitespace-nowrap">
+                            <button
+                              onClick={() => startEditRule(rule)}
+                              className="text-xs text-cyan-400 hover:text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 px-2 py-1 rounded transition-colors mr-2"
+                            >
+                              Edit
+                            </button>
+                            {confirmDeleteRuleId === rule.id ? (
+                              <>
+                                <button
+                                  onClick={() => handleDeleteRule(rule.id)}
+                                  className="text-xs text-white bg-red-600 hover:bg-red-500 px-2 py-1 rounded transition-colors mr-1"
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    setConfirmDeleteRuleId(null)
+                                  }
+                                  className="text-xs text-gray-400 hover:text-white bg-slate-800 px-2 py-1 rounded transition-colors"
+                                >
+                                  Keep
+                                </button>
+                              </>
                             ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-700/50 text-gray-500">
-                                <span className="w-1.5 h-1.5 rounded-full bg-gray-500" />
-                                Default
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Actions */}
-                          <td className="py-3 px-3 text-center">
-                            {sr.overridden && (
                               <button
-                                onClick={() => handleResetRate(index)}
+                                onClick={() =>
+                                  setConfirmDeleteRuleId(rule.id)
+                                }
                                 className="text-xs text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 px-2 py-1 rounded transition-colors"
-                                title="Reset to universal rate"
                               >
-                                Reset
+                                Delete
                               </button>
                             )}
                           </td>
@@ -1035,32 +1204,19 @@ export default function SellersPage() {
                 </table>
               </div>
 
-              <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
-                <span>
-                  {stagedRates.filter((s: any) => s.overridden).length} of{" "}
-                  {stagedRates.length} zones overridden
-                </span>
-                <button
-                  onClick={handleApplyUniversal}
-                  className="text-cyan-400 hover:text-cyan-300 transition-colors"
-                >
-                  Apply Universal Rates to All
-                </button>
-              </div>
+              <p className="mt-4 text-xs text-gray-500">
+                When several rules match an order, the one with the latest
+                effective date wins. Older orders keep the rate that applied
+                when they were received.
+              </p>
             </div>
 
             <div className="p-6 border-t border-gray-800 bg-slate-950 flex justify-end space-x-3 shrink-0">
               <button
-                onClick={() => setIsRatesModalOpen(false)}
+                onClick={closeRatesModal}
                 className="px-6 py-2.5 rounded text-gray-400 hover:bg-slate-800 font-bold transition-colors"
               >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveRates}
-                className="bg-green-600 hover:bg-green-500 text-white px-8 py-2.5 rounded font-bold transition-colors shadow-lg shadow-green-900/20"
-              >
-                Save Overrides
+                Close
               </button>
             </div>
           </div>

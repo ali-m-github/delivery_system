@@ -15,6 +15,7 @@ import {
 } from "@/components/SharedOrderTable";
 import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
 import { getReasonLabel } from "@/lib/driver-reasons";
+import { resolveMerchantShippingRate } from "@/lib/merchantRates";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Order {
@@ -142,6 +143,16 @@ interface ZoneRate {
   zone: { id: string; name: string };
 }
 
+// Zone-rate rule (zone range + rate + effective date) — see lib/merchantRates.ts
+interface MerchantRateRuleRow {
+  id: string;
+  zoneFrom: number;
+  zoneTo: number;
+  rate: number;
+  rateLbp: number;
+  effectiveFrom: string;
+}
+
 interface MerchantData {
   id: string;
   merchantId: number;
@@ -156,7 +167,8 @@ interface MerchantData {
     startRow?: number;
     colMapping?: Record<string, number>;
   } | null;
-  zoneRates: ZoneRate[];
+  zoneRates?: ZoneRate[];
+  rateRules: MerchantRateRuleRow[];
   orders: Order[];
 }
 
@@ -1002,16 +1014,19 @@ export default function MerchantClient({
     ];
 
     const orders = statement.orders || [];
-    const zoneRates = statement.merchant?.zoneRates || [];
+    const rateRules = statement.merchant?.rateRules || merchant.rateRules || [];
 
     orders.forEach((order: any) => {
-      const rate = zoneRates.find(
-        (zr: any) =>
-          String(zr.zoneId) === String(order.zoneId) ||
-          String(zr.zoneId) === String(order.zone?.name),
+      // Zone-rate rule by zone + order date, universal price fallback
+      // (identical to the server: lib/merchantRates.ts).
+      const rr = resolveMerchantShippingRate(
+        rateRules,
+        order.zone?.name,
+        order.zone,
+        order.createdAt,
       );
-      const shipUsd = rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
-      const shipLbp = rate?.rateLbp ?? 0;
+      const shipUsd = rr.usd;
+      const shipLbp = rr.lbp;
       const origUsd = order.amountUsd ?? 0;
       const origLbp = order.amountLbp ?? 0;
       const collUsd = order.collectedUsd ?? order.amountUsd ?? 0;
@@ -1358,7 +1373,7 @@ export default function MerchantClient({
       alert("No order details available for this statement.");
       return;
     }
-    const zoneRates = statement.merchant?.zoneRates || [];
+    const rateRules = statement.merchant?.rateRules || merchant.rateRules || [];
     const headers = [
       "Order ID",
       "Customer",
@@ -1374,13 +1389,16 @@ export default function MerchantClient({
       "Net LBP",
     ];
     const csvRows = orders.map((order: any) => {
-      const rate = zoneRates.find(
-        (zr: any) =>
-          String(zr.zoneId) === String(order.zoneId) ||
-          String(zr.zoneId) === String(order.zone?.name),
+      // Zone-rate rule by zone + order date, universal price fallback
+      // (identical to the server: lib/merchantRates.ts).
+      const rr = resolveMerchantShippingRate(
+        rateRules,
+        order.zone?.name,
+        order.zone,
+        order.createdAt,
       );
-      const shipUsd = rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
-      const shipLbp = rate?.rateLbp ?? 0;
+      const shipUsd = rr.usd;
+      const shipLbp = rr.lbp;
       const origUsd = order.amountUsd ?? 0;
       const origLbp = order.amountLbp ?? 0;
       const collUsd = order.collectedUsd ?? order.amountUsd ?? 0;
@@ -1500,18 +1518,25 @@ export default function MerchantClient({
               )}
             </div>
 
-            {/* Shipping Rates */}
-            {merchant.zoneRates && merchant.zoneRates.length > 0 && (
+            {/* Shipping Rates (zone-range rules; orders outside every rule
+                are charged the universal zone price) */}
+            {merchant.rateRules && merchant.rateRules.length > 0 && (
               <div className="mt-4 p-4 rounded-xl border border-white/5 bg-[#121824] inline-block">
                 <p className="text-xs text-gray-500 font-bold uppercase mb-2">
                   Shipping Rates
                 </p>
-                <div className="flex gap-4">
-                  {merchant.zoneRates.map((rate) => (
-                    <div key={rate.id} className="text-sm">
-                      <span className="text-gray-400">{rate.zone.name}: </span>
+                <div className="flex flex-wrap gap-x-6 gap-y-2">
+                  {merchant.rateRules.map((rule) => (
+                    <div key={rule.id} className="text-sm">
+                      <span className="text-gray-400">
+                        {rule.zoneFrom === rule.zoneTo
+                          ? `Zone ${rule.zoneFrom}`
+                          : `Zones ${rule.zoneFrom}–${rule.zoneTo}`}{" "}
+                        (from{" "}
+                        {new Date(rule.effectiveFrom).toLocaleDateString()}):{" "}
+                      </span>
                       <span className="text-white font-bold">
-                        ${rate.rate.toFixed(2)}
+                        ${rule.rate.toFixed(2)}
                       </span>
                     </div>
                   ))}
@@ -3618,16 +3643,20 @@ export default function MerchantClient({
                   </thead>
                   <tbody>
                     {selectedStatement.orders.map((order: any) => {
-                      const zoneRates =
-                        selectedStatement.merchant?.zoneRates || [];
-                      const rate = zoneRates.find(
-                        (zr: any) =>
-                          String(zr.zoneId) === String(order.zoneId) ||
-                          String(zr.zoneId) === String(order.zone?.name),
+                      // Zone-rate rule by zone + order date, universal price
+                      // fallback (identical to the server: lib/merchantRates.ts).
+                      const rateRules =
+                        selectedStatement.merchant?.rateRules ||
+                        merchant.rateRules ||
+                        [];
+                      const rr = resolveMerchantShippingRate(
+                        rateRules,
+                        order.zone?.name,
+                        order.zone,
+                        order.createdAt,
                       );
-                      const shipUsd =
-                        rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
-                      const shipLbp = rate?.rateLbp ?? 0;
+                      const shipUsd = rr.usd;
+                      const shipLbp = rr.lbp;
 
                       const origUsd = order.amountUsd ?? 0;
                       const origLbp = order.amountLbp ?? 0;

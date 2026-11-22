@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { styleWorksheet, downloadWorkbook } from "@/lib/excel-export";
+import { resolveMerchantShippingRate } from "@/lib/merchantRates";
 
 export default function StatementsPage() {
   const searchParams = useSearchParams();
@@ -20,36 +21,34 @@ export default function StatementsPage() {
   const [payAmountLbp, setPayAmountLbp] = useState(0);
   const [paying, setPaying] = useState(false);
 
-  // Cash-seller flat fee (seller rate + profit rate) overrides any zone rate
-  // for that seller.
-  const effectiveShipUsd = (stmt: any, order: any) => {
+  // Shipping charged to the seller for one order. Cash-seller flat fee
+  // (seller rate + profit rate) wins; otherwise the merchant's zone-rate RULE
+  // matching this order's zone + creation date, falling back to the universal
+  // zone price (identical logic to the server: lib/merchantRates.ts).
+  const effectiveShipRate = (stmt: any, order: any) => {
     const merchant = stmt.merchant || {};
     if (merchant.isCashSeller && merchant.defaultSellerRate != null) {
-      return (
-        (Number(merchant.defaultSellerRate) || 0) +
-        (Number(merchant.defaultProfitRate) || 0)
-      );
+      return {
+        usd:
+          (Number(merchant.defaultSellerRate) || 0) +
+          (Number(merchant.defaultProfitRate) || 0),
+        lbp: 0, // cash sellers are flat USD
+      };
     }
-    const rate = merchant.zoneRates?.find(
-      (zr: any) =>
-        String(zr.zoneId) === String(order.zoneId) ||
-        String(zr.zoneId) === String(order.zone?.name),
+    const rate = resolveMerchantShippingRate(
+      merchant.rateRules || [],
+      order.zone?.name,
+      order.zone,
+      order.createdAt,
     );
-    return rate?.rateUsd ?? rate?.rate ?? rate?.price ?? 0;
+    return { usd: rate.usd, lbp: rate.lbp };
   };
 
-  const effectiveShipLbp = (stmt: any, order: any) => {
-    const merchant = stmt.merchant || {};
-    if (merchant.isCashSeller && merchant.defaultSellerRate != null) {
-      return 0; // cash sellers are flat USD
-    }
-    const rate = merchant.zoneRates?.find(
-      (zr: any) =>
-        String(zr.zoneId) === String(order.zoneId) ||
-        String(zr.zoneId) === String(order.zone?.name),
-    );
-    return rate?.rateLbp ?? 0;
-  };
+  const effectiveShipUsd = (stmt: any, order: any) =>
+    effectiveShipRate(stmt, order).usd;
+
+  const effectiveShipLbp = (stmt: any, order: any) =>
+    effectiveShipRate(stmt, order).lbp;
 
   useEffect(() => {
     const fetchStatements = async () => {

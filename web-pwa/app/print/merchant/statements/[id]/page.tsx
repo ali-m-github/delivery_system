@@ -3,6 +3,7 @@ export const revalidate = 0;
 
 import prisma from "@/lib/prisma";
 import { getSessionUser } from "@/lib/server-permissions";
+import { resolveMerchantShippingRate } from "@/lib/merchantRates";
 import { PrintControls } from "./PrintControls";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -95,7 +96,7 @@ export default async function PrintMerchantStatementInvoicePage({
     where: { id, merchantId },
     include: {
       merchant: {
-        include: { zoneRates: true },
+        include: { rateRules: true },
       },
       orders: {
         include: { driver: true, zone: true },
@@ -111,17 +112,20 @@ export default async function PrintMerchantStatementInvoicePage({
     );
   }
 
-  const zoneRates = statement.merchant?.zoneRates || [];
+  const rateRules = statement.merchant?.rateRules || [];
 
   // ── Build line items (mirrors the merchant statement detail modal) ───────
   const lines = statement.orders.map((order: any) => {
-    const rate = zoneRates.find(
-      (zr: any) =>
-        String(zr.zoneId) === String(order.zoneId) ||
-        String(zr.zoneId) === String(order.zone?.name),
+    // Zone-rate rule by zone + order date, universal price fallback
+    // (identical to the server: lib/merchantRates.ts).
+    const rr = resolveMerchantShippingRate(
+      rateRules,
+      order.zone?.name,
+      order.zone,
+      order.createdAt,
     );
-    const shipUsd = rate?.rate ?? 0;
-    const shipLbp = rate?.rateLbp ?? 0;
+    const shipUsd = rr.usd;
+    const shipLbp = rr.lbp;
     const origUsd = order.amountUsd ?? 0;
     const origLbp = order.amountLbp ?? 0;
     const collUsd = order.collectedUsd ?? order.amountUsd ?? 0;

@@ -14,7 +14,7 @@ export default async function MerchantProfilePage({
   const merchant = await prisma.merchant.findUnique({
     where: { id: resolvedParams.id },
     include: {
-      zoneRates: true, // Fetch the seller's specific shipping rates
+      rateRules: true, // Seller's zone-rate rules (range + effective date; lib/merchantRates.ts)
       orders: {
         where: {
           NOT: {

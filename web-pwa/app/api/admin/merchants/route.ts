@@ -121,7 +121,10 @@ export async function POST(request: Request) {
   }
 }
 
-// PATCH /api/admin/merchants — Upsert custom zone rates for a merchant
+// PATCH /api/admin/merchants — Upsert custom zone rates for a merchant.
+// DEPRECATED: the /merchants Zone Rates modal now manages MerchantRateRule
+// rows via /api/admin/merchants/[id]/rate-rules (lib/merchantRates.ts).
+// Kept for API compatibility only — no live UI calls it.
 export async function PATCH(request: Request) {
   try {
     const auth = await requireServerPermission(request, "MANAGE_MERCHANTS");
@@ -178,6 +181,9 @@ export async function DELETE(request: Request) {
     }
 
     await prisma.merchantZoneRate.deleteMany({ where: { merchantId: id } });
+    // Zone-rate rules cascade via the relation, but delete explicitly to
+    // match the existing cleanup style above.
+    await prisma.merchantRateRule.deleteMany({ where: { merchantId: id } });
     await prisma.merchant.delete({ where: { id } });
 
     return NextResponse.json({ success: true }, { status: 200 });

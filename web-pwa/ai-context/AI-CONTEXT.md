@@ -1,7 +1,7 @@
 # Project map — delivery_system / web-pwa
 
-Generated: 2026-10-29T19:06:14.697Z
-Source files scanned: 219
+Generated: 2026-11-21T19:19:15.320Z
+Source files scanned: 223
 
 ## How to use this file
 
@@ -31,6 +31,7 @@ Every file that makes up the site, with its size. Sizes matter: files over
 
 ```
 .env.bak-libanex  (12 lines) — .env.bak-libanex
+.env.pre-cutover  (17 lines) — .env.pre-cutover
 .gitignore  (58 lines) — .gitignore
 AGENTS.md  (42 lines) — AGENTS.md
 CLAUDE.md  (2 lines) — CLAUDE.md
@@ -65,9 +66,10 @@ app/api/admin/merchants/[id]/billing/route.ts  (90 lines) — API endpoint /api/
 app/api/admin/merchants/[id]/cash-payouts/exclude/route.ts  (59 lines) — PATCH /api/admin/merchants/[id]/cash-payouts/exclude
 app/api/admin/merchants/[id]/cash-payouts/route.ts  (515 lines) — GET /api/admin/merchants/[id]/cash-payouts
 app/api/admin/merchants/[id]/payouts/[batchId]/invoice/route.ts  (159 lines) — API endpoint /api/admin/merchants/[id]/payouts/[batchId]/invoice
+app/api/admin/merchants/[id]/rate-rules/route.ts  (182 lines) — /api/admin/merchants/[id]/rate-rules
 app/api/admin/merchants/[id]/route.ts  (189 lines) — GET /api/admin/merchants/[id] — Fetch a single merchant with orders and zone rates
 app/api/admin/merchants/list/route.ts  (37 lines) — GET /api/admin/merchants/list — Fetch all active merchants as a simplified list
-app/api/admin/merchants/route.ts  (192 lines) — GET /api/admin/merchants — Fetch all merchants with their zone rates
+app/api/admin/merchants/route.ts  (198 lines) — GET /api/admin/merchants — Fetch all merchants with their zone rates
 app/api/admin/orders/archive/route.ts  (52 lines) — API endpoint /api/admin/orders/archive
 app/api/admin/orders/bulk-zone/route.ts  (137 lines) — CAS on status so a concurrent settle/clear can't be clobbered.
 app/api/admin/orders/import-sheet/route.ts  (305 lines) — ─── POST /api/admin/orders/import-sheet ────────────────────────────────────────
@@ -117,11 +119,11 @@ app/api/orders/[id]/exchange/route.ts  (96 lines) — POST /api/orders/:id/excha
 app/api/orders/[id]/history/route.ts  (139 lines) — GET /api/orders/:id/history
 app/api/orders/bulk/lookup/route.ts  (153 lines) — ─── POST /api/orders/bulk/lookup ─────────────────────────────────────────────
 app/api/orders/bulk/route.ts  (384 lines) — ─── PATCH /api/orders/bulk ───────────────────────────────────────────────────
-app/api/orders/correction/route.ts  (112 lines) — API endpoint /api/orders/correction
+app/api/orders/correction/route.ts  (121 lines) — API endpoint /api/orders/correction
 app/api/orders/route.ts  (1547 lines) — ─── GET /api/orders ──────────────────────────────────────────────────────────
 app/api/orders/waybill/route.ts  (131 lines) — ─── POST /api/orders/waybill ───────────────────────────────────────────────
 app/api/statements/[id]/pay/route.ts  (203 lines) — POST /api/statements/[id]/pay — Phase 1 (Pay) a statement into a cashbox.
-app/api/statements/route.ts  (332 lines) — NOTE: only IDs are accepted from the client. The client may also send
+app/api/statements/route.ts  (340 lines) — NOTE: only IDs are accepted from the client. The client may also send
 app/api/statistics/route.ts  (360 lines) — GET /api/statistics
 app/api/track/[token]/[orderId]/route.ts  (293 lines) — GET   /api/track/<token>/<orderId>
 app/api/track/[token]/route.ts  (264 lines) — GET /api/track/<orderId>
@@ -138,14 +140,14 @@ app/globals.css  (572 lines) — app/globals.css
 app/layout.tsx  (107 lines) — app/manifest.json is served at /manifest.json; linked explicitly so the
 app/login/page.tsx  (162 lines) — Hard navigation to force root layout remount and auth state re-read
 app/manifest.json  (30 lines) — app/manifest.json
-app/merchant/MerchantClient.tsx  (3995 lines) — ─── Types ────────────────────────────────────────────────────────────────────
-app/merchant/page.tsx  (208 lines) — ─── Helpers ─────────────────────────────────────────────────────────────────
+app/merchant/MerchantClient.tsx  (4024 lines) — ─── Types ────────────────────────────────────────────────────────────────────
+app/merchant/page.tsx  (217 lines) — ─── Helpers ─────────────────────────────────────────────────────────────────
 app/merchant/payouts/[batchId]/page.tsx  (94 lines) — ─── Server Component: Merchant-facing Payout Batch Detail ───────────────────
-app/merchants/[id]/MerchantClient.tsx  (986 lines) — Day/month/year, matching the user side (SharedOrderTable, tracking).
+app/merchants/[id]/MerchantClient.tsx  (987 lines) — Day/month/year, matching the user side (SharedOrderTable, tracking).
 app/merchants/[id]/page.tsx  (48 lines) — Page /merchants/[id]
 app/merchants/[id]/payouts/[batchId]/BatchDetailClient.tsx  (487 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/merchants/[id]/payouts/[batchId]/page.tsx  (64 lines) — Page /merchants/[id]/payouts/[batchId]
-app/merchants/page.tsx  (1072 lines) — Add Modal State
+app/merchants/page.tsx  (1228 lines) — Add Modal State
 app/orders/page.tsx  (7600 lines) — ─── Header Alias Mapping for Bulk Upload ─────────────────────────────────────
 app/orders/print/page.tsx  (850 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/page.tsx  (66 lines) — Page / (landing)
@@ -155,7 +157,7 @@ app/print/merchant/payouts/[batchId]/page.tsx  (466 lines) — ─── Types �
 app/print/merchant/returns/[batchId]/PrintControls.tsx  (13 lines) — Client component that owns all interactive print behavior.
 app/print/merchant/returns/[batchId]/page.tsx  (352 lines) — ─── Return Batch Manifest (bilingual EN/AR) ─────────────────────────────────
 app/print/merchant/statements/[id]/PrintControls.tsx  (13 lines) — Client component that owns all interactive print behavior.
-app/print/merchant/statements/[id]/page.tsx  (347 lines) — ─── Helpers ──────────────────────────────────────────────────────────────────
+app/print/merchant/statements/[id]/page.tsx  (351 lines) — ─── Helpers ──────────────────────────────────────────────────────────────────
 app/print/merchants/[id]/payouts/[batchId]/PrintControls.tsx  (13 lines) — Client component that owns all interactive print behavior.
 app/print/merchants/[id]/payouts/[batchId]/page.tsx  (438 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/print/orders/PdfDownloadTrigger.tsx  (121 lines) — Renders a "Download PDF" button just above the orders table (hidden when the
@@ -165,7 +167,7 @@ app/print/orders/manifest/page.tsx  (305 lines) — ─── Types ────
 app/print/orders/page.tsx  (479 lines) — Shared Prisma client singleton (see lib/prisma.ts) — one client per process, reused across requests.
 app/settlements/page.tsx  (1260 lines) — ─── Types ────────────────────────────────────────────────────────────────────
 app/signup/page.tsx  (222 lines) — Redirect to login with success query parameter
-app/statements/page.tsx  (696 lines) — ── Pay Statement Modal State ──
+app/statements/page.tsx  (695 lines) — ── Pay Statement Modal State ──
 app/statistics/page.tsx  (952 lines) — ─── Statistics & Analytics ───────────────────────────────────────────────────
 app/track/[token]/[orderId]/page.tsx  (661 lines) — Public customer-facing tracking page
 app/track/[token]/page.tsx  (584 lines) — Types
@@ -215,6 +217,7 @@ lib/exchange.ts  (86 lines) — Shared fields of an Order needed to build the "-
 lib/jwt.ts  (150 lines) — ─── Canonical session-JWT primitives ─────────────────────────────────────────
 lib/libanexSync.ts  (980 lines) — One-way sync: Libanex (partner delivery system) → this PWA.
 lib/logoUpload.ts  (48 lines) — Directory (relative to the project root) where merchant logo files are stored.
+lib/merchantRates.ts  (173 lines) — Merchant shipping-rate resolution (single source of truth).
 lib/notifications.ts  (102 lines) — Notification base-URL resolution.
 lib/notifications/dispatcher.ts  (216 lines) — Merchant notification dispatcher.
 lib/notifications/types.ts  (134 lines) — Shared notification types & preference normalization.
@@ -245,15 +248,16 @@ plans/edit-order-seller.md  (63 lines) — Feature plan document
 plans/idm-registration-fix.md  (58 lines) — Feature plan document
 plans/libanex-import-merchant-assignment.md  (72 lines) — Feature plan document
 plans/libanex-sync.md  (114 lines) — Feature plan document
+plans/merchant-zone-rate-rules.md  (199 lines) — Feature plan document
 plans/returns-batch-from-orders-tab.md  (75 lines) — Feature plan document
 plans/unify-scanners.md  (108 lines) — Feature plan document
 postcss.config.mjs  (8 lines) — postcss.config.mjs
-prisma/schema.prisma  (623 lines) — ==========================================
+prisma/schema.prisma  (646 lines) — ==========================================
 ```
 
 ## 2. API endpoints
 
-85 route handlers. Reuse one of these before proposing a new endpoint.
+86 route handlers. Reuse one of these before proposing a new endpoint.
 
 - **GET /api/admin/dashboard/approvals** — GET — fetch pending merchant approvals data for admin dashboard  
   file: `app/api/admin/dashboard/approvals/route.ts` (47 lines)
@@ -299,12 +303,14 @@ prisma/schema.prisma  (623 lines) — ==========================================
   file: `app/api/admin/merchants/[id]/cash-payouts/route.ts` (515 lines)
 - **GET /api/admin/merchants/[id]/payouts/[batchId]/invoice** — API endpoint /api/admin/merchants/[id]/payouts/[batchId]/invoice  
   file: `app/api/admin/merchants/[id]/payouts/[batchId]/invoice/route.ts` (159 lines)
+- **GET, POST, DELETE /api/admin/merchants/[id]/rate-rules** — /api/admin/merchants/[id]/rate-rules  
+  file: `app/api/admin/merchants/[id]/rate-rules/route.ts` (182 lines)
 - **GET, PATCH /api/admin/merchants/[id]** — GET /api/admin/merchants/[id] — Fetch a single merchant with orders and zone rates  
   file: `app/api/admin/merchants/[id]/route.ts` (189 lines)
 - **GET /api/admin/merchants/list** — GET /api/admin/merchants/list — Fetch all active merchants as a simplified list  
   file: `app/api/admin/merchants/list/route.ts` (37 lines)
 - **GET, POST, PATCH, DELETE /api/admin/merchants** — GET /api/admin/merchants — Fetch all merchants with their zone rates  
-  file: `app/api/admin/merchants/route.ts` (192 lines)
+  file: `app/api/admin/merchants/route.ts` (198 lines)
 - **DELETE /api/admin/orders/archive** — API endpoint /api/admin/orders/archive  
   file: `app/api/admin/orders/archive/route.ts` (52 lines)
 - **PATCH /api/admin/orders/bulk-zone** — CAS on status so a concurrent settle/clear can't be clobbered.  
@@ -404,7 +410,7 @@ prisma/schema.prisma  (623 lines) — ==========================================
 - **PATCH /api/orders/bulk** — ─── PATCH /api/orders/bulk ───────────────────────────────────────────────────  
   file: `app/api/orders/bulk/route.ts` (384 lines)
 - **POST /api/orders/correction** — API endpoint /api/orders/correction  
-  file: `app/api/orders/correction/route.ts` (112 lines)
+  file: `app/api/orders/correction/route.ts` (121 lines)
 - **GET, POST, PATCH /api/orders** — ─── GET /api/orders ──────────────────────────────────────────────────────────  
   file: `app/api/orders/route.ts` (1547 lines)
 - **POST, GET /api/orders/waybill** — ─── POST /api/orders/waybill ───────────────────────────────────────────────  
@@ -412,7 +418,7 @@ prisma/schema.prisma  (623 lines) — ==========================================
 - **POST /api/statements/[id]/pay** — POST /api/statements/[id]/pay — Phase 1 (Pay) a statement into a cashbox.  
   file: `app/api/statements/[id]/pay/route.ts` (203 lines)
 - **GET, POST /api/statements** — NOTE: only IDs are accepted from the client. The client may also send  
-  file: `app/api/statements/route.ts` (332 lines)
+  file: `app/api/statements/route.ts` (340 lines)
 - **GET /api/statistics** — GET /api/statistics  
   file: `app/api/statistics/route.ts` (360 lines)
 - **GET, PATCH /api/track/[token]/[orderId]** — GET   /api/track/<token>/<orderId>  
@@ -1074,6 +1080,37 @@ export function isImageFile(value: FormDataEntryValue | null): value is File {
 
 // Persist an uploaded logo to `public/uploads/merchants/` (creating the
 export async function saveMerchantLogo(file: File): Promise<string> {
+
+```
+
+### `lib/merchantRates.ts` (173 lines)
+> Merchant shipping-rate resolution (single source of truth).
+
+```ts
+// Shape of a MerchantRateRule row (subset; also matches serialized props).
+export interface MerchantRateRuleLike {
+
+// Universal (fallback) price carried on Zone.
+export interface ZoneBasePriceLike {
+
+export interface ResolvedMerchantRate {
+
+// Parse the numeric zone key from a zone name. Zones are named "0", "2", "9",
+export function parseZoneNumber(zoneName: string | null | undefined): number | null {
+
+// Pure resolver: pick the rate for one order from a merchant's rules.
+export function resolveMerchantShippingRate(
+  rules: MerchantRateRuleLike[],
+  zoneName: string | null | undefined,
+  zoneBase: ZoneBasePriceLike | null | undefined,
+  orderCreatedAt: Date | string,
+): ResolvedMerchantRate {
+
+// Load a merchant's rate rules with one query. Accepts a plain Prisma client
+export async function loadMerchantRateRules(
+  merchantId: string,
+  client: PrismaClientLike = prisma,
+): Promise<MerchantRateRuleLike[]> {
 
 ```
 
@@ -1872,6 +1909,7 @@ model Merchant {
 
   orders    Order[]
   zoneRates MerchantZoneRate[]
+  rateRules MerchantRateRule[]
 
   // --- NEW SETTLEMENT FIELDS ---
   balance Float            @default(0)
@@ -2026,6 +2064,28 @@ model MerchantZoneRate {
   zone       Zone     @relation(fields: [zoneId], references: [id])
 
   @@unique([merchantId, zoneId])
+}
+
+// Rate rule charged to a merchant for a SPAN of zones (by numeric zone name,
+// e.g. 2-9) for orders created on/after `effectiveFrom`. Resolution lives in
+// lib/merchantRates.ts: latest matching effectiveFrom wins; orders matching no
+// rule fall back to the universal zone price (Zone.basePriceUsd/basePriceLbp).
+// MerchantZoneRate above is retained as a historical record but is no longer
+// read or written by live paths.
+model MerchantRateRule {
+  id            String   @id @default(uuid())
+  merchantId    String
+  zoneFrom      Int // inclusive lower bound of the numeric zone name range
+  zoneTo        Int // inclusive upper bound of the numeric zone name range
+  rate          Float    @default(0) // USD shipping charged per order
+  rateLbp       Float    @default(0) // LBP shipping charged per order
+  effectiveFrom DateTime // orders with createdAt >= this date use this rate
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId, effectiveFrom])
 }
 
 model DriverProfile {
@@ -3500,6 +3560,207 @@ Libanex orders from payout eligibility.
   XX/QQ) keep the last valid PWA value, store raw on the link row, and warn.
 - LIBANEX_API_KEY currently reuses the shared admin API key; a dedicated
   read-only key is recommended later.
+
+### `plans/merchant-zone-rate-rules.md` (199 lines)
+
+# Merchant Zone Rate Rules (range + effective date)
+
+## Overview
+
+Replace the current **per-zone override grid** in the "Zone Rates" modal on
+[`/merchants`](../app/merchants/page.tsx) with a **list of rate rules**. Each rule is:
+
+> **Zones `from`–`to` (e.g. 2–9) · rate USD · rate LBP · effective from date**
+
+Meaning: *orders in zones 2–9 created on/after the effective date are charged this rate.*
+A merchant can hold any number of rules — different ranges with different rates, or
+successive rates for the same zones on different dates (rate change over time).
+
+**Rate resolution for an order** (single source of truth, new `lib/merchantRates.ts`):
+
+1. Cash sellers → unchanged flat fee (`defaultSellerRate + defaultProfitRate`).
+2. Otherwise: among the merchant's rules where
+   `rule.zoneFrom ≤ numeric(zone.name) ≤ rule.zoneTo` **and**
+   `rule.effectiveFrom ≤ order.createdAt`:
+   - pick the rule with the **latest `effectiveFrom`** (a newer rate supersedes an older one);
+   - tie-break: **narrower range** wins, then most recently created.
+3. No matching rule → **universal zone price** (`Zone.basePriceUsd` / `basePriceLbp`).
+
+Because the lookup is keyed on the order's creation date, historical orders and
+historical statements keep resolving to the rate that was in force when the order
+was received — no restatement drift when a new rule is added later.
+
+Zone matching uses the **numeric zone name** (`Zone.name` = `"0"`, `"2"`, `"9"`,
+`"99"` — the same convention `lib/zoneMatcher.ts` uses for the fallback zone
+`"99"`). Ranges may start at zone `"0"`. **Subzones count as their parent**:
+`"14B"` is priced by any rule covering zone 14 (single optional letter suffix).
+Zone names without a leading number never match a rule. Note `"99"` is
+numerically high: a `2–99` rule would also price fallback-zone orders
+(deliberate, and visible in the UI since rules show their numeric span).
+
+## Architecture
+
+```mermaid
+flowchart TD
+  UI[Zone Rates modal - app/merchants/page.tsx<br/>rule list + add/edit/delete] -->|CRUD| API[app/api/admin/merchants/id/rate-rules<br/>GET POST DELETE - MANAGE_MERCHANTS]
+  API --> DB[(MerchantRateRule table<br/>zoneFrom zoneTo rate rateLbp effectiveFrom)]
+  API -->|deleteMany rules on merchant delete| MDEL[DELETE /api/admin/merchants]
+
+  subgraph Consumers of resolution
+    STMT[POST /api/statements totals]
+    SPAGE[app/statements/page.tsx]
+    MC[merchants id MerchantClient calculator]
+    MCLIENT[merchant/MerchantClient statements + CSV]
+    PRINT[print merchant statements]
+    CORR[api/orders/correction]
+  end
+
+  STMT --> LIB[lib/merchantRates.ts<br/>loadRateRules + resolveMerchantShippingRate]
+  SPAGE --> LIB
+  MC --> LIB
+  MCLIENT --> LIB
+  PRINT --> LIB
+  CORR --> LIB
+  LIB --> DB
+  LIB -->|fallback when no rule matches| ZP[(Zone.basePriceUsd / basePriceLbp)]
+```
+
+## Current State Analysis
+
+| File | Line range | Current behaviour |
+| --- | --- | --- |
+| `prisma/schema.prisma` | 244–254 | `MerchantZoneRate`: one row per `(merchantId, zoneId)` with `rate`/`rateLbp`; no dates, no ranges. |
+| `prisma/schema.prisma` | 376–385 | `Zone` has `name` (e.g. `"2"`, `"99"`), `basePriceUsd`, `basePriceLbp` (universal price). |
+| `app/merchants/page.tsx` | 42–46, 227–307, 885–1072 | "Zone Overrides" modal: grid of **all zones** with per-zone USD/LBP inputs, override/default badges, Reset + Apply-Universal; saves every overridden zone. |
+| `app/merchants/page.tsx` | 309–330 | `handleSaveRates` → `PATCH /api/admin/merchants` with `{merchantId, rates:[{zoneId, rate, rateLbp}]}`. |
+| `app/api/admin/merchants/route.ts` | 124–163 | `PATCH` upserts `merchantZoneRate` rows (`merchantId_zoneId` unique). |
+| `app/api/admin/merchants/route.ts` | 180 | `DELETE` merchant also `deleteMany` zone rates. |
+| `app/api/statements/route.ts` | 207–237 | Payout totals: per-order shipping from `merchant.zoneRates` map by `zoneId`; **0** when no row (will become: rule ∪ universal price). Cash-seller flat fee unchanged. |
+| `app/statements/page.tsx` | 23–47 | Recomputes per-order shipping from `merchant.zoneRates` for display. |
+| `app/merchants/[id]/page.tsx` | 16–18 | Server page includes `zoneRates` for the merchant page. |
+| `app/merchants/[id]/MerchantClient.tsx` | 361–410 | Per-order rate calculator uses `merchant.zoneRates.find(...)` by `zoneId`. |
+| `app/merchant/page.tsx` | 110–152 | Passes `zoneRates` (id/zoneId/rate/rateLbp + zone) to `MerchantClient`. |
+| `app/merchant/MerchantClient.tsx` | 1004–1010, 1360–1380, 1503–1511, 3620–3625 | Statement view, CSV export, and rate display all `zoneRates.find(...)` by `zoneId`. |
+| `app/print/merchant/statements/[id]/page.tsx` | 97–120 | Printed statement lines resolve rate from `merchant.zoneRates`. |
+| `app/api/orders/correction/route.ts` | 28–50 | Correction net amounts use `merchantZoneRate.findUnique(merchantId, zoneId)`. |
+| `app/api/zones/overrides/route.ts` + `[id]` | whole file | CRUD for `merchantZoneRate` — **not referenced by any UI** (dead-ish; leave untouched or deprecate). |
+
+## Behavioural changes to accept (confirmed direction)
+
+1. **Fallback changes from $0 to universal zone price.** Today, a non-cash merchant
+   with no per-zone row is charged $0 shipping in statements. After this change,
+   unmatched orders fall back to the zone's universal price. Historical *displayed*
+   figures (statements page/print/CSV recompute per order) may therefore change for
+   merchants that relied on the $0 default. Existing **created** payout rows keep
+   their stored totals untouched.
+2. The per-zone grid, "overridden/default" badges, Reset, and Apply-Universal are
+   removed entirely; the old `MerchantZoneRate` table is kept in the schema
+   (data preserved, no destructive migration) but no longer read or written by any
+   live path.
+
+## Plan
+
+### 1. Schema (Prisma)
+
+- Add model `MerchantRateRule` to `prisma/schema.prisma`:
+  - `id String @id @default(uuid())`, `merchantId`, relation `Merchant` with
+    `onDelete: Cascade`, `zoneFrom Int`, `zoneTo Int` (inclusive numeric zone span),
+    `rate Float` (USD), `rateLbp Float @default(0)`,
+    `effectiveFrom DateTime` (orders with `createdAt >= effectiveFrom`),
+    `createdAt DateTime @default(now())`, `updatedAt DateTime @updatedAt`.
+  - `@@index([merchantId, effectiveFrom])`.
+- Add back-relation `rateRules MerchantRateRule[]` on `Merchant`.
+- Do **not** remove `MerchantZoneRate` (historical data preserved).
+- Run `npx prisma migrate dev --name add_merchant_rate_rules` (or `prisma db push`
+  if that matches the project's deploy flow — confirm before running).
+
+### 2. Resolution helper — `lib/merchantRates.ts` (new)
+
+- `loadMerchantRateRules(merchantId, client?)` → `findMany` for the merchant (one query).
+- `resolveMerchantShippingRate(rules, zoneName, zoneBaseUsd, zoneBaseLbp, orderCreatedAt)`
+  → `{ usd, lbp, matched: "rule" | "universal" }`:
+  - parse `zoneName` → int (`Number.parseInt`); non-numeric → universal fallback;
+  - filter rules where `zoneFrom <= n <= zoneTo` and `effectiveFrom <= orderCreatedAt`;
+  - sort by latest `effectiveFrom`, then narrower span, then latest `createdAt`;
+  - no match → universal zone price.
+- Pure functions (no Prisma inside the resolver) so client components can reuse it
+  after receiving rules as props. Money values only flow through here — no inline
+  math in pages (project money rule).
+
+### 3. API — `app/api/admin/merchants/[id]/rate-rules/route.ts` (new)
+
+- `GET` — list rules for merchant (permission `MANAGE_MERCHANTS`).
+- `POST` — create/update a rule (body: `id?`, `zoneFrom`, `zoneTo`, `rate`, `rateLbp`, `effectiveFrom`).
+  Validate: `1 <= zoneFrom <= zoneTo <= 999`, `rate/rateLbp >= 0`, valid date. Wrap
+  mutations in a transaction (project convention; no unique constraint conflicts by design).
+- `DELETE ?ruleId=` — remove one rule.
+- Keep `PATCH /api/admin/merchants` (old zone-rate upsert) in place but it becomes
+  unused by the UI; mark deprecated in a comment.
+
+### 4. UI — rebuild the modal in `app/merchants/page.tsx`
+
+- Replace state (`stagedRates` grid state, `handleUpdateRate`, `handleResetRate`,
+  `handleApplyUniversal`, `handleSaveRates`) with rule-list state fetched lazily when
+  the "Zone Rates" button opens the modal (`GET .../rate-rules`).
+- New modal ("Zone Rate Rules: {seller}"):
+  - table of rules sorted by `effectiveFrom` desc: **Zones `2–9`**, **USD**, **LBP**,
+    **Effective from** (date, human format), edit/delete actions;
+  - "+ Add rule" row/panel: numeric from/to, USD, LBP, `type="date"` input
+    (default = today), inline validation errors;
+  - helper line: "Orders outside these ranges (or created before the effective
+    date) are charged the universal zone price."
+- Delete-rule confirmation inline (small, matching existing modal styling).
+- No permission change needed — the page is already admin/staff-gated and the API
+  re-checks `MANAGE_MERCHANTS`.
+
+### 5. Switch all rate consumers to the new resolver
+
+For each site below, replace `zoneRates.find(... by zoneId)` logic with
+`lib/merchantRates.ts` resolution using the order's `createdAt`:
+
+- `app/api/statements/route.ts` (207–237): fetch rules per merchant (include
+  `rateRules` or bulk `findMany` for the merchants in the batch); shipping per
+  order = resolved rate (cash-seller branch unchanged).
+- `app/statements/page.tsx` (23–47).
+- `app/merchants/[id]/page.tsx` + `app/merchants/[id]/MerchantClient.tsx` (361–410):
+  server passes `rateRules` + zones (numeric names already loaded); client uses the pure resolver.
+- `app/merchant/page.tsx` (110–152) + `app/merchant/MerchantClient.tsx`
+  (1004–1010, 1360–1380, 1503–1511 "Shipping Rates" display → show rule list instead,
+  3620–3625 statement rows).
+- `app/print/merchant/statements/[id]/page.tsx` (97–120).
+- `app/api/orders/correction/route.ts` (28–50): resolve OLD and NEW merchant rate
+  for the order using the order's `createdAt` instead of `merchantZoneRate.findUnique`.
+
+Each change is surgical, one section at a time; no reformatting of untouched code.
+
+### 6. Merchant delete
+
+- `DELETE /api/admin/merchants` — add `prisma.merchantRateRule.deleteMany({ where: { merchantId } })`
+  next to the existing zone-rate cleanup (or rely on cascade once the relation is
+  `onDelete: Cascade`; do both for safety parity with existing code style).
+
+### 7. Verification & wrap-up
+
+- `npx prisma generate` + build passes; no TS errors in touched files.
+- Manual checks:
+  - create rule 2–9 @ $2.50 effective tomorrow → an existing order in zone 5 still
+    prices at universal price; an order created after the date prices at $2.50;
+  - second rule 2–9 @ $3.00 later date → older orders keep $2.50, newer get $3.00;
+  - rule 10–20 @ different rate → zone 5 unaffected;
+  - merchant with **no** rules → every order at universal zone price;
+  - cash seller unaffected;
+  - statement creation totals match the statement page/print/CSV figures;
+  - order correction route still computes nets correctly.
+- `node scripts/build-ai-context.js` to refresh the AI map.
+- Optionally note in `ai-context/AI-CONTEXT.md` inventory that
+  `/api/zones/overrides` is legacy.
+
+## Out of scope
+
+- Driver-side rates (`DriverZoneRate`) — untouched.
+- `merchantZoneRate` row deletion/migration — table preserved as historical record.
+- Any change to cash-seller flat fees, profit math (`lib/profit.ts`), or driver
+  commission precedence (`lib/commission.ts`).
 
 ### `plans/returns-batch-from-orders-tab.md` (75 lines)
 

@@ -97,6 +97,7 @@ model Merchant {
 
   orders    Order[]
   zoneRates MerchantZoneRate[]
+  rateRules MerchantRateRule[]
 
   // --- NEW SETTLEMENT FIELDS ---
   balance Float            @default(0)
@@ -251,6 +252,28 @@ model MerchantZoneRate {
   zone       Zone     @relation(fields: [zoneId], references: [id])
 
   @@unique([merchantId, zoneId])
+}
+
+// Rate rule charged to a merchant for a SPAN of zones (by numeric zone name,
+// e.g. 2-9) for orders created on/after `effectiveFrom`. Resolution lives in
+// lib/merchantRates.ts: latest matching effectiveFrom wins; orders matching no
+// rule fall back to the universal zone price (Zone.basePriceUsd/basePriceLbp).
+// MerchantZoneRate above is retained as a historical record but is no longer
+// read or written by live paths.
+model MerchantRateRule {
+  id            String   @id @default(uuid())
+  merchantId    String
+  zoneFrom      Int // inclusive lower bound of the numeric zone name range
+  zoneTo        Int // inclusive upper bound of the numeric zone name range
+  rate          Float    @default(0) // USD shipping charged per order
+  rateLbp       Float    @default(0) // LBP shipping charged per order
+  effectiveFrom DateTime // orders with createdAt >= this date use this rate
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId, effectiveFrom])
 }
 
 model DriverProfile {
