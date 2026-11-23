@@ -30,6 +30,9 @@
 # ============================================================================
 set -euo pipefail
 
+# Shared backup configuration (off-site cloud targets).
+[ -f /etc/backup-alerts.conf ] && . /etc/backup-alerts.conf
+
 # ── Configuration ────────────────────────────────────────────────────────────
 SITE_DIR="/var/www/delivery_system/web-pwa"
 ENV_FILE="$SITE_DIR/.env"
@@ -87,7 +90,7 @@ log "START backup $SNAP_NAME"
 # Doing this before any remote work means a failed dump leaves no partial
 # snapshot on the remote box.
 TMP_SQLGZ="$(mktemp /tmp/sitebackup_XXXX.sql.gz)"
-SITE_TAR="$(mktemp /tmp/sitebackup_XXXX.tar.gz)"
+SITE_TAR="/tmp/site_${STAMP}.tar.gz"
 trap 'rm -f "$TMP_SQLGZ" "$SITE_TAR"' EXIT
 if ! sudo -u "$PGSUPERUSER" pg_dump "$DB_NAME" --no-owner --no-privileges \
         | gzip -c > "$TMP_SQLGZ"; then
@@ -127,6 +130,56 @@ rsync_remote "$TMP_SQLGZ" \
 # ── 3) Verify snapshot on the remote ─────────────────────────────────────────
 REMOTE_SNAP_SIZE="$(remote "du -sh '$REMOTE_DIR' | cut -f1" 2>/dev/null)"
 log "Remote snapshot ${REMOTE_DIR} = ${REMOTE_SNAP_SIZE:-unknown}"
+
+# ── Cloud off-site uploads: site tarball to Drive + Dropbox + Mega ──────────
+# The site tarball (single regular file) is also copied to every configured
+# cloud remote in a dedicated site_backups/ folder. GitHub (backup_delivery.sh)
+# is the 4th copy. Keep last 5 per target.
+KEEP_LAST_CLOUD=5
+SITE_REMOTE_DEST_BASE="site_backups"
+
+detect_remote_cloud() {
+    local want="$1"
+    rclone listremotes 2>/dev/null | sed 's/:$//' | while read -r rem; do
+        local type
+        type="$(rclone config show 2>/dev/null | awk -v r="$rem" '
+            $0 == "[" r "]" { in_sec = 1; next }
+            in_sec && /^\[/ { in_sec = 0 }
+            in_sec && /^type[[:space:]]*=/ {
+                sub(/^type[[:space:]]*=[[:space:]]*/, "")
+                print; exit
+            }
+        ')"
+        if [ "$type" = "$want" ]; then
+            printf '%s' "$rem"
+            return 0
+        fi
+    done
+}
+
+upload_cloud() {
+    # $1 = label, $2 = rclone remote name
+    local label="$1" remote="$2"
+    [ -z "$remote" ] && return 0
+    local dest="${remote}:${SITE_REMOTE_DEST_BASE}"
+    log "Uploading site tarball to ${label}: ${dest}"
+    if rclone copy "$SITE_TAR" "$dest" && \
+       rclone lsf "$dest" 2>/dev/null | grep -E '^site_.*\.tar\.gz$' | sort | head -n -${KEEP_LAST_CLOUD} | while read -r old; do
+           rclone delete "$dest/$old" >/dev/null 2>&1 || log "WARNING: could not delete $old from ${label}"
+       done; then
+        log "Site tarball uploaded to ${label}"
+    else
+        log "ERROR: site tarball upload failed for ${label}"
+    fi
+}
+
+GDRIVE_REMOTE_CLOUD="${RCLONE_REMOTE:-$(detect_remote_cloud drive)}"
+DROPBOX_REMOTE_CLOUD="${RCLONE_DROPBOX_REMOTE:-$(detect_remote_cloud dropbox)}"
+MEGA_REMOTE_CLOUD="${RCLONE_MEGA_REMOTE:-$(detect_remote_cloud mega)}"
+
+upload_cloud "Google Drive" "$GDRIVE_REMOTE_CLOUD"
+upload_cloud "Dropbox" "$DROPBOX_REMOTE_CLOUD"
+upload_cloud "Mega" "$MEGA_REMOTE_CLOUD"
 
 # ── 4) Retention: keep newest KEEP_HOURLY + oldest of each day (KEEP_DAYS) ──
 # Single awk pass over the sorted snapshot list (newest last):

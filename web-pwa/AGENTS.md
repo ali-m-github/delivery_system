@@ -35,7 +35,7 @@ does not actually require.
 
 ## How to work on this project
 
-- Before coding a feature, write a plan in `plans/<feature>.md` in the existing format: Overview → Mermaid architecture → "Current State Analysis" table (`file | line range | current behaviour`) → step-by-step plan.
-- Several files exceed 1,000 lines (`app/orders/page.tsx` ~7.8k, `app/driver/DriverClient.tsx` ~3.5k). Edit them surgically, one section at a time; never rewrite them wholesale.
-- Reuse an existing endpoint or component from the inventory in `ai-context/AI-CONTEXT.md` instead of creating a parallel one.
+- For major new features touching multiple files or database tables, write a plan in `plans/<feature>.md` first (Overview → Mermaid architecture → "Current State Analysis" table → step-by-step plan). For small UI tweaks or single-bug fixes, skip `plans/` and edit directly.
+- Several files exceed 1,000 lines (`app/orders/page.tsx` ~7.8k, `app/driver/DriverClient.tsx` ~3.5k). Edit them surgically with `apply_diff`, one section at a time; never rewrite them wholesale.
+- Reuse an existing endpoint or component from the inventory in `ai-context/AI-FOCUS.md` instead of creating a parallel one (only open `ai-context/AI-CONTEXT.md` if full detail is needed).
 - Run `node scripts/build-ai-context.js` after adding a feature so the map stays current. It only reads files and writes to `ai-context/`; it cannot affect the site.
